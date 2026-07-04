@@ -15,6 +15,7 @@ from .utils import bool_arg, git_commit
 
 DEFAULT_PYTHON_BIN = ".venv/bin/python"
 DEFAULT_SMOKE_MODE = "metadata"
+DEFAULT_JOB_KIND = "teacher_train"
 COLLECTED_ARTIFACT_NAMES = (
     "status.json",
     "stdout.log",
@@ -24,6 +25,12 @@ COLLECTED_ARTIFACT_NAMES = (
     "run_context.json",
     "metrics_summary.json",
     "metrics.jsonl",
+    "teacher_hpo_summary.json",
+    "teacher_hpo_events.jsonl",
+    "trials/trial_000000/trial_summary.json",
+    "trials/trial_000000/run_context.json",
+    "trials/trial_000000/metrics_summary.json",
+    "trials/trial_000000/metrics.jsonl",
 )
 
 
@@ -172,6 +179,42 @@ def build_train_teacher_command(
     )
 
 
+def build_teacher_hpo_command(
+    *,
+    gpu_id: int,
+    output_dir: Path,
+    seed: int,
+    python_bin: str = DEFAULT_PYTHON_BIN,
+    quick_smoke: bool = True,
+    base_config: str = "configs/teacher_default.yaml",
+    hpo_config: str = "configs/teacher_hpo.yaml",
+    max_trials: int = 1,
+    max_attempts: int = 32,
+    max_train_steps: int | None = None,
+    max_val_steps: int | None = None,
+    prune_min_value: float | None = None,
+) -> str:
+    command = (
+        f"PYTHONPATH=src CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES={gpu_id} "
+        f"{quote(python_bin)} -m cifar_mamba_fff.hpo.teacher_hpo "
+        f"--base-config {quote(base_config)} "
+        f"--hpo-config {quote(hpo_config)} "
+        f"--output-dir {quote(str(output_dir))} "
+        f"--quick-smoke {str(quick_smoke).lower()} "
+        "--execute-trials true "
+        f"--max-trials {max_trials} "
+        f"--max-attempts {max_attempts} "
+        f"--seed {seed}"
+    )
+    if max_train_steps is not None:
+        command += f" --max-train-steps {int(max_train_steps)}"
+    if max_val_steps is not None:
+        command += f" --max-val-steps {int(max_val_steps)}"
+    if prune_min_value is not None:
+        command += f" --prune-min-value {float(prune_min_value)}"
+    return command
+
+
 def build_dry_run_jobs(
     machines: list[MachineSpec],
     *,
@@ -179,9 +222,21 @@ def build_dry_run_jobs(
     dry_run: bool,
     python_bin: str = DEFAULT_PYTHON_BIN,
     smoke_mode: str = DEFAULT_SMOKE_MODE,
+    job_kind: str = DEFAULT_JOB_KIND,
+    teacher_base_config: str = "configs/teacher_default.yaml",
+    teacher_hpo_config: str = "configs/teacher_hpo.yaml",
+    hpo_trials_per_job: int = 1,
+    hpo_max_attempts_per_job: int = 32,
+    max_train_steps: int | None = None,
+    max_val_steps: int | None = None,
+    prune_min_value: float | None = None,
+    output_root: Path | None = None,
+    run_id: str | None = None,
     unavailable_slots: set[tuple[str, int]] | None = None,
     max_jobs: int | None = None,
 ) -> list[GpuJob]:
+    if job_kind not in {"teacher_train", "teacher_hpo"}:
+        raise ValueError("job_kind must be teacher_train or teacher_hpo")
     unavailable_slots = unavailable_slots or set()
     jobs: list[GpuJob] = []
     for idx, (machine, gpu_id) in enumerate(enumerate_slots(machines)):
@@ -189,18 +244,39 @@ def build_dry_run_jobs(
             continue
         if max_jobs is not None and len(jobs) >= max_jobs:
             break
-        output_dir = Path("outputs/scheduler_smoke") / machine / str(gpu_id)
         seed = 1337 + idx
+        default_root = Path("outputs/scheduler_hpo" if job_kind == "teacher_hpo" else "outputs/scheduler_smoke")
+        resolved_output_root = output_root or default_root
+        if run_id is not None:
+            resolved_output_root = resolved_output_root / run_id
+        output_dir = resolved_output_root / machine / str(gpu_id)
+        if job_kind == "teacher_hpo":
+            command = build_teacher_hpo_command(
+                gpu_id=gpu_id,
+                output_dir=output_dir,
+                seed=seed,
+                python_bin=python_bin,
+                quick_smoke=quick_smoke,
+                base_config=teacher_base_config,
+                hpo_config=teacher_hpo_config,
+                max_trials=hpo_trials_per_job,
+                max_attempts=hpo_max_attempts_per_job,
+                max_train_steps=max_train_steps,
+                max_val_steps=max_val_steps,
+                prune_min_value=prune_min_value,
+            )
+        else:
+            command = build_train_teacher_command(
+                gpu_id=gpu_id,
+                output_dir=output_dir,
+                python_bin=python_bin,
+                quick_smoke=quick_smoke,
+                smoke_mode=smoke_mode,
+                seed=seed,
+            )
         jobs.append(
             GpuJob(
-                command=build_train_teacher_command(
-                    gpu_id=gpu_id,
-                    output_dir=output_dir,
-                    python_bin=python_bin,
-                    quick_smoke=quick_smoke,
-                    smoke_mode=smoke_mode,
-                    seed=seed,
-                ),
+                command=command,
                 output_dir=output_dir,
                 machine=machine,
                 gpu_id=gpu_id,
@@ -208,6 +284,7 @@ def build_dry_run_jobs(
                 metadata={
                     "quick_smoke": quick_smoke,
                     "dry_run": dry_run,
+                    "job_kind": job_kind,
                     "smoke_mode": smoke_mode,
                     "cuda_device_order": "PCI_BUS_ID",
                     "cuda_visible_devices": str(gpu_id),
@@ -216,7 +293,22 @@ def build_dry_run_jobs(
                 },
             )
         )
+    _validate_jobs_unique(jobs)
     return jobs
+
+
+def _validate_jobs_unique(jobs: list[GpuJob]) -> None:
+    output_dirs: set[Path] = set()
+    seeds: set[int] = set()
+    for job in jobs:
+        if job.output_dir in output_dirs:
+            raise ValueError(f"duplicate job output_dir: {job.output_dir}")
+        output_dirs.add(job.output_dir)
+        if job.seed is None:
+            continue
+        if job.seed in seeds:
+            raise ValueError(f"duplicate job seed: {job.seed}")
+        seeds.add(job.seed)
 
 
 def write_queue(path: Path, jobs: list[GpuJob]) -> None:
@@ -481,6 +573,7 @@ def collect_detached_job_artifacts(
         }
         if result["ok"]:
             target = destination / artifact_name
+            target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(str(result["stdout"]), encoding="utf-8")
             record["local_path"] = str(target)
         collected["files"][artifact_name] = record
@@ -521,7 +614,7 @@ def wait_for_jobs(
     return [latest.get((job.machine, job.gpu_id), job.record()) for job in jobs]
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--machines", default="configs/machines.yaml")
     parser.add_argument("--queue-out", default="outputs/job_queue.jsonl")
@@ -533,6 +626,29 @@ def main() -> int:
         help="Use metadata for scheduler readiness; train requires CIFAR/CUDA smoke gate.",
     )
     parser.add_argument("--python-bin", default=DEFAULT_PYTHON_BIN)
+    parser.add_argument(
+        "--job-kind",
+        choices=("teacher_train", "teacher_hpo"),
+        default=DEFAULT_JOB_KIND,
+        help="Launch teacher train/smoke commands or one-GPU teacher HPO jobs.",
+    )
+    parser.add_argument("--teacher-base-config", default="configs/teacher_default.yaml")
+    parser.add_argument("--teacher-hpo-config", default="configs/teacher_hpo.yaml")
+    parser.add_argument("--hpo-trials-per-job", type=int, default=1)
+    parser.add_argument("--hpo-max-attempts-per-job", type=int, default=32)
+    parser.add_argument("--max-train-steps", type=int, default=None)
+    parser.add_argument("--max-val-steps", type=int, default=None)
+    parser.add_argument("--prune-min-value", type=float, default=None)
+    parser.add_argument(
+        "--job-output-root",
+        default=None,
+        help="Override scheduler output root. Defaults depend on --job-kind.",
+    )
+    parser.add_argument(
+        "--run-id",
+        default=None,
+        help="Optional run id inserted under the scheduler output root to avoid output collisions.",
+    )
     parser.add_argument("--max-jobs", type=int, default=None)
     parser.add_argument(
         "--unavailable-slot",
@@ -572,9 +688,13 @@ def main() -> int:
         default="outputs/scheduler_launch_results.jsonl",
         help="JSONL launch/status records for detached launches.",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     if args.max_jobs is not None and args.max_jobs <= 0:
         raise ValueError("--max-jobs must be positive when set")
+    if args.hpo_trials_per_job <= 0:
+        raise ValueError("--hpo-trials-per-job must be positive")
+    if args.hpo_max_attempts_per_job < args.hpo_trials_per_job:
+        raise ValueError("--hpo-max-attempts-per-job must be >= --hpo-trials-per-job")
     if not args.dry_run and not args.quick_smoke and not args.allow_long_jobs:
         raise RuntimeError("refusing non-smoke scheduler launch without --allow-long-jobs true")
 
@@ -586,6 +706,16 @@ def main() -> int:
         dry_run=args.dry_run,
         python_bin=args.python_bin,
         smoke_mode=args.smoke_mode,
+        job_kind=args.job_kind,
+        teacher_base_config=args.teacher_base_config,
+        teacher_hpo_config=args.teacher_hpo_config,
+        hpo_trials_per_job=args.hpo_trials_per_job,
+        hpo_max_attempts_per_job=args.hpo_max_attempts_per_job,
+        max_train_steps=args.max_train_steps,
+        max_val_steps=args.max_val_steps,
+        prune_min_value=args.prune_min_value,
+        output_root=Path(args.job_output_root) if args.job_output_root is not None else None,
+        run_id=args.run_id,
         unavailable_slots=unavailable_slots,
         max_jobs=args.max_jobs,
     )
@@ -604,7 +734,8 @@ def main() -> int:
                     expected_commit=None
                     if args.expected_commit == "any"
                     else str(args.expected_commit),
-                    require_cifar10_train=args.smoke_mode == "train",
+                    require_cifar10_train=args.smoke_mode == "train"
+                    or args.job_kind == "teacher_hpo",
                     timeout_s=args.launch_timeout_s,
                 )
                 for machine_name in machines_with_jobs
