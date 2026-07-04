@@ -1,0 +1,32 @@
+# Reproducibility constraints observed on work during Stage A.
+# Torch wheels are installed from the PyTorch nightly cu130 index in scripts/setup.sh.
+torch==2.14.0.dev20260702+cu130
+torchvision==0.29.0.dev20260703+cu130
+torchaudio==2.11.0.dev20260703+cu130
+
+apache-tvm-ffi==0.1.12
+tilelang==0.1.8
+quack-kernels==0.5.0
+triton==3.8.0+git43422b04
+transformers==5.13.0
+fastfeedforward==0.2.1
+
+numpy==2.5.0
+pandas==3.0.3
+tqdm==4.68.3
+rich==15.0.0
+matplotlib==3.11.0
+scikit-learn==1.9.0
+pyyaml==6.0.3
+optuna==4.9.0
+wandb==0.28.0
+pytest==9.1.1
+ruff==0.15.20
+einops==0.8.2
+tabulate==0.10.0
+packaging==26.2
+ninja==1.13.0
+psutil==7.2.2
+fabric==3.2.3
+paramiko==5.0.0
+filelock==3.29.5

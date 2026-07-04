@@ -1,0 +1,16 @@
+seed: 1337
+teacher_checkpoint: null
+student_checkpoint: null
+train:
+  epochs: 50
+  precision: bf16
+  optimizer: muon_adamw
+  schedule: cosine
+  lr_muon: 0.001
+  lr_adamw: 0.0001
+  kd_temperature: 4
+  lambda_kd: 0.7
+  lambda_ce: 0.3
+  lambda_hidden: 0.05
+  lambda_balance: 0.001
+  keep_locoprop_refits: false

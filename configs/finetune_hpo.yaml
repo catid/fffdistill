@@ -1,0 +1,15 @@
+study_name: finetune_hpo
+objective: val_accuracy
+direction: maximize
+max_trials: 120
+search_space:
+  fine_tune_epochs: [25, 50, 100, 150]
+  lr_muon: [0.0001, 0.0003, 0.001, 0.003]
+  lr_adamw: [0.00001, 0.00003, 0.0001, 0.0003]
+  kd_temperature: [2, 4, 8]
+  lambda_kd: [0.5, 0.7, 0.9]
+  lambda_ce: [0.1, 0.3, 0.5]
+  lambda_hidden: [0.0, 0.05, 0.1, 0.3]
+  keep_locoprop_refits: [false, true]
+  schedule: [cosine, wsd]
+  optimizer_family: [official_muon, pace_muon, pace_normuon]

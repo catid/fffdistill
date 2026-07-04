@@ -1,0 +1,76 @@
+This file records the exact vendor patches applied by `scripts/apply_vendor_patches.py`.
+
+Upstream dependency versions:
+- mamba-ssm 2.3.2.post1 from state-spaces/mamba commit ed6ce09e4d802e274b1ecc7205757b892e180a93.
+- apache-tvm-ffi 0.1.12.
+- tilelang 0.1.8.
+
+These patches do not replace Mamba-3, do not disable TileLang MIMO training kernels, and
+do not fall back to Mamba-2 or a fake block. They repair Python 3.12 import/lowering
+compatibility while preserving the official optimized TileLang MIMO path.
+
+diff --git a/tvm_ffi/registry.py b/tvm_ffi/registry.py
+--- a/tvm_ffi/registry.py
++++ b/tvm_ffi/registry.py
+@@ -396,10 +396,16 @@ def register_object(type_key: str = None):
+     return decorator
+
+
++_UNSETTABLE_TYPE_DUNDERS = frozenset({"__dict__", "__weakref__"})
++
++
+ def _add_class_attrs(type_cls: type, type_info: TypeInfo) -> type:
+     for field in type_info.fields:
+         name = field.name
++        if name in _UNSETTABLE_TYPE_DUNDERS:
++            continue
+         if name not in type_cls.__dict__:  # skip attributes defined directly on this class
+             setattr(type_cls, name, field.as_property(type_cls))
+
+
+diff --git a/mamba_ssm/modules/mamba3.py b/mamba_ssm/modules/mamba3.py
+--- a/mamba_ssm/modules/mamba3.py
++++ b/mamba_ssm/modules/mamba3.py
+@@ -15,8 +15,11 @@ try:
+     from mamba_ssm.ops.cute.mamba3.mamba3_step_fn import mamba3_step_fn
+-except ImportError:
++except Exception as exc:  # optional Cute inference dependency
+     mamba3_step_fn = None
++    mamba3_step_import_error = exc
++else:
++    mamba3_step_import_error = None
+
+
+diff --git a/tilelang/3rdparty/tvm/python/tvm/runtime/support.py b/tilelang/3rdparty/tvm/python/tvm/runtime/support.py
+--- a/tilelang/3rdparty/tvm/python/tvm/runtime/support.py
++++ b/tilelang/3rdparty/tvm/python/tvm/runtime/support.py
+@@ -358,6 +358,7 @@ def derived_object(cls):
+     class TVMDerivedObject(metadata["cls"]):  # type: ignore
+         """The derived object to avoid cyclic dependency."""
+
++        __slots__ = ("_inst", "__weakref__")
+         _cls = cls
+         _type = "TVMDerivedObject"
+
+@@ -392,10 +393,18 @@ def derived_object(cls):
+             return inst.__getattribute__(name)
+
+         def __setattr__(self, name, value):
+-            if name not in ["_inst", "key", "handle"]:
+-                self._inst.__setattr__(name, value)
+-            else:
++            if name == "_inst":
++                object.__setattr__(self, name, value)
++                return
++            if name in ["key", "handle"]:
+                 super(TVMDerivedObject, self).__setattr__(name, value)
++                return
++            try:
++                inst = object.__getattribute__(self, "_inst")
++            except AttributeError:
++                object.__setattr__(self, name, value)
++            else:
++                inst.__setattr__(name, value)
+
+         def __init_handle_by_constructor__(self, fconstructor, *args):
+             """Initialize the handle by calling constructor function.

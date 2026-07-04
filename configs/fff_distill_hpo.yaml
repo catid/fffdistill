@@ -1,0 +1,29 @@
+study_name: fff_distill_hpo
+objective: validation_normalized_mse
+direction: minimize
+max_trials: 300
+search_space:
+  shared_unrouted_frac: [0.0, 0.05, 0.10, 0.20]
+  route_rows: [1, 2]
+  route_result_rows: [0, 1, 2]
+  leaf_rows: [1, 2, 4]
+  depth: [2, 3, 4, 5, 6, 7, 8]
+  route_rows_contribute: [false, true]
+  route_row_role: [routing_only, shared_routing_and_output, split_routing_output]
+  route_rows_output_count: [0, 1, all]
+  route_rows_output_fraction: [0.0, 0.5, 1.0]
+  activation: [silu, gelu]
+  region_leak: [0.0, 0.01, 0.05]
+  master_leaf: [false, true]
+  balance_recipe: [none, split, split_minleaf, split_minleaf_uniform, split_minleaf_margin]
+  balance_coeff: [0.0, 0.0001, 0.0003, 0.001, 0.003, 0.01]
+  min_leaf_tokens: [16, 32, 64, 128]
+  router_recipe:
+    - vanilla_ste
+    - clipped_ste
+    - sigmoid_surrogate_ste
+    - st_gumbel
+    - utility_targeted_ste
+    - hard_em_utility_ste
+    - expert_choice_imitation
+  locoprop_refit: [off, every_100, every_250, every_500]

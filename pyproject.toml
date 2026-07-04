@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cifar-mamba-fff"
+version = "0.1.0"
+description = "BF16 CIFAR-10 Fast Feedforward Network distillation from an official Mamba-3 teacher."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "catid" }]
+dependencies = [
+  "numpy",
+  "pandas",
+  "pyyaml",
+  "tqdm",
+  "rich",
+  "tabulate",
+  "packaging",
+  "filelock",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "ruff"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra"
+filterwarnings = [
+  "error::RuntimeWarning",
+]

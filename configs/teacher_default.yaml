@@ -1,0 +1,32 @@
+seed: 1337
+dataset:
+  name: cifar10
+  data_dir: data/cifar10
+  train_size: 45000
+  val_size: 5000
+  use_test: false
+model:
+  d_model: 224
+  depth: 18
+  patch_size: 2
+  d_state: 128
+  expand: 2
+  headdim: 64
+  is_mimo: true
+  mimo_rank: 4
+  bidirectional: false
+  drop_path: 0.1
+train:
+  epochs: 200
+  batch_size_per_gpu: 512
+  precision: bf16
+  optimizer: muon_adamw
+  schedule: cosine
+  warmup_epochs: 10
+  lr_muon: 0.02
+  lr_adamw: 0.001
+  weight_decay_muon: 0.03
+  weight_decay_adamw: 0.03
+  label_smoothing: 0.1
+  mixup: 0.2
+  cutmix: 1.0

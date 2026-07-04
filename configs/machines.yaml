@@ -1,0 +1,21 @@
+machines:
+  work:
+    host: localhost
+    workdir: /home/catid/fff
+    gpus: 2
+    role: local
+  ripper:
+    host: ripper
+    workdir: /home/catid/fffdistill
+    gpus: 4
+    role: remote
+  foureyes:
+    host: foureyes
+    workdir: /home/catid/fffdistill
+    gpus: 4
+    role: remote
+  ai:
+    host: ai
+    workdir: /home/catid/fffdistill
+    gpus: 2
+    role: remote

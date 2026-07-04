@@ -1,0 +1,24 @@
+study_name: teacher_hpo
+objective: val_accuracy
+direction: maximize
+max_trials: 120
+prune_on: val_accuracy
+search_space:
+  d_model: [160, 192, 224, 256, 288]
+  depth: [8, 12, 16, 20, 24]
+  patch_size: [2, 4]
+  d_state: [64, 128]
+  headdim: [32, 64]
+  is_mimo: [true]
+  mimo_rank: [2, 4]
+  bidirectional: [false, true]
+  drop_path: [0.0, 0.05, 0.1, 0.2]
+  label_smoothing: [0.0, 0.05, 0.1]
+  mixup: [0.0, 0.2, 0.4]
+  cutmix: [0.0, 0.5, 1.0]
+  lr_muon_loguniform: [0.003, 0.05]
+  lr_adamw_loguniform: [0.0001, 0.003]
+  weight_decay_muon: [0.0, 0.01, 0.03, 0.05]
+  weight_decay_adamw: [0.0, 0.01, 0.03, 0.05]
+  batch_size_per_gpu: [256, 512, 1024, 2048]
+  schedule: [cosine, wsd]
