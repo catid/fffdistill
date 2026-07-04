@@ -1,0 +1,5 @@
+family,trials,seed_count,seeds,mean_best_val_accuracy,std_best_val_accuracy,mean_train_steps,test_accessed,best_case,best_seed,best_val_accuracy,checkpoint_path
+no_balance_cosine,3,3,"21001,21002,21003",0.914800,0.004060,4218.000000,false,no_balance_cosine_seed21002,21002,0.918400,outputs/scheduler_finetune_hpo/stage_h_validation_full3ep_20260704_5b5e4e1/ai/0/trials/trial_000010_no_balance_cosine_seed21002/student_best.pt
+baseline_cosine,3,3,"21001,21002,21003",0.908000,0.001709,4218.000000,false,baseline_cosine_seed21003,21003,0.909800,outputs/scheduler_finetune_hpo/stage_h_validation_full3ep_20260704_5b5e4e1/ripper/0/trials/trial_000002_baseline_cosine_seed21003/student_best.pt
+wsd,3,3,"21001,21002,21003",0.903067,0.001301,4218.000000,false,wsd_seed21002,21002,0.904400,outputs/scheduler_finetune_hpo/stage_h_validation_full3ep_20260704_5b5e4e1/ripper/2/trials/trial_000004_wsd_seed21002/student_best.pt
+low_lr_cosine,3,3,"21001,21002,21003",0.889533,0.001724,4218.000000,false,low_lr_cosine_seed21002,21002,0.891400,outputs/scheduler_finetune_hpo/stage_h_validation_full3ep_20260704_5b5e4e1/foureyes/1/trials/trial_000007_low_lr_cosine_seed21002/student_best.pt
