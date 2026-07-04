@@ -294,6 +294,27 @@ def make_matched_low_rank_linear(
     return replacement
 
 
+def initialize_low_rank_from_linear_(replacement: LowRankLinear, linear: nn.Linear) -> None:
+    """Initialize ``replacement`` with the best rank-limited SVD approximation of ``linear``."""
+
+    _require_linear(linear)
+    if replacement.in_features != linear.in_features or replacement.out_features != linear.out_features:
+        raise ValueError("replacement and linear shapes must match")
+    if (replacement.bias is None) != (linear.bias is None):
+        raise ValueError("replacement and linear bias settings must match")
+    with torch.no_grad():
+        weight = linear.weight.detach().float()
+        u, singular_values, vh = torch.linalg.svd(weight, full_matrices=False)
+        rank = replacement.rank
+        sqrt_s = singular_values[:rank].sqrt()
+        output_weight = u[:, :rank] * sqrt_s.unsqueeze(0)
+        input_weight = sqrt_s.unsqueeze(1) * vh[:rank, :]
+        replacement.output_weight.copy_(output_weight.to(device=replacement.output_weight.device, dtype=replacement.output_weight.dtype))
+        replacement.input_weight.copy_(input_weight.to(device=replacement.input_weight.device, dtype=replacement.input_weight.dtype))
+        if replacement.bias is not None and linear.bias is not None:
+            replacement.bias.copy_(linear.bias.detach().to(device=replacement.bias.device, dtype=replacement.bias.dtype))
+
+
 def make_matched_smaller_dense_linear(
     linear: nn.Linear,
     *,
@@ -318,3 +339,22 @@ def make_matched_smaller_dense_linear(
     )
     replacement.train(linear.training)
     return replacement
+
+
+def initialize_smaller_dense_from_linear_(replacement: SmallerDenseLinear, linear: nn.Linear) -> None:
+    """Copy the prefix output rows from ``linear`` into ``replacement``."""
+
+    _require_linear(linear)
+    if replacement.in_features != linear.in_features or replacement.out_features != linear.out_features:
+        raise ValueError("replacement and linear shapes must match")
+    if (replacement.bias is None) != (linear.bias is None):
+        raise ValueError("replacement and linear bias settings must match")
+    active = replacement.active_out_features
+    with torch.no_grad():
+        replacement.weight.copy_(
+            linear.weight[:active].detach().to(device=replacement.weight.device, dtype=replacement.weight.dtype)
+        )
+        if replacement.bias is not None and linear.bias is not None:
+            replacement.bias.copy_(
+                linear.bias[:active].detach().to(device=replacement.bias.device, dtype=replacement.bias.dtype)
+            )

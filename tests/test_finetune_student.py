@@ -22,6 +22,7 @@ from cifar_mamba_fff.hpo.finetune_hpo import (
     run_finetune_trial_command,
     write_finetune_hpo_trial_plan,
 )
+from cifar_mamba_fff.models.baseline_linears import LowRankLinear, SmallerDenseLinear
 from cifar_mamba_fff.models.replacement import make_fff_replacement
 
 
@@ -102,6 +103,28 @@ def test_dense_copy_baseline_config_parses_validation_only_no_balance() -> None:
     assert config.losses.balance_recipe == "none"
 
 
+@pytest.mark.parametrize(
+    ("path", "source"),
+    [
+        ("configs/finetune_low_rank_baseline.yaml", "matched_low_rank"),
+        ("configs/finetune_smaller_dense_baseline.yaml", "matched_smaller_dense"),
+    ],
+)
+def test_matched_linear_baseline_yaml_parses_validation_only_no_balance(path: str, source: str) -> None:
+    config = load_finetune_run_config(path, quick_smoke=False)
+
+    assert config.teacher_checkpoint is not None
+    assert config.data.use_test is False
+    assert config.student.source == source
+    assert config.student.require_full_replacement is True
+    assert config.student.allow_matched_linear_baseline is True
+    assert config.student.baseline_budget_source == "fff_config"
+    assert config.student.distill_config == Path("configs/fff_distill_stage_f.yaml")
+    assert config.student.baseline_parameter_budget_fraction == pytest.approx(0.50)
+    assert config.losses.lambda_balance == pytest.approx(0.0)
+    assert config.losses.balance_recipe == "none"
+
+
 def test_dense_copy_build_path_copies_teacher_without_replacements() -> None:
     config = load_finetune_run_config("configs/finetune_dense_copy_baseline.yaml", quick_smoke=True)
     teacher = TinyConfigModel({"width": 64})
@@ -119,6 +142,148 @@ def test_dense_copy_build_path_copies_teacher_without_replacements() -> None:
     assert result.model is not teacher
     for name, value in teacher.state_dict().items():
         assert torch.equal(result.model.state_dict()[name], value)
+
+
+@pytest.mark.parametrize("source", ["matched_low_rank", "matched_smaller_dense"])
+def test_matched_linear_baseline_configs_parse(tmp_path: Path, source: str) -> None:
+    raw = _minimal_config(tmp_path)
+    raw["student"] = {
+        "source": source,
+        "min_in_features": 1,
+        "min_out_features": 1,
+        "allow_matched_linear_baseline": True,
+        "baseline_parameter_budget_fraction": 0.5,
+    }
+
+    config = parse_finetune_run_config(raw, quick_smoke=True)
+
+    assert config.student.source == source
+    assert config.student.allow_matched_linear_baseline is True
+    assert config.student.baseline_parameter_budget_fraction == pytest.approx(0.5)
+    assert config.data.use_test is False
+
+
+def test_matched_linear_baseline_requires_explicit_opt_in(tmp_path: Path) -> None:
+    raw = _minimal_config(tmp_path)
+    raw["student"] = {
+        "source": "matched_low_rank",
+        "min_in_features": 1,
+        "min_out_features": 1,
+    }
+
+    with pytest.raises(ValueError, match="allow_matched_linear_baseline"):
+        parse_finetune_run_config(raw, quick_smoke=True)
+
+
+def test_matched_low_rank_build_path_replaces_eligible_linears() -> None:
+    raw = _minimal_config(Path("/tmp"))
+    raw["student"] = {
+        "source": "matched_low_rank",
+        "min_in_features": 1,
+        "min_out_features": 1,
+        "allow_matched_linear_baseline": True,
+        "baseline_parameter_budget_fraction": 0.5,
+    }
+    config = parse_finetune_run_config(raw, quick_smoke=True)
+    teacher = TinyConfigModel({"width": 8})
+
+    result = build_student_model(
+        loaded_teacher_model=teacher,
+        config=config,
+        device=torch.device("cpu"),
+    )
+
+    assert result.source == "matched_low_rank"
+    assert result.replacement_count == 1
+    assert result.eligible_count == 1
+    assert isinstance(result.model.proj, LowRankLinear)
+    assert result.manifest[0].parameters <= 8 * 8 + 8
+    assert result.manifest[0].replacement_path.startswith("generated:matched_low_rank")
+    x = torch.randn(3, 8)
+    assert torch.isfinite(result.model(x)).all()
+
+
+def test_matched_linear_fff_config_budget_uses_reference_fff_parameter_count(tmp_path: Path) -> None:
+    distill_config = tmp_path / "fff_budget.yaml"
+    distill_config.write_text(
+        "\n".join(
+            [
+                "fff:",
+                "  depth: 1",
+                "  shared_rows: 0",
+                "  route_rows: 1",
+                "  leaf_rows: 1",
+                "  route_rows_contribute: false",
+                "  bias: true",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    raw = _minimal_config(tmp_path)
+    raw["student"] = {
+        "source": "matched_smaller_dense",
+        "distill_config": str(distill_config),
+        "min_in_features": 1,
+        "min_out_features": 1,
+        "allow_matched_linear_baseline": True,
+        "baseline_budget_source": "fff_config",
+        "baseline_parameter_budget_fraction": 1.0,
+    }
+    config = parse_finetune_run_config(raw, quick_smoke=True)
+    teacher = TinyConfigModel({"width": 8})
+    expected_budget = sum(
+        parameter.numel()
+        for parameter in make_fff_replacement(
+            teacher.proj,
+            config={
+                "depth": 1,
+                "shared_rows": 0,
+                "route_rows": 1,
+                "leaf_rows": 1,
+                "route_rows_contribute": False,
+                "bias": True,
+            },
+        ).parameters()
+    )
+
+    result = build_student_model(
+        loaded_teacher_model=teacher,
+        config=config,
+        device=torch.device("cpu"),
+    )
+
+    assert result.source == "matched_smaller_dense"
+    assert result.replacement_count == 1
+    assert result.manifest[0].parameters <= expected_budget
+    assert f"budget={expected_budget}" in result.manifest[0].replacement_path
+
+
+def test_matched_smaller_dense_full_budget_copies_teacher_prefix_exactly() -> None:
+    raw = _minimal_config(Path("/tmp"))
+    raw["student"] = {
+        "source": "matched_smaller_dense",
+        "min_in_features": 1,
+        "min_out_features": 1,
+        "allow_matched_linear_baseline": True,
+        "baseline_parameter_budget_fraction": 1.0,
+    }
+    config = parse_finetune_run_config(raw, quick_smoke=True)
+    teacher = TinyConfigModel({"width": 8})
+    x = torch.randn(4, 8)
+    expected = teacher(x)
+
+    result = build_student_model(
+        loaded_teacher_model=teacher,
+        config=config,
+        device=torch.device("cpu"),
+    )
+
+    assert result.source == "matched_smaller_dense"
+    assert result.replacement_count == 1
+    assert isinstance(result.model.proj, SmallerDenseLinear)
+    assert result.model.proj.active_out_features == 8
+    torch.testing.assert_close(result.model(x), expected)
 
 
 def test_finetune_config_rejects_unknown_keys_and_test_access(tmp_path: Path) -> None:

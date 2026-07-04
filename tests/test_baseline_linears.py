@@ -12,6 +12,8 @@ from cifar_mamba_fff.models.baseline_linears import (
     LowRankLinear,
     SmallerDenseLinear,
     dense_linear_parameter_count,
+    initialize_low_rank_from_linear_,
+    initialize_smaller_dense_from_linear_,
     linear_module_parameter_count,
     low_rank_linear_parameter_count,
     low_rank_rank_for_parameter_budget,
@@ -88,6 +90,16 @@ def test_low_rank_linear_forward_matches_two_linear_factors() -> None:
     torch.testing.assert_close(module(x), expected)
 
 
+def test_low_rank_svd_initialization_matches_full_rank_linear() -> None:
+    linear = nn.Linear(3, 2, bias=True)
+    replacement = LowRankLinear(3, 2, rank=2, bias=True)
+    x = torch.randn(5, 3)
+
+    initialize_low_rank_from_linear_(replacement, linear)
+
+    torch.testing.assert_close(replacement(x), linear(x), atol=1e-5, rtol=1e-5)
+
+
 def test_smaller_dense_linear_preserves_shape_and_pads_inactive_outputs() -> None:
     module = SmallerDenseLinear(3, 5, 2, bias=True)
     with torch.no_grad():
@@ -103,6 +115,19 @@ def test_smaller_dense_linear_preserves_shape_and_pads_inactive_outputs() -> Non
     torch.testing.assert_close(y[:, 2:], torch.zeros(4, 3))
     assert module.parameter_count() == 8
     assert linear_module_parameter_count(module) == module.parameter_count()
+
+
+def test_smaller_dense_initialization_copies_prefix_rows() -> None:
+    linear = nn.Linear(3, 5, bias=True)
+    replacement = SmallerDenseLinear(3, 5, active_out_features=2, bias=True)
+    x = torch.randn(4, 3)
+
+    initialize_smaller_dense_from_linear_(replacement, linear)
+    y = replacement(x)
+    expected = linear(x)
+
+    torch.testing.assert_close(y[:, :2], expected[:, :2])
+    torch.testing.assert_close(y[:, 2:], torch.zeros_like(y[:, 2:]))
 
 
 def test_smaller_dense_linear_full_active_rows_matches_dense_shape() -> None:

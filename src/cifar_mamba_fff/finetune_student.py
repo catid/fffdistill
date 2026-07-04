@@ -20,10 +20,19 @@ from .data import Cifar10DataConfig, build_cifar10_loaders
 from .distill_linears import load_teacher_for_distillation
 from .losses.balance import min_leaf_occupancy_loss, split_balance_loss, uniform_leaf_balance_loss
 from .metrics import accuracy, normalized_mse
+from .models.baseline_linears import (
+    LowRankLinear,
+    SmallerDenseLinear,
+    initialize_low_rank_from_linear_,
+    initialize_smaller_dense_from_linear_,
+    make_matched_low_rank_linear,
+    make_matched_smaller_dense_linear,
+)
 from .models.fff_linear import FFFLinear
 from .models.replacement import (
     discover_linear_layers,
     get_module,
+    linear_parameter_count,
     make_fff_replacement,
     replace_module,
 )
@@ -120,18 +129,40 @@ class StudentAssemblyConfig:
     min_out_features: int = 64
     require_full_replacement: bool = True
     allow_dense_copy: bool = False
+    baseline_parameter_budget_fraction: float = 0.25
+    baseline_budget_source: str = "dense_fraction"
+    allow_matched_linear_baseline: bool = False
 
     def validate(self, *, quick_smoke: bool) -> None:
-        if self.source not in {"distill_artifacts", "student_checkpoint", "dense_copy"}:
-            raise ValueError("student.source must be one of: distill_artifacts, student_checkpoint, dense_copy")
+        valid_sources = {
+            "distill_artifacts",
+            "student_checkpoint",
+            "dense_copy",
+            "matched_low_rank",
+            "matched_smaller_dense",
+        }
+        if self.source not in valid_sources:
+            raise ValueError("student.source must be one of: " + ", ".join(sorted(valid_sources)))
         _positive_int("student.min_in_features", self.min_in_features)
         _positive_int("student.min_out_features", self.min_out_features)
+        if (
+            not math.isfinite(float(self.baseline_parameter_budget_fraction))
+            or self.baseline_parameter_budget_fraction <= 0.0
+            or self.baseline_parameter_budget_fraction > 1.0
+        ):
+            raise ValueError("student.baseline_parameter_budget_fraction must be in (0, 1]")
+        if self.baseline_budget_source not in {"dense_fraction", "fff_config"}:
+            raise ValueError("student.baseline_budget_source must be one of: dense_fraction, fff_config")
         if self.source == "distill_artifacts" and not quick_smoke and self.distill_artifact_root is None:
             raise ValueError("student.distill_artifact_root is required for distill_artifacts")
         if self.source == "student_checkpoint" and not quick_smoke and self.student_checkpoint is None:
             raise ValueError("student.student_checkpoint is required for student_checkpoint")
         if self.source == "dense_copy" and not self.allow_dense_copy:
             raise ValueError("student.allow_dense_copy must be true to run dense-copy sanity fine-tuning")
+        if self.source in {"matched_low_rank", "matched_smaller_dense"} and not self.allow_matched_linear_baseline:
+            raise ValueError(
+                "student.allow_matched_linear_baseline must be true to run matched Linear baselines"
+            )
 
 
 @dataclass(frozen=True)
@@ -611,10 +642,97 @@ def load_student_checkpoint(model: nn.Module, checkpoint_path: Path) -> StudentA
     return StudentAssemblyResult(
         model=model,
         source="student_checkpoint",
-        replacement_count=sum(1 for module in model.modules() if isinstance(module, FFFLinear)),
+        replacement_count=sum(
+            1
+            for module in model.modules()
+            if isinstance(module, (FFFLinear, LowRankLinear, SmallerDenseLinear))
+        ),
         eligible_count=sum(1 for report in discover_linear_layers(model) if report.included),
         manifest=manifest,
         checkpoint_path=checkpoint_path,
+    )
+
+
+def _load_fff_budget_config(distill_config_path: Path) -> dict[str, object]:
+    distill_config = load_yaml(distill_config_path)
+    raw_fff = _expect_mapping(distill_config.get("fff", {}), "distill_config.fff")
+    return dict(raw_fff)
+
+
+def _matched_baseline_parameter_budget(
+    original: nn.Linear,
+    *,
+    parameter_budget_fraction: float,
+    budget_source: str,
+    fff_config: Mapping[str, object] | None,
+) -> int:
+    if budget_source == "dense_fraction":
+        return max(1, math.floor(linear_parameter_count(original) * parameter_budget_fraction))
+    if budget_source == "fff_config":
+        if fff_config is None:
+            raise ValueError("fff_config budget source requires distill_config.fff")
+        reference = make_fff_replacement(original, config=fff_config)
+        return max(1, sum(parameter.numel() for parameter in reference.parameters()))
+    raise ValueError("baseline budget source must be dense_fraction or fff_config")
+
+
+def assemble_matched_linear_baseline_student(
+    model: nn.Module,
+    *,
+    source: str,
+    min_in_features: int,
+    min_out_features: int,
+    parameter_budget_fraction: float,
+    budget_source: str,
+    distill_config_path: Path,
+) -> StudentAssemblyResult:
+    if source not in {"matched_low_rank", "matched_smaller_dense"}:
+        raise ValueError("source must be matched_low_rank or matched_smaller_dense")
+    fff_config = _load_fff_budget_config(distill_config_path) if budget_source == "fff_config" else None
+    reports = discover_linear_layers(
+        model,
+        min_in_features=min_in_features,
+        min_out_features=min_out_features,
+    )
+    eligible = [report for report in reports if report.included]
+    manifest: list[AssemblyRecord] = []
+    for report in eligible:
+        original = get_module(model, report.name)
+        if not isinstance(original, nn.Linear):
+            raise TypeError(f"{report.name!r} is {type(original).__name__}, not nn.Linear")
+        parameter_budget = _matched_baseline_parameter_budget(
+            original,
+            parameter_budget_fraction=parameter_budget_fraction,
+            budget_source=budget_source,
+            fff_config=fff_config,
+        )
+        if source == "matched_low_rank":
+            replacement = make_matched_low_rank_linear(original, parameter_budget=parameter_budget)
+            initialize_low_rank_from_linear_(replacement, original)
+        else:
+            replacement = make_matched_smaller_dense_linear(original, parameter_budget=parameter_budget)
+            initialize_smaller_dense_from_linear_(replacement, original)
+        replace_module(model, report.name, replacement)
+        manifest.append(
+            AssemblyRecord(
+                name=report.name,
+                replacement_path=(
+                    f"generated:{source}:budget_source={budget_source}:budget={parameter_budget}:"
+                    f"budget_fraction={parameter_budget_fraction:.6g}"
+                ),
+                in_features=report.in_features,
+                out_features=report.out_features,
+                parameters=sum(parameter.numel() for parameter in replacement.parameters()),
+                final_normalized_mse=None,
+                final_cosine_similarity=None,
+            )
+        )
+    return StudentAssemblyResult(
+        model=model,
+        source=source,
+        replacement_count=len(manifest),
+        eligible_count=len(eligible),
+        manifest=manifest,
     )
 
 
@@ -645,6 +763,16 @@ def build_student_model(
         if config.student.student_checkpoint is None:
             raise RuntimeError("student checkpoint source selected without a checkpoint path")
         return load_student_checkpoint(student, config.student.student_checkpoint)
+    if config.student.source in {"matched_low_rank", "matched_smaller_dense"}:
+        return assemble_matched_linear_baseline_student(
+            student,
+            source=config.student.source,
+            min_in_features=config.student.min_in_features,
+            min_out_features=config.student.min_out_features,
+            parameter_budget_fraction=config.student.baseline_parameter_budget_fraction,
+            budget_source=config.student.baseline_budget_source,
+            distill_config_path=config.student.distill_config,
+        )
     if config.student.distill_artifact_root is None:
         raise RuntimeError("distill artifact source selected without artifact root")
     return assemble_fff_student_from_artifacts(
