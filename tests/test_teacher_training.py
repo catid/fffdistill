@@ -30,6 +30,14 @@ from cifar_mamba_fff.train_teacher import (
 )
 
 
+def _patch_cuda_training_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(train_teacher.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(train_teacher.torch.cuda, "reset_peak_memory_stats", lambda device=None: None)
+    monkeypatch.setattr(train_teacher.torch.cuda, "synchronize", lambda device=None: None)
+    monkeypatch.setattr(train_teacher.torch.cuda, "max_memory_allocated", lambda device=None: 123)
+    monkeypatch.setattr(train_teacher.torch.cuda, "max_memory_reserved", lambda device=None: 456)
+
+
 def test_default_teacher_config_parses_strict_sections() -> None:
     run_config = load_teacher_run_config("configs/teacher_default.yaml", quick_smoke=True)
 
@@ -40,7 +48,12 @@ def test_default_teacher_config_parses_strict_sections() -> None:
     assert run_config.data.batch_size == run_config.train.batch_size_per_gpu
     assert run_config.train.optimizer == "muon_adamw"
     assert run_config.train.precision == "bf16"
-    assert run_config.model.d_model == 224
+    assert run_config.model.d_model == 256
+    assert run_config.model.depth == 20
+    assert run_config.model.patch_size == 4
+    assert run_config.model.d_state == 64
+    assert run_config.model.headdim == 64
+    assert run_config.model.mimo_rank == 2
 
 
 def test_teacher_config_rejects_unknown_keys_and_test_access() -> None:
@@ -307,6 +320,164 @@ def test_hpo_runner_records_pruned_failed_and_successful_trials(
     assert "trial_pruned" in events
 
 
+def test_hpo_runner_fails_when_no_valid_candidates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_config = tmp_path / "teacher.yaml"
+    hpo_config = tmp_path / "hpo.yaml"
+    base_config.write_text(Path("configs/teacher_default.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+    hpo_config.write_text("prune_on: val_accuracy\nsearch_space:\n  d_model: [160]\n", encoding="utf-8")
+    monkeypatch.setattr(teacher_hpo, "sample_teacher_overrides", lambda _search_space, *, rng: {"d_model": 160})
+    monkeypatch.setattr(
+        teacher_hpo,
+        "evaluate_teacher_candidate",
+        lambda config: TeacherCandidateResult(False, 8_999_999, "outside target parameter range"),
+    )
+
+    with pytest.raises(RuntimeError, match="zero valid candidates"):
+        run_teacher_hpo(
+            base_config_path=base_config,
+            hpo_config_path=hpo_config,
+            output_dir=tmp_path / "hpo",
+            quick_smoke=True,
+            max_trials=1,
+            max_attempts=1,
+            training_fn=lambda *args, **kwargs: pytest.fail("training should not run"),
+        )
+
+    summary = json.loads((tmp_path / "hpo" / "teacher_hpo_summary.json").read_text(encoding="utf-8"))
+    assert summary["status"] == "failed_zero_candidates"
+    assert summary["accepted_trials"] == 0
+
+
+def test_hpo_runner_fails_when_no_trials_succeed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_config = tmp_path / "teacher.yaml"
+    hpo_config = tmp_path / "hpo.yaml"
+    base_config.write_text(Path("configs/teacher_default.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+    hpo_config.write_text("prune_on: val_accuracy\nsearch_space:\n  d_model: [224]\n", encoding="utf-8")
+    monkeypatch.setattr(teacher_hpo, "sample_teacher_overrides", lambda _search_space, *, rng: {"d_model": 224})
+    monkeypatch.setattr(
+        teacher_hpo,
+        "evaluate_teacher_candidate",
+        lambda config: TeacherCandidateResult(True, 10_000_000, "accepted"),
+    )
+
+    def failing_training_fn(*args, **kwargs):
+        raise RuntimeError("synthetic logic failure")
+
+    with pytest.raises(RuntimeError, match="zero successful trials"):
+        run_teacher_hpo(
+            base_config_path=base_config,
+            hpo_config_path=hpo_config,
+            output_dir=tmp_path / "hpo",
+            quick_smoke=True,
+            max_trials=1,
+            max_attempts=1,
+            training_fn=failing_training_fn,
+        )
+
+    summary = json.loads((tmp_path / "hpo" / "teacher_hpo_summary.json").read_text(encoding="utf-8"))
+    assert summary["status"] == "failed_zero_successes"
+    assert summary["failed_logic"] == 1
+    assert summary["succeeded"] == 0
+
+
+def test_hpo_runner_classifies_oom_and_cleans_cache_before_next_trial(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_config = tmp_path / "teacher.yaml"
+    hpo_config = tmp_path / "hpo.yaml"
+    base_config.write_text(Path("configs/teacher_default.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+    hpo_config.write_text("prune_on: val_accuracy\nsearch_space:\n  d_model: [224]\n", encoding="utf-8")
+    sampled = iter([{"d_model": 224}, {"d_model": 224}])
+    cleanup_calls: list[str] = []
+    monkeypatch.setattr(teacher_hpo, "sample_teacher_overrides", lambda _search_space, *, rng: next(sampled))
+    monkeypatch.setattr(
+        teacher_hpo,
+        "evaluate_teacher_candidate",
+        lambda config: TeacherCandidateResult(True, 10_000_000, "accepted"),
+    )
+    monkeypatch.setattr(teacher_hpo.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(teacher_hpo.torch.cuda, "empty_cache", lambda: cleanup_calls.append("empty_cache"))
+    monkeypatch.setattr(teacher_hpo.torch.cuda, "ipc_collect", lambda: cleanup_calls.append("ipc_collect"))
+
+    def training_fn(run_config, *, output_dir, **kwargs):
+        del run_config, kwargs
+        trial_index = int(output_dir.name.rsplit("_", maxsplit=1)[1])
+        if trial_index == 0:
+            raise torch.cuda.OutOfMemoryError("CUDA out of memory. synthetic")
+        return {"best_val_accuracy": 0.8, "train_steps_total": 1}
+
+    summary = run_teacher_hpo(
+        base_config_path=base_config,
+        hpo_config_path=hpo_config,
+        output_dir=tmp_path / "hpo",
+        quick_smoke=True,
+        max_trials=2,
+        max_attempts=2,
+        training_fn=training_fn,
+    )
+
+    assert summary["status"] == "completed"
+    assert summary["failed_oom"] == 1
+    assert summary["succeeded"] == 1
+    assert cleanup_calls == ["empty_cache", "ipc_collect"]
+    statuses = [
+        json.loads((tmp_path / "hpo" / "trials" / f"trial_{index:06d}" / "trial_summary.json").read_text(encoding="utf-8"))["status"]
+        for index in range(2)
+    ]
+    assert statuses == ["failed_oom", "succeeded"]
+
+
+def test_hpo_seed_override_controls_sampling_and_trial_run_seeds(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_config = tmp_path / "teacher.yaml"
+    hpo_config = tmp_path / "hpo.yaml"
+    base_config.write_text(Path("configs/teacher_default.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+    hpo_config.write_text("prune_on: val_accuracy\nsearch_space:\n  d_model: [224]\n", encoding="utf-8")
+    rng_values: list[float] = []
+    run_seeds: list[tuple[int, int, int]] = []
+
+    def fake_sample(_search_space, *, rng):
+        rng_values.append(rng.random())
+        return {"d_model": 224}
+
+    def training_fn(run_config, **kwargs):
+        del kwargs
+        run_seeds.append((run_config.seed, run_config.data.seed, run_config.data.split_seed))
+        return {"best_val_accuracy": 0.7, "train_steps_total": 1}
+
+    monkeypatch.setattr(teacher_hpo, "sample_teacher_overrides", fake_sample)
+    monkeypatch.setattr(
+        teacher_hpo,
+        "evaluate_teacher_candidate",
+        lambda config: TeacherCandidateResult(True, 10_000_000, "accepted"),
+    )
+
+    summary = run_teacher_hpo(
+        base_config_path=base_config,
+        hpo_config_path=hpo_config,
+        output_dir=tmp_path / "hpo",
+        quick_smoke=True,
+        max_trials=2,
+        max_attempts=2,
+        seed=9001,
+        training_fn=training_fn,
+    )
+
+    expected_rng = teacher_hpo.random.Random(9001)
+    assert rng_values == [expected_rng.random(), expected_rng.random()]
+    assert run_seeds == [(9001, 9001, 1337), (9002, 9002, 1337)]
+    assert summary["seed"] == 9001
+
+
 def test_scheduler_supports_cosine_and_wsd() -> None:
     parameter = torch.nn.Parameter(torch.ones(1))
     optimizer = torch.optim.SGD([parameter], lr=1.0)
@@ -349,6 +520,8 @@ def test_metadata_smoke_writes_resolved_config_without_touching_data(tmp_path: P
             "metadata",
             "--output-dir",
             str(output_dir),
+            "--seed",
+            "9001",
         ],
         check=False,
         capture_output=True,
@@ -359,7 +532,11 @@ def test_metadata_smoke_writes_resolved_config_without_touching_data(tmp_path: P
     assert completed.returncode == 0, completed.stderr
     payload = json.loads((output_dir / "run_context.json").read_text(encoding="utf-8"))
     assert payload["quick_smoke"] is True
+    assert payload["seed"] == 9001
     assert payload["smoke_mode"] == "metadata"
+    assert payload["resolved_config"]["seed"] == 9001
+    assert payload["resolved_config"]["data"]["seed"] == 9001
+    assert payload["resolved_config"]["data"]["split_seed"] == 1337
     assert payload["resolved_config"]["data"]["use_test"] is False
     assert payload["resolved_config"]["model"]["target_min_params"] == 9_000_000
 
@@ -402,7 +579,7 @@ def test_run_context_and_training_metrics_output_shape(
         smoke_mode="train",
     )
 
-    monkeypatch.setattr(train_teacher.torch.cuda, "is_available", lambda: True)
+    _patch_cuda_training_runtime(monkeypatch)
     monkeypatch.setattr(train_teacher, "seed_everything", lambda seed: seed_calls.append(seed))
     monkeypatch.setattr(train_teacher, "build_cifar10_loaders", lambda config: ([object()], [object()]))
     monkeypatch.setattr(
@@ -432,6 +609,7 @@ def test_run_context_and_training_metrics_output_shape(
         train_teacher,
         "_train_one_step",
         lambda model, batch, optimizer, scheduler, run_config, device: {
+            "train_batch_size": 2.0,
             "train_loss": 2.3,
             "train_accuracy_hard_labels": 0.125,
             "lr_muon": 0.02,
@@ -477,6 +655,10 @@ def test_run_context_and_training_metrics_output_shape(
         "epoch",
         "parameter_count",
         "train_steps_total",
+        "train_images_seen",
+        "epoch_train_images_seen",
+        "epoch_train_elapsed_seconds",
+        "epoch_train_images_per_second",
         "epoch_seconds",
         "train_loss",
         "train_accuracy_hard_labels",
@@ -489,13 +671,25 @@ def test_run_context_and_training_metrics_output_shape(
     assert metrics["phase"] == "teacher_train"
     assert metrics["parameter_count"] == 10_000_000
     assert metrics["train_steps_total"] == 1
+    assert metrics["train_images_seen"] == 2
+    assert metrics["epoch_train_images_seen"] == 2
+    assert metrics["epoch_train_elapsed_seconds"] > 0.0
+    assert metrics["epoch_train_images_per_second"] > 0.0
     assert metrics["val_accuracy"] == pytest.approx(0.25)
 
     assert summary["parameter_count"] == 10_000_000
     assert summary["best_val_accuracy"] == pytest.approx(0.25)
     assert summary["metrics_path"] == str(output_dir / "metrics.jsonl")
+    assert summary["batch_size_per_gpu"] == 2
+    assert summary["train_images_seen"] == 2
+    assert summary["train_images_per_second"] > 0.0
+    assert summary["train_elapsed_seconds"] > 0.0
+    assert summary["train_images_per_second_train_only"] > 0.0
+    assert "peak_cuda_memory_allocated_bytes" in summary
+    assert "peak_cuda_memory_reserved_bytes" in summary
     summary_payload = json.loads((output_dir / "metrics_summary.json").read_text(encoding="utf-8"))
     assert summary_payload["quick_smoke"] is True
+    assert summary_payload["train_images_seen"] == 2
     assert seed_calls[0] == run_config.seed
 
     with pytest.raises(FileExistsError, match="metrics"):
@@ -539,7 +733,7 @@ def test_teacher_checkpoint_is_best_only_and_uses_atomic_helper(
     val_accuracies = iter([0.5, 0.4])
     save_calls: list[tuple[Path, dict[str, object]]] = []
 
-    monkeypatch.setattr(train_teacher.torch.cuda, "is_available", lambda: True)
+    _patch_cuda_training_runtime(monkeypatch)
     monkeypatch.setattr(train_teacher, "seed_everything", lambda seed: None)
     monkeypatch.setattr(train_teacher, "build_cifar10_loaders", lambda config: ([object()], [object()]))
     monkeypatch.setattr(
@@ -569,6 +763,7 @@ def test_teacher_checkpoint_is_best_only_and_uses_atomic_helper(
         train_teacher,
         "_train_one_step",
         lambda model, batch, optimizer, scheduler, run_config, device: {
+            "train_batch_size": 2.0,
             "train_loss": 2.3,
             "train_accuracy_hard_labels": 0.125,
             "lr_muon": 0.02,

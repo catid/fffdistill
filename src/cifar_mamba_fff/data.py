@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import pickle
 from dataclasses import dataclass
 from math import isfinite
 from pathlib import Path
+from typing import Any
 
+import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset, Subset
+from torchvision.datasets import CIFAR10
+from torchvision.datasets.utils import check_integrity
 
 CIFAR10_TRAIN_SIZE = 50_000
 CIFAR10_TEST_SIZE = 10_000
@@ -123,6 +128,68 @@ def _train_transform(config: Cifar10DataConfig, transforms):
     return transforms.Compose(train_transforms)
 
 
+class Cifar10TrainOnly(Dataset):
+    base_folder = "cifar-10-batches-py"
+    train_list = CIFAR10.train_list
+    meta = CIFAR10.meta
+
+    def __init__(
+        self,
+        *,
+        root: str | Path,
+        transform: object | None = None,
+        target_transform: object | None = None,
+    ) -> None:
+        self.root = Path(root)
+        self.transform = transform
+        self.target_transform = target_transform
+        self.classes = self._load_classes()
+        self.class_to_idx = {name: idx for idx, name in enumerate(self.classes)}
+        data: list[np.ndarray] = []
+        targets: list[int] = []
+        for file_name, _checksum in self.train_list:
+            file_path = self.root / self.base_folder / file_name
+            with file_path.open("rb") as handle:
+                entry = pickle.load(handle, encoding="latin1")
+            data.append(entry["data"])
+            targets.extend(entry["labels"])
+        self.data = np.vstack(data).reshape(-1, 3, 32, 32).transpose((0, 2, 3, 1))
+        self.targets = targets
+
+    @classmethod
+    def train_files_ready(cls, root: str | Path) -> bool:
+        root = Path(root)
+        for file_name, md5 in cls.train_list:
+            if not check_integrity(str(root / cls.base_folder / file_name), md5):
+                return False
+        meta_path = root / cls.base_folder / str(cls.meta["filename"])
+        meta_md5 = cls.meta["md5"]
+        return check_integrity(str(meta_path), str(meta_md5) if meta_md5 is not None else None)
+
+    def _load_classes(self) -> list[str]:
+        meta_path = self.root / self.base_folder / str(self.meta["filename"])
+        with meta_path.open("rb") as handle:
+            data: dict[str, Any] = pickle.load(handle, encoding="latin1")
+        classes = data[self.meta["key"]]
+        if not isinstance(classes, list):
+            raise ValueError("CIFAR-10 metadata label_names must be a list")
+        return [str(name) for name in classes]
+
+    def __len__(self) -> int:
+        return len(self.data)
+
+    def __getitem__(self, index: int) -> tuple[object, int]:
+        from PIL import Image
+
+        image = Image.fromarray(self.data[index])
+        target = int(self.targets[index])
+        if self.transform is not None:
+            image = self.transform(image)
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+        return image, target
+
+
 def _split_train_val_indices(
     dataset_size: int,
     *,
@@ -147,17 +214,18 @@ def _validate_cifar_size(name: str, dataset: Dataset, expected_size: int) -> Non
 
 def build_cifar10_datasets(config: Cifar10DataConfig) -> tuple[Dataset, Dataset]:
     config.validate()
-    datasets, transforms = _import_torchvision()
-    full_train = datasets.CIFAR10(
-        root=str(config.data_dir),
-        train=True,
-        download=_download_enabled(config),
+    _datasets, transforms = _import_torchvision()
+    if not Cifar10TrainOnly.train_files_ready(config.data_dir):
+        raise RuntimeError(
+            "CIFAR-10 train files are not ready. Run scripts/prepare_cifar10.py; "
+            "the train/val pipeline intentionally does not touch CIFAR-10 test_batch."
+        )
+    full_train = Cifar10TrainOnly(
+        root=config.data_dir,
         transform=_train_transform(config, transforms),
     )
-    full_eval = datasets.CIFAR10(
-        root=str(config.data_dir),
-        train=True,
-        download=False,
+    full_eval = Cifar10TrainOnly(
+        root=config.data_dir,
         transform=_eval_transform(transforms),
     )
     _validate_cifar_size("CIFAR-10 train split source", full_train, CIFAR10_TRAIN_SIZE)

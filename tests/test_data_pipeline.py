@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import pickle
+from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
 
+import numpy as np
 import pytest
 from torch.utils.data import Dataset
 
@@ -51,14 +54,16 @@ class _FakeCIFAR10(Dataset):
         self,
         *,
         root: str,
-        train: bool,
-        download: bool,
-        transform: object,
+        train: bool = True,
+        download: bool = False,
+        transform: object | None = None,
+        target_transform: object | None = None,
     ) -> None:
         self.root = root
         self.train = train
         self.download = download
         self.transform = transform
+        self.target_transform = target_transform
         self.size = data.CIFAR10_TRAIN_SIZE if train else data.CIFAR10_TEST_SIZE
         self.calls.append(self)
 
@@ -67,6 +72,11 @@ class _FakeCIFAR10(Dataset):
 
     def __getitem__(self, index: int) -> tuple[int, int]:
         return index, index % 10
+
+    @classmethod
+    def train_files_ready(cls, root: str) -> bool:
+        del root
+        return True
 
 
 @pytest.fixture()
@@ -81,6 +91,7 @@ def fake_torchvision(monkeypatch: pytest.MonkeyPatch) -> type[_FakeCIFAR10]:
         ToTensor=_ToTensor,
     )
     monkeypatch.setattr(data, "_import_torchvision", lambda: (datasets, transforms))
+    monkeypatch.setattr(data, "Cifar10TrainOnly", _FakeCIFAR10)
     return _FakeCIFAR10
 
 
@@ -161,6 +172,67 @@ def test_quick_smoke_uses_small_splits_and_disables_download(
     assert len(val_set) == 8
     assert train_loader.drop_last is False
     assert all(call.download is False for call in fake_torchvision.calls)
+
+
+def test_missing_train_files_raise_prepare_error(
+    fake_torchvision,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _MissingTrainFiles(_FakeCIFAR10):
+        @classmethod
+        def train_files_ready(cls, root: str) -> bool:
+            del root
+            return False
+
+    monkeypatch.setattr(data, "Cifar10TrainOnly", _MissingTrainFiles)
+
+    with pytest.raises(RuntimeError, match=r"prepare_cifar10\.py"):
+        data.build_cifar10_datasets(data.Cifar10DataConfig(data_dir=tmp_path, download=False))
+
+
+def test_train_only_reader_uses_train_files_without_test_batch(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path
+    batch_dir = root / data.Cifar10TrainOnly.base_folder
+    batch_dir.mkdir(parents=True)
+    batch_file = batch_dir / "data_batch_1"
+    meta_file = batch_dir / "batches.meta"
+    with batch_file.open("wb") as handle:
+        pickle.dump(
+            {
+                "data": np.arange(2 * 3 * 32 * 32, dtype=np.uint8).reshape(2, -1),
+                "labels": [3, 7],
+            },
+            handle,
+        )
+    with meta_file.open("wb") as handle:
+        pickle.dump({"label_names": [str(index) for index in range(10)]}, handle)
+
+    checked_paths: list[str] = []
+
+    def fake_check_integrity(path: str, md5: str | None = None) -> bool:
+        del md5
+        assert "test_batch" not in path
+        checked_paths.append(path)
+        return Path(path).exists()
+
+    monkeypatch.setattr(data.Cifar10TrainOnly, "train_list", [("data_batch_1", None)])
+    monkeypatch.setattr(
+        data.Cifar10TrainOnly,
+        "meta",
+        {"filename": "batches.meta", "key": "label_names", "md5": None},
+    )
+    monkeypatch.setattr(data, "check_integrity", fake_check_integrity)
+
+    assert data.Cifar10TrainOnly.train_files_ready(root) is True
+    dataset = data.Cifar10TrainOnly(root=root)
+
+    image, target = dataset[1]
+
+    assert len(dataset) == 2
+    assert target == 7
+    assert image.size == (32, 32)
+    assert checked_paths == [str(batch_file), str(meta_file)]
 
 
 def test_test_dataset_requires_explicit_use_test_and_stays_unaugmented(

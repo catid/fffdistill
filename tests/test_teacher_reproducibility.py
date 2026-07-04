@@ -15,6 +15,14 @@ from cifar_mamba_fff.models.mamba3_cifar import Mamba3CifarConfig
 from cifar_mamba_fff.train_teacher import TeacherRunConfig, TeacherTrainConfig
 
 
+def _patch_cuda_training_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(train_teacher.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(train_teacher.torch.cuda, "reset_peak_memory_stats", lambda device=None: None)
+    monkeypatch.setattr(train_teacher.torch.cuda, "synchronize", lambda device=None: None)
+    monkeypatch.setattr(train_teacher.torch.cuda, "max_memory_allocated", lambda device=None: 123)
+    monkeypatch.setattr(train_teacher.torch.cuda, "max_memory_reserved", lambda device=None: 456)
+
+
 class _Transform:
     def __init__(self, *args: object, **kwargs: object) -> None:
         self.args = args
@@ -41,14 +49,16 @@ class _FakeCIFAR10(Dataset):
         self,
         *,
         root: str,
-        train: bool,
-        download: bool,
-        transform: object,
+        train: bool = True,
+        download: bool = False,
+        transform: object | None = None,
+        target_transform: object | None = None,
     ) -> None:
         self.root = root
         self.train = train
         self.download = download
         self.transform = transform
+        self.target_transform = target_transform
         self.size = data.CIFAR10_TRAIN_SIZE if train else data.CIFAR10_TEST_SIZE
         self.calls.append(self)
 
@@ -57,6 +67,11 @@ class _FakeCIFAR10(Dataset):
 
     def __getitem__(self, index: int) -> tuple[int, int]:
         return index, index % 10
+
+    @classmethod
+    def train_files_ready(cls, root: str) -> bool:
+        del root
+        return True
 
 
 @pytest.fixture()
@@ -71,6 +86,7 @@ def fake_torchvision(monkeypatch: pytest.MonkeyPatch) -> None:
         ToTensor=_Transform,
     )
     monkeypatch.setattr(data, "_import_torchvision", lambda: (datasets, transforms))
+    monkeypatch.setattr(data, "Cifar10TrainOnly", _FakeCIFAR10)
 
 
 def _split_indices(config: Cifar10DataConfig) -> tuple[list[int], list[int]]:
@@ -193,7 +209,7 @@ def test_run_teacher_training_saves_checkpoint_only_for_strictly_best_validation
     checkpoint_calls: list[tuple[Path, float, int]] = []
     val_accuracies = iter([0.20, 0.20, 0.30])
 
-    monkeypatch.setattr(train_teacher.torch.cuda, "is_available", lambda: True)
+    _patch_cuda_training_runtime(monkeypatch)
     monkeypatch.setattr(train_teacher, "build_cifar10_loaders", lambda config: ([object()], [object()]))
     monkeypatch.setattr(
         train_teacher,
@@ -222,6 +238,7 @@ def test_run_teacher_training_saves_checkpoint_only_for_strictly_best_validation
         train_teacher,
         "_train_one_step",
         lambda model, batch, optimizer, scheduler, run_config, device: {
+            "train_batch_size": 2.0,
             "train_loss": 2.3,
             "train_accuracy_hard_labels": 0.125,
             "lr_muon": 0.02,

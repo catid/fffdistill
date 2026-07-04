@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass, is_dataclass, replace
 from pathlib import Path
 from typing import Any
 
+import torch
 from filelock import FileLock
 
 from cifar_mamba_fff.models.mamba3_cifar import Mamba3CifarConfig
@@ -33,6 +34,50 @@ class HpoCandidate:
 
 class HpoTrialPruned(RuntimeError):
     pass
+
+
+def _resolve_hpo_seed(
+    hpo_config: Mapping[str, object],
+    *,
+    base_seed: int,
+    seed_override: int | None,
+) -> int:
+    seed = base_seed if seed_override is None else seed_override
+    if seed_override is None and "seed" in hpo_config:
+        seed = int(hpo_config["seed"])
+    if isinstance(seed, bool) or seed < 0:
+        raise ValueError("HPO seed must be a non-negative integer")
+    return int(seed)
+
+
+def _with_run_seed(base_run: TeacherRunConfig, seed: int) -> TeacherRunConfig:
+    return replace(base_run, seed=seed, data=replace(base_run.data, seed=seed))
+
+
+def _is_cuda_oom(exc: BaseException) -> bool:
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, torch.cuda.OutOfMemoryError):
+            return True
+        message = str(current).lower()
+        if isinstance(current, RuntimeError) and "cuda" in message and "out of memory" in message:
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _cleanup_cuda_after_oom() -> None:
+    try:
+        if not torch.cuda.is_available():
+            return
+        torch.cuda.empty_cache()
+        ipc_collect = getattr(torch.cuda, "ipc_collect", None)
+        if callable(ipc_collect):
+            ipc_collect()
+    except Exception:
+        return
 
 
 def _expect_mapping(value: object, section: str) -> Mapping[str, object]:
@@ -202,11 +247,13 @@ def write_candidate_filter_smoke(
     output_dir: Path,
     quick_smoke: bool,
     max_candidates: int,
+    seed: int | None = None,
 ) -> dict[str, object]:
     base_run = load_teacher_run_config(base_config_path, quick_smoke=quick_smoke)
     hpo_config = load_yaml(hpo_config_path)
     search_space = _expect_mapping(hpo_config.get("search_space"), "search_space")
-    rng = random.Random(base_run.seed)
+    hpo_seed = _resolve_hpo_seed(hpo_config, base_seed=base_run.seed, seed_override=seed)
+    rng = random.Random(hpo_seed)
     output_path = output_dir / "teacher_hpo_candidate_filter.jsonl"
     accepted = 0
     rejected = 0
@@ -233,6 +280,7 @@ def write_candidate_filter_smoke(
         "max_candidates": max_candidates,
         "accepted": accepted,
         "rejected": rejected,
+        "seed": hpo_seed,
         "quick_smoke": quick_smoke,
     }
     write_json(output_dir / "teacher_hpo_summary.json", summary)
@@ -281,6 +329,7 @@ def run_teacher_hpo(
     max_train_steps: int | None = None,
     max_val_steps: int | None = None,
     prune_min_value: float | None = None,
+    seed: int | None = None,
     training_fn=run_teacher_training,
 ) -> dict[str, object]:
     base_run = load_teacher_run_config(base_config_path, quick_smoke=quick_smoke)
@@ -289,9 +338,11 @@ def run_teacher_hpo(
     prune_on = str(hpo_config.get("prune_on", "val_accuracy"))
     event_log_path = output_dir / "teacher_hpo_events.jsonl"
     output_dir.mkdir(parents=True, exist_ok=True)
-    rng = random.Random(base_run.seed)
+    hpo_seed = _resolve_hpo_seed(hpo_config, base_seed=base_run.seed, seed_override=seed)
+    seeded_base_run = _with_run_seed(base_run, hpo_seed)
+    rng = random.Random(hpo_seed)
     candidates = sample_valid_hpo_candidates(
-        base_run,
+        seeded_base_run,
         search_space,
         quick_smoke=quick_smoke,
         max_trials=max_trials,
@@ -299,10 +350,32 @@ def run_teacher_hpo(
         rng=rng,
         event_log_path=event_log_path,
     )
+    if not candidates:
+        summary = {
+            "mode": "teacher_hpo",
+            "status": "failed_zero_candidates",
+            "storage": "jsonl_filelock",
+            "event_log_path": str(event_log_path),
+            "requested_trials": max_trials,
+            "accepted_trials": 0,
+            "max_attempts": max_attempts,
+            "succeeded": 0,
+            "pruned": 0,
+            "failed_logic": 0,
+            "failed_oom": 0,
+            "best_trial": None,
+            "best_val_accuracy": None,
+            "seed": hpo_seed,
+            "quick_smoke": quick_smoke,
+        }
+        write_json(output_dir / "teacher_hpo_summary.json", _jsonable(summary))
+        _locked_append_jsonl(event_log_path, {"event": "hpo_failed_zero_candidates", **summary})
+        raise RuntimeError("teacher HPO produced zero valid candidates; refusing to report success")
 
     succeeded = 0
     pruned = 0
     failed_logic = 0
+    failed_oom = 0
     best_metric: float | None = None
     best_trial: int | None = None
     for candidate in candidates:
@@ -354,12 +427,21 @@ def run_teacher_hpo(
                 "reason": str(exc),
             }
         except Exception as exc:
-            failed_logic += 1
-            trial_summary = {
-                "trial_index": candidate.trial_index,
-                "status": "failed_logic",
-                "reason": f"{type(exc).__name__}: {exc}",
-            }
+            if _is_cuda_oom(exc):
+                failed_oom += 1
+                _cleanup_cuda_after_oom()
+                trial_summary = {
+                    "trial_index": candidate.trial_index,
+                    "status": "failed_oom",
+                    "reason": f"{type(exc).__name__}: {exc}",
+                }
+            else:
+                failed_logic += 1
+                trial_summary = {
+                    "trial_index": candidate.trial_index,
+                    "status": "failed_logic",
+                    "reason": f"{type(exc).__name__}: {exc}",
+                }
         else:
             succeeded += 1
             metric = float(summary.get("best_val_accuracy", float("nan")))
@@ -376,6 +458,7 @@ def run_teacher_hpo(
 
     summary = {
         "mode": "teacher_hpo",
+        "status": "completed" if succeeded > 0 else "failed_zero_successes",
         "storage": "jsonl_filelock",
         "event_log_path": str(event_log_path),
         "requested_trials": max_trials,
@@ -384,11 +467,16 @@ def run_teacher_hpo(
         "succeeded": succeeded,
         "pruned": pruned,
         "failed_logic": failed_logic,
+        "failed_oom": failed_oom,
         "best_trial": best_trial,
         "best_val_accuracy": best_metric,
+        "seed": hpo_seed,
         "quick_smoke": quick_smoke,
     }
     write_json(output_dir / "teacher_hpo_summary.json", _jsonable(summary))
+    if succeeded == 0:
+        _locked_append_jsonl(event_log_path, {"event": "hpo_failed_zero_successes", **_jsonable(summary)})
+        raise RuntimeError("teacher HPO completed with zero successful trials; refusing to report success")
     return summary
 
 
@@ -405,6 +493,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--max-train-steps", type=int, default=None)
     parser.add_argument("--max-val-steps", type=int, default=None)
     parser.add_argument("--prune-min-value", type=float, default=None)
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Override the HPO sampler seed and first trial run seed.",
+    )
     args = parser.parse_args(argv)
 
     if args.max_candidates <= 0:
@@ -415,7 +509,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         raise ValueError("max-attempts must be >= max-trials")
 
     base_run = load_teacher_run_config(args.base_config, quick_smoke=args.quick_smoke)
-    context = RunContext(Path(args.output_dir), seed=base_run.seed, quick_smoke=args.quick_smoke)
+    hpo_config = load_yaml(args.hpo_config)
+    hpo_seed = _resolve_hpo_seed(hpo_config, base_seed=base_run.seed, seed_override=args.seed)
+    context = RunContext(Path(args.output_dir), seed=hpo_seed, quick_smoke=args.quick_smoke)
     context.prepare()
     write_json(
         context.output_dir / "run_context.json",
@@ -427,6 +523,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "execute_trials": args.execute_trials,
             "max_trials": args.max_trials,
             "max_attempts": args.max_attempts,
+            "seed": hpo_seed,
         },
     )
     if args.execute_trials:
@@ -440,6 +537,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_train_steps=args.max_train_steps,
             max_val_steps=args.max_val_steps,
             prune_min_value=args.prune_min_value,
+            seed=hpo_seed,
         )
         print(f"teacher HPO run complete: {summary}")
         return 0
@@ -450,6 +548,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         output_dir=context.output_dir,
         quick_smoke=args.quick_smoke,
         max_candidates=args.max_candidates,
+        seed=hpo_seed,
     )
     if not args.quick_smoke:
         raise RuntimeError(

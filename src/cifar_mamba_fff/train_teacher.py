@@ -489,6 +489,7 @@ def _train_one_step(
     optimizer.step()
     scheduler.step()
     return {
+        "train_batch_size": float(target.numel()),
         "train_loss": float(loss.detach().float().item()),
         "train_accuracy_hard_labels": accuracy(logits.detach().float(), target.detach()),
         "lr_muon": float(optimizer.param_groups[0]["lr"]),
@@ -546,6 +547,7 @@ def run_teacher_training(
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for BF16 official Mamba-3 teacher training")
     device = torch.device("cuda")
+    torch.cuda.reset_peak_memory_stats(device)
 
     train_loader, val_loader = build_cifar10_loaders(run_config.data)
     model, parameter_count = build_teacher_model(run_config.model, device=device)
@@ -565,19 +567,32 @@ def run_teacher_training(
 
     best_val_accuracy = -1.0
     total_train_steps = 0
+    torch.cuda.synchronize(device)
     start_time = time.perf_counter()
     train_step_limit = 1 if quick_smoke else max_train_steps
     val_step_limit = 1 if quick_smoke else max_val_steps
     epochs = 1 if quick_smoke else run_config.train.epochs
+    train_images_seen = 0
+    train_elapsed_seconds = 0.0
 
     for epoch in range(epochs):
         epoch_start = time.perf_counter()
         train_metrics: dict[str, float] | None = None
+        epoch_train_images_seen = 0
+        epoch_train_elapsed_seconds = 0.0
         for step, batch in enumerate(train_loader):
             if train_step_limit is not None and step >= train_step_limit:
                 break
+            train_step_start = time.perf_counter()
             train_metrics = _train_one_step(model, batch, optimizer, scheduler, run_config, device)
+            torch.cuda.synchronize(device)
+            train_step_seconds = time.perf_counter() - train_step_start
+            train_elapsed_seconds += train_step_seconds
+            epoch_train_elapsed_seconds += train_step_seconds
             total_train_steps += 1
+            step_batch_size = int(train_metrics.pop("train_batch_size"))
+            train_images_seen += step_batch_size
+            epoch_train_images_seen += step_batch_size
         if train_metrics is None:
             raise RuntimeError("train loader produced no batches")
         val_metrics = _evaluate_steps(model, val_loader, run_config, device, max_steps=val_step_limit)
@@ -590,6 +605,11 @@ def run_teacher_training(
             "epoch": epoch,
             "parameter_count": parameter_count,
             "train_steps_total": total_train_steps,
+            "train_images_seen": train_images_seen,
+            "epoch_train_images_seen": epoch_train_images_seen,
+            "epoch_train_elapsed_seconds": epoch_train_elapsed_seconds,
+            "epoch_train_images_per_second": epoch_train_images_seen
+            / max(epoch_train_elapsed_seconds, 1e-9),
             "epoch_seconds": time.perf_counter() - epoch_start,
             **train_metrics,
             **val_metrics,
@@ -608,12 +628,21 @@ def run_teacher_training(
                 },
             )
 
+    torch.cuda.synchronize(device)
+    elapsed_seconds = time.perf_counter() - start_time
     summary = {
         "parameter_count": parameter_count,
         "best_val_accuracy": best_val_accuracy,
         "train_steps_total": total_train_steps,
-        "elapsed_seconds": time.perf_counter() - start_time,
+        "elapsed_seconds": elapsed_seconds,
         "metrics_path": str(metrics_path),
+        "batch_size_per_gpu": run_config.train.batch_size_per_gpu,
+        "train_images_seen": train_images_seen,
+        "train_images_per_second": train_images_seen / max(elapsed_seconds, 1e-9),
+        "train_elapsed_seconds": train_elapsed_seconds,
+        "train_images_per_second_train_only": train_images_seen / max(train_elapsed_seconds, 1e-9),
+        "peak_cuda_memory_allocated_bytes": torch.cuda.max_memory_allocated(device),
+        "peak_cuda_memory_reserved_bytes": torch.cuda.max_memory_reserved(device),
         "optimizer": "official SingleDeviceMuonWithAuxAdam",
         "optimizer_summary": optimizer_summary,
         "quick_smoke": quick_smoke,
@@ -667,11 +696,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--max-train-steps", type=int, default=None)
     parser.add_argument("--max-val-steps", type=int, default=None)
     parser.add_argument("--save-checkpoint", type=bool_arg, default=None)
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Override the run and augmentation seed while preserving the configured train/val split seed.",
+    )
     args = parser.parse_args(argv)
 
     config_path = Path(args.config)
     raw_config = load_yaml(config_path)
     run_config = load_teacher_run_config(config_path, quick_smoke=args.quick_smoke)
+    if args.seed is not None:
+        run_config = replace(
+            run_config,
+            seed=args.seed,
+            data=replace(run_config.data, seed=args.seed),
+        )
     context = RunContext(Path(args.output_dir), seed=run_config.seed, quick_smoke=args.quick_smoke)
     context.prepare()
     write_run_context(

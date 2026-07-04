@@ -29,7 +29,7 @@ def test_local_detached_job_files_and_script_construct_status_and_log_paths() ->
     render_detached_launch_script = _require_public_helper("render_detached_launch_script")
     job = GpuJob(
         command=(
-            "PYTHONPATH=src CUDA_VISIBLE_DEVICES=0 .venv/bin/python "
+            "PYTHONPATH=src CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0 .venv/bin/python "
             "-m cifar_mamba_fff.train_teacher --quick-smoke true "
             "--output-dir outputs/scheduler_smoke/work/0"
         ),
@@ -51,10 +51,11 @@ def test_local_detached_job_files_and_script_construct_status_and_log_paths() ->
     assert files.heartbeat == Path("outputs/scheduler_smoke/work/0/heartbeat.txt")
 
     script_text = render_detached_launch_script(job)
-    assert "PYTHONPATH=src CUDA_VISIBLE_DEVICES=0" in script_text
+    assert "PYTHONPATH=src CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=0" in script_text
     assert ".venv/bin/python -m cifar_mamba_fff.train_teacher" in script_text
     assert 'bash -lc "$COMMAND" > "$OUT_DIR/stdout.log" 2> "$OUT_DIR/stderr.log"' in script_text
-    assert "(out_dir / 'status.json').write_text" in script_text
+    assert "status.json.tmp" in script_text
+    assert "os.replace(tmp_path, status_path)" in script_text
     assert "(out_dir / 'heartbeat.txt').write_text" in script_text
     assert 'final_status="succeeded"' in script_text
     assert 'final_status="failed_logic"' in script_text
@@ -103,6 +104,64 @@ def test_read_detached_job_status_classifies_success_and_logic_failure(
     assert job.status == payload_status
 
 
+def test_read_detached_job_status_treats_truncated_json_as_running(monkeypatch) -> None:
+    read_detached_job_status = _require_public_helper("read_detached_job_status")
+    job = GpuJob(
+        command="PYTHONPATH=src CUDA_VISIBLE_DEVICES=1 .venv/bin/python -m trainer",
+        output_dir=Path("outputs/scheduler_smoke/work/1"),
+        machine="work",
+        gpu_id=1,
+        status=JobStatus.RUNNING,
+    )
+    spec = MachineSpec(name="work", host="localhost", gpus=2, role="local", workdir="/repo")
+
+    monkeypatch.setattr(
+        gpu_scheduler,
+        "read_remote_text",
+        lambda spec_arg, path, *, timeout_s: {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "{",
+            "stderr": "",
+        },
+    )
+
+    record = read_detached_job_status(spec, job, timeout_s=7)
+
+    assert record["status"] == JobStatus.RUNNING
+    assert "transient unreadable status" in record["stderr"]
+    assert job.status == JobStatus.RUNNING
+
+
+def test_read_detached_job_status_treats_rc255_as_running(monkeypatch) -> None:
+    read_detached_job_status = _require_public_helper("read_detached_job_status")
+    job = GpuJob(
+        command="PYTHONPATH=src CUDA_VISIBLE_DEVICES=1 .venv/bin/python -m trainer",
+        output_dir=Path("outputs/scheduler_smoke/work/1"),
+        machine="work",
+        gpu_id=1,
+        status=JobStatus.RUNNING,
+    )
+    spec = MachineSpec(name="work", host="localhost", gpus=2, role="local", workdir="/repo")
+
+    monkeypatch.setattr(
+        gpu_scheduler,
+        "read_remote_text",
+        lambda spec_arg, path, *, timeout_s: {
+            "ok": False,
+            "returncode": 255,
+            "stdout": "",
+            "stderr": "ssh transient failure",
+        },
+    )
+
+    record = read_detached_job_status(spec, job, timeout_s=7)
+
+    assert record["status"] == JobStatus.RUNNING
+    assert "ssh transient failure" in record["stderr"]
+    assert job.status == JobStatus.RUNNING
+
+
 def test_preflight_machine_rejects_commit_mismatch(monkeypatch) -> None:
     preflight_machine = _require_public_helper("preflight_machine")
     spec = MachineSpec(name="work", host="localhost", gpus=2, role="local", workdir="/repo")
@@ -135,3 +194,40 @@ def test_preflight_machine_rejects_commit_mismatch(monkeypatch) -> None:
     assert result.ok is False
     assert result.commit == "oldcommit"
     assert "remote commit mismatch: expected newcommit, got oldcommit" in result.stderr
+
+
+def test_preflight_machine_can_require_cifar10_train_readiness(monkeypatch) -> None:
+    preflight_machine = _require_public_helper("preflight_machine")
+    spec = MachineSpec(name="work", host="localhost", gpus=2, role="local", workdir="/repo")
+    commands: list[str] = []
+
+    def fake_run_remote(
+        spec_arg: MachineSpec,
+        command: str,
+        *,
+        timeout_s: int,
+    ) -> Mapping[str, object]:
+        assert spec_arg == spec
+        assert timeout_s == 3
+        commands.append(command)
+        return {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "newcommit\nPython 3.12.11\n",
+            "stderr": "",
+        }
+
+    monkeypatch.setattr(gpu_scheduler, "run_remote", fake_run_remote)
+
+    result = preflight_machine(
+        spec,
+        python_bin=".venv/bin/python",
+        expected_commit="newcommit",
+        require_cifar10_train=True,
+        data_dir="data/cifar10",
+        timeout_s=3,
+    )
+
+    assert result.ok is True
+    assert "scripts/prepare_cifar10.py" in commands[0]
+    assert "--download false --extract false" in commands[0]

@@ -159,13 +159,16 @@ def build_train_teacher_command(
     python_bin: str = DEFAULT_PYTHON_BIN,
     quick_smoke: bool = True,
     smoke_mode: str = DEFAULT_SMOKE_MODE,
+    seed: int | None = None,
 ) -> str:
+    seed_arg = "" if seed is None else f" --seed {int(seed)}"
     return (
-        f"PYTHONPATH=src CUDA_VISIBLE_DEVICES={gpu_id} {quote(python_bin)} "
+        f"PYTHONPATH=src CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES={gpu_id} {quote(python_bin)} "
         "-m cifar_mamba_fff.train_teacher "
         f"--quick-smoke {str(quick_smoke).lower()} "
         f"--smoke-mode {quote(smoke_mode)} "
         f"--output-dir {quote(str(output_dir))}"
+        f"{seed_arg}"
     )
 
 
@@ -187,6 +190,7 @@ def build_dry_run_jobs(
         if max_jobs is not None and len(jobs) >= max_jobs:
             break
         output_dir = Path("outputs/scheduler_smoke") / machine / str(gpu_id)
+        seed = 1337 + idx
         jobs.append(
             GpuJob(
                 command=build_train_teacher_command(
@@ -195,15 +199,17 @@ def build_dry_run_jobs(
                     python_bin=python_bin,
                     quick_smoke=quick_smoke,
                     smoke_mode=smoke_mode,
+                    seed=seed,
                 ),
                 output_dir=output_dir,
                 machine=machine,
                 gpu_id=gpu_id,
-                seed=1337 + idx,
+                seed=seed,
                 metadata={
                     "quick_smoke": quick_smoke,
                     "dry_run": dry_run,
                     "smoke_mode": smoke_mode,
+                    "cuda_device_order": "PCI_BUS_ID",
                     "cuda_visible_devices": str(gpu_id),
                     "python_bin": python_bin,
                     "output_dir": str(output_dir),
@@ -225,16 +231,24 @@ def preflight_machine(
     *,
     python_bin: str = DEFAULT_PYTHON_BIN,
     expected_commit: str | None = None,
+    require_cifar10_train: bool = False,
+    data_dir: str | Path = "data/cifar10",
     timeout_s: int = 20,
 ) -> PreflightResult:
-    command = " && ".join(
-        [
-            "test -d .git",
-            "git rev-parse HEAD",
-            f"test -x {quote(python_bin)}",
-            f"{quote(python_bin)} --version",
-        ]
-    )
+    commands = [
+        "test -d .git",
+        "git rev-parse HEAD",
+        f"test -x {quote(python_bin)}",
+        f"{quote(python_bin)} --version",
+    ]
+    if require_cifar10_train:
+        commands.append(
+            f"{quote(python_bin)} scripts/prepare_cifar10.py "
+            f"--data-dir {quote(str(data_dir))} "
+            "--output-json outputs/cifar10_preflight.json "
+            "--download false --extract false"
+        )
+    command = " && ".join(commands)
     result = run_remote(spec, command, timeout_s=timeout_s)
     stdout = str(result["stdout"])
     commit = stdout.splitlines()[0].strip() if stdout.splitlines() else None
@@ -301,7 +315,10 @@ def render_detached_launch_script(job: GpuJob) -> str:
             "pid_path = out_dir / 'pid.txt'",
             "if pid_path.exists():",
             "    payload['pid'] = int(pid_path.read_text(encoding='utf-8').strip())",
-            "(out_dir / 'status.json').write_text(json.dumps(payload, indent=2, sort_keys=True) + '\\n', encoding='utf-8')",
+            "status_path = out_dir / 'status.json'",
+            "tmp_path = out_dir / f'status.json.tmp.{os.getpid()}'",
+            "tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + '\\n', encoding='utf-8')",
+            "os.replace(tmp_path, status_path)",
             "(out_dir / 'heartbeat.txt').write_text(os.environ['UPDATED_AT'] + '\\n', encoding='utf-8')",
             "PY",
             "}",
@@ -363,11 +380,11 @@ def read_detached_job_status(
     files = detached_job_files(job)
     result = read_remote_text(spec, files.status, timeout_s=timeout_s)
     if not result["ok"]:
-        if job.status == JobStatus.RUNNING and result["returncode"] == 44:
+        if job.status == JobStatus.RUNNING and result["returncode"] in {44, 255}:
             return {
                 "status": JobStatus.RUNNING,
                 "returncode": None,
-                "stderr": "status file not written yet",
+                "stderr": str(result["stderr"]) or "status file not written yet",
                 "updated_at": _utc_now(),
                 "files": files.record(),
             }
@@ -379,8 +396,26 @@ def read_detached_job_status(
             "updated_at": _utc_now(),
             "files": files.record(),
         }
-    payload = json.loads(str(result["stdout"]))
-    status = JobStatus(str(payload["status"]))
+    try:
+        payload = json.loads(str(result["stdout"]))
+        status = JobStatus(str(payload["status"]))
+    except (json.JSONDecodeError, KeyError, ValueError) as exc:
+        if job.status == JobStatus.RUNNING:
+            return {
+                "status": JobStatus.RUNNING,
+                "returncode": None,
+                "stderr": f"transient unreadable status: {type(exc).__name__}: {exc}",
+                "updated_at": _utc_now(),
+                "files": files.record(),
+            }
+        job.status = JobStatus.FAILED_INFRA
+        return {
+            "status": JobStatus.FAILED_INFRA,
+            "returncode": None,
+            "stderr": f"invalid terminal status payload: {type(exc).__name__}: {exc}",
+            "updated_at": _utc_now(),
+            "files": files.record(),
+        }
     job.status = status
     return payload
 
@@ -561,6 +596,7 @@ def main() -> int:
                     expected_commit=None
                     if args.expected_commit == "any"
                     else str(args.expected_commit),
+                    require_cifar10_train=args.smoke_mode == "train",
                     timeout_s=args.launch_timeout_s,
                 )
                 for machine_name in machines_with_jobs

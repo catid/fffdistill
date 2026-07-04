@@ -7,7 +7,7 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 
-if ! git -C "$REPO_ROOT" diff --quiet; then
+if [ -n "$(git -C "$REPO_ROOT" status --porcelain --untracked-files=all)" ]; then
   echo "Refusing to sync uncommitted local worktree changes. Commit first." >&2
   exit 2
 fi

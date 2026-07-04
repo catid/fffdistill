@@ -101,10 +101,13 @@ def test_scheduler_dry_run_jobs_bind_gpu_venv_python_and_output_dir(tmp_path) ->
     for gpu_id, job in enumerate(jobs):
         expected_output_dir = Path("outputs/scheduler_smoke/work") / str(gpu_id)
         assert job.output_dir == expected_output_dir
-        assert job.command.startswith("PYTHONPATH=src ")
+        assert job.command.startswith("PYTHONPATH=src CUDA_DEVICE_ORDER=PCI_BUS_ID ")
         assert f"CUDA_VISIBLE_DEVICES={gpu_id}" in job.command
         assert "venv/bin/python -m cifar_mamba_fff.train_teacher" in job.command
         assert f"--output-dir {expected_output_dir}" in job.command
+        assert f"--seed {1337 + gpu_id}" in job.command
+        assert job.seed == 1337 + gpu_id
+        assert job.metadata["cuda_device_order"] == "PCI_BUS_ID"
         assert job.metadata["cuda_visible_devices"] == str(gpu_id)
         assert job.metadata["output_dir"] == str(expected_output_dir)
 
@@ -143,9 +146,21 @@ def test_scheduler_default_command_uses_dot_venv_python() -> None:
         output_dir=Path("outputs/scheduler_smoke/work/3"),
     )
 
-    assert command.startswith("PYTHONPATH=src CUDA_VISIBLE_DEVICES=3 .venv/bin/python -m ")
+    assert command.startswith(
+        "PYTHONPATH=src CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=3 .venv/bin/python -m "
+    )
     assert "--quick-smoke true" in command
     assert "--output-dir outputs/scheduler_smoke/work/3" in command
+
+
+def test_scheduler_command_includes_seed_when_provided() -> None:
+    command = build_train_teacher_command(
+        gpu_id=0,
+        output_dir=Path("outputs/scheduler_smoke/work/0"),
+        seed=2026,
+    )
+
+    assert "--seed 2026" in command
 
 
 def test_scheduler_command_quotes_paths_with_spaces() -> None:

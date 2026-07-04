@@ -50,14 +50,14 @@ def find_official_block() -> type:
 
 @dataclass(frozen=True)
 class Mamba3CifarConfig:
-    d_model: int = 224
-    depth: int = 18
-    patch_size: int = 2
-    d_state: int = 128
+    d_model: int = 256
+    depth: int = 20
+    patch_size: int = 4
+    d_state: int = 64
     expand: int = 2
     headdim: int = 64
     is_mimo: bool = True
-    mimo_rank: int = 4
+    mimo_rank: int = 2
     chunk_size: int = 16
     bidirectional: bool = False
     drop_path: float = 0.1
