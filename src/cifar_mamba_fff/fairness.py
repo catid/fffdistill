@@ -50,7 +50,7 @@ def _read_csv(path: Path, *, expected_rows: int | None = None) -> list[dict[str,
 def _write_csv(path: Path, rows: Sequence[Mapping[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=FAIRNESS_COLUMNS)
+        writer = csv.DictWriter(handle, fieldnames=FAIRNESS_COLUMNS, lineterminator="\n")
         writer.writeheader()
         for row in rows:
             writer.writerow({column: row.get(column, "") for column in FAIRNESS_COLUMNS})
@@ -160,8 +160,14 @@ def _stage_f_row(docs_dir: Path) -> dict[str, object]:
         stored_rows=_mean(rows, "stored_rows"),
         train_steps="64 layers x short layerwise budgets",
         seeds="1",
-        budget="Validation-split layerwise distillation, 2 sample batches per layer shard.",
-        fairness_note="Layerwise MSE evidence only; not an end-to-end student accuracy comparison.",
+        budget=(
+            "Legacy validation-split layerwise distillation, 2 sample batches per layer shard; "
+            "leakage-limited for layerwise validation metrics."
+        ),
+        fairness_note=(
+            "Layerwise MSE evidence only; not an end-to-end student accuracy comparison. "
+            "Rerun with train_eval capture before final FFF quality claims."
+        ),
     )
 
 
@@ -200,6 +206,7 @@ def _t19_rows(docs_dir: Path) -> list[dict[str, object]]:
     rows = _read_csv(path, expected_rows=EXPECTED_ROW_COUNTS[path.name])
     out: list[dict[str, object]] = []
     for row in rows:
+        seeds = row.get("seed_list") or row.get("seed") or ""
         out.append(
             _row(
                 method=f"optimizer_{row.get('case', '')}",
@@ -210,7 +217,7 @@ def _t19_rows(docs_dir: Path) -> list[dict[str, object]]:
                 validation_accuracy=_float_text(row.get("best_val_accuracy")),
                 tokens_per_second=_float_text(row.get("train_images_per_second_train_only")),
                 train_steps=_int_text(row.get("train_steps_total")),
-                seeds="1",
+                seeds=seeds,
                 budget="Equal two-step teacher smoke budget; not a quality ranking.",
                 fairness_note=(
                     f"optimizer={row.get('optimizer', '')}, schedule={row.get('schedule', '')}; "
@@ -369,7 +376,8 @@ def write_fairness_markdown(path: Path, rows: Sequence[Mapping[str, object]]) ->
             "- CIFAR-10 test access appears only in `final_test` or `partial_final_test` rows.",
             "- Optimizer ablations use equal two-step smoke budgets and are not ranked as final quality results.",
             "- Route-output ablations use one representative layer with reported active/stored row budgets.",
-            "- Stage F layerwise rows report validation-split MSE/cosine/throughput, not final accuracy.",
+            "- Stage F layerwise rows are legacy validation-capture MSE/cosine/throughput evidence, "
+            "not clean held-out validation metrics and not final accuracy.",
             "- Required baselines without committed metrics are explicitly marked `not_run`.",
             "",
         ]

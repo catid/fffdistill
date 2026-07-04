@@ -74,6 +74,7 @@ Grouped-vs-naive correctness and profiling:
 - BF16 grouped-vs-naive smoke: max absolute difference `0.00390625` on 16 tokens.
 - Small BF16 timing on `work:0`: dense `46.25M` tok/s forward, grouped `1.19M` tok/s forward, naive `4.40K` tok/s.
 - Representative hard-routing forward/backward: dense `7.34M` tok/s, grouped `998K` tok/s.
+- Region-leak inference policy after T18 review: configured `region_leak` is train-only. Eval/inference uses `effective_region_leak=0.0`, reports `region_leak_policy=train_only`, and keeps the selected-leaf grouped path. A bounded CUDA BF16 eval smoke with configured `region_leak=0.01` measured grouped `2.05M` tok/s, naive `1.96K` tok/s, dense `135.66M` tok/s, and grouped-vs-naive max difference `0.0078125`; see `docs/t18_region_leak_policy.md`.
 - Naive remains a correctness path, not a training path.
 
 LocoProp-S:
@@ -154,6 +155,7 @@ Stage F distilled all 64 eligible Linear layers once each across 10 one-GPU jobs
 `work`, `ripper`, `foureyes`, and `ai`.
 
 - Data split: CIFAR-10 validation split sampling, 2 batches per shard.
+- T18 provenance caveat: these Stage F artifacts fit layer replacements on validation-split images and report metrics from that capture stream. This is not CIFAR-10 test leakage, but it is train-on-validation leakage for layerwise distillation metrics. The corrected code defaults distillation/HPO sampling to `train_eval`, which uses train-split images with eval/no-augmentation transforms, and computes deterministic held-out token metrics. Stage F must be rerun in that mode before final full-student FFF quality claims.
 - Test access: false for all records.
 - Mean final normalized MSE: `0.288707`.
 - Median final normalized MSE: `0.188059`.
@@ -214,7 +216,7 @@ Optimizer ablation smoke:
 - Official Muon + cosine and Official Muon + WSD are both present.
 - PACE+Muon, NorMuon, and PACE+NorMuon are present as optimizer-experiments ablations.
 - Equal budget: 2 train steps, 512 images, train/validation only.
-- These are correctness/provenance smoke runs, not optimizer quality rankings.
+- These are correctness/provenance smoke runs, not optimizer quality rankings. T18 fixed the future T19 protocol so every optimizer/schedule case iterates the same explicit seed list, and NorMuon/PACE+NorMuon rows require an update-RMS calibration note or optimizer-specific LR sweep before quality claims.
 
 Detailed optimizer report: `docs/t19_optimizer_ablation_summary.md`.
 
@@ -225,11 +227,31 @@ Plot-ready CSV inputs are committed:
 - Accuracy vs active rows: `docs/t20_route_row_output_ablation_results.csv`.
 - Accuracy vs throughput: `docs/t20_route_row_output_ablation_results.csv`.
 - MSE vs active rows: `docs/t20_route_row_output_ablation_results.csv` and `docs/t13_stage_f_layerwise_summary.csv`.
-- Dead leaves vs balance/recipe: `docs/t13_stage_f_layerwise_summary.csv`.
-- Route entropy vs accuracy/MSE: `docs/t13_stage_f_layerwise_summary.csv`.
-- STE/route method vs MSE/throughput: `docs/t13_stage_c_router_summary.csv`, `docs/t13_stage_d_arch_summary.csv`, `docs/t13_stage_e_layer_summary.csv`, and `docs/t13_stage_f_layerwise_summary.csv`.
+- Dead leaves vs balance/recipe: `docs/t13_stage_d_arch_summary.csv`.
+- Route entropy vs accuracy: `docs/t20_route_row_output_ablation_results.csv`.
+- STE/route method vs MSE/throughput: `docs/t13_stage_c_router_summary.csv`, `docs/t13_stage_d_arch_summary.csv`, and `docs/t13_stage_f_layerwise_summary.csv`.
 
-Actual rendered plots are not committed in this run.
+Rendered plots are committed under `docs/pareto_plots/`:
+
+- [Accuracy vs active rows](pareto_plots/accuracy_vs_active_rows.svg).
+- [Accuracy vs throughput](pareto_plots/accuracy_vs_throughput.svg).
+- [MSE vs active rows](pareto_plots/mse_vs_active_rows.svg).
+- [Dead leaves vs balance](pareto_plots/dead_leaves_vs_balance.svg).
+- [Route entropy vs accuracy](pareto_plots/route_entropy_vs_accuracy.svg).
+- [STE method vs MSE/throughput](pareto_plots/ste_method_vs_mse_throughput.svg).
+
+Regenerate and validate with:
+
+```bash
+.venv/bin/python docs/render_pareto_plots.py
+.venv/bin/python docs/render_pareto_plots.py --check
+```
+
+The plot provenance and missing/limited-source notes are in
+[`docs/pareto_plots/missing_sources.md`](pareto_plots/missing_sources.md).
+In particular, the accuracy plots use T20 one-layer replacement validation
+accuracy; no full FFF-student accuracy-vs-active-rows or accuracy-vs-throughput
+CSV is committed.
 
 ## Best Recipes
 
@@ -244,10 +266,12 @@ Within the evidence that exists:
 ## Limitations
 
 - Full FFF-replaced student final CIFAR-10 accuracy is not established; only a one-batch partial selected-checkpoint test artifact exists.
+- Existing Stage F layerwise FFF artifacts used validation-split activation capture and are leakage-limited for layerwise validation metrics. Rerun Stage F with `train_eval` capture and held-out token metrics before any Stage H full-student FFF claim.
 - Several required baselines are not run: dense teacher-copied student, shared-only rows baseline, matched low-rank Linear, matched smaller dense Linear.
 - Utility-targeted, hard-EM, expert-choice, and ST-Gumbel router recipes are implemented but not fully compared under equal final budgets.
 - Grouped FFF is much faster than naive but still far slower than dense Linear in current PyTorch implementation.
 - Remote GitHub SSH auth failed earlier on remote hosts; rsync from `work` was used for remote sync.
+- Remote artifact collection was hardened after several compact summaries were generated; older summaries may depend on pre-hardening tail-only artifact collection. See `docs/t18_artifact_integrity.md`.
 - Some GPUs were intentionally excluded during runs due occupied/anomalous utilization.
 - The official Mamba-3 Python 3.12 path required documented vendor patches in dependencies, while preserving the official Mamba-3 TileLang MIMO kernels.
 - Test metrics must not be reused for HPO or recipe selection. The one-step student partial test result is recorded only after selecting that checkpoint by validation metrics.

@@ -57,6 +57,7 @@ def test_build_fairness_rows_from_committed_docs_contains_required_placeholders(
     assert by_method["dense_mamba3_teacher"]["split"] == "final_test"
     assert by_method["official_fastfeedforward_fff"]["status"] == "shape_compatible_forward_tested"
     assert by_method["dense_teacher_copied_student"]["status"] == "not_run"
+    assert by_method["optimizer_official_muon_cosine"]["seeds"] == "7331"
     assert any(str(row["method"]).startswith("route_output_") for row in rows)
     assert any(str(row["method"]).startswith("optimizer_") for row in rows)
     assert any(str(row["split"]) == "partial_final_test" for row in rows)

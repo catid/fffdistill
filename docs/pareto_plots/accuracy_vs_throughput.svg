@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="620" viewBox="0 0 960 620" role="img" aria-labelledby="title desc">
+<title id="title">Accuracy vs Throughput</title>
+<desc id="desc">T20 route-row output ablation validation accuracy against throughput.</desc>
+<style>
+  .bg { fill: #ffffff; }
+  .grid { stroke: #e5e7eb; stroke-width: 1; }
+  .axis { stroke: #111827; stroke-width: 1.4; }
+  .tick { fill: #374151; font: 12px sans-serif; }
+  .title { fill: #111827; font: 700 24px sans-serif; }
+  .subtitle { fill: #4b5563; font: 13px sans-serif; }
+  .label { fill: #111827; font: 14px sans-serif; }
+  .point-label { fill: #111827; font: 10px sans-serif; }
+  .legend { fill: #111827; font: 12px sans-serif; }
+  .point { stroke: #ffffff; stroke-width: 1.5; }
+</style>
+<rect class="bg" x="0" y="0" width="960" height="620"/>
+<text class="title" x="96" y="38">Accuracy vs Throughput</text>
+<text class="subtitle" x="96" y="60">T20 one-layer route-output replacement sweep</text>
+<line class="grid" x1="96.00" y1="76" x2="96.00" y2="502"/>
+<text class="tick" x="96.00" y="524" text-anchor="middle">27,316</text>
+<line class="grid" x1="221.60" y1="76" x2="221.60" y2="502"/>
+<text class="tick" x="221.60" y="524" text-anchor="middle">29,482</text>
+<line class="grid" x1="347.20" y1="76" x2="347.20" y2="502"/>
+<text class="tick" x="347.20" y="524" text-anchor="middle">31,648</text>
+<line class="grid" x1="472.80" y1="76" x2="472.80" y2="502"/>
+<text class="tick" x="472.80" y="524" text-anchor="middle">33,814</text>
+<line class="grid" x1="598.40" y1="76" x2="598.40" y2="502"/>
+<text class="tick" x="598.40" y="524" text-anchor="middle">35,980</text>
+<line class="grid" x1="724.00" y1="76" x2="724.00" y2="502"/>
+<text class="tick" x="724.00" y="524" text-anchor="middle">38,146</text>
+<line class="grid" x1="96" y1="502.00" x2="724" y2="502.00"/>
+<text class="tick" x="84" y="506.00" text-anchor="end">0.9395</text>
+<line class="grid" x1="96" y1="416.80" x2="724" y2="416.80"/>
+<text class="tick" x="84" y="420.80" text-anchor="end">0.9398</text>
+<line class="grid" x1="96" y1="331.60" x2="724" y2="331.60"/>
+<text class="tick" x="84" y="335.60" text-anchor="end">0.9400</text>
+<line class="grid" x1="96" y1="246.40" x2="724" y2="246.40"/>
+<text class="tick" x="84" y="250.40" text-anchor="end">0.9402</text>
+<line class="grid" x1="96" y1="161.20" x2="724" y2="161.20"/>
+<text class="tick" x="84" y="165.20" text-anchor="end">0.9404</text>
+<line class="grid" x1="96" y1="76.00" x2="724" y2="76.00"/>
+<text class="tick" x="84" y="80.00" text-anchor="end">0.9407</text>
+<line class="axis" x1="96" y1="502" x2="724" y2="502"/>
+<line class="axis" x1="96" y1="76" x2="96" y2="502"/>
+<text class="label" x="410.00" y="582" text-anchor="middle">Tokens per second</text>
+<text class="label" transform="translate(28 289.00) rotate(-90)" text-anchor="middle">Validation accuracy after replacement</text>
+<circle class="point" cx="629.76" cy="178.83" r="6" fill="#2563eb">
+<title>none routing: Tokens per second=36,521, Validation accuracy after replacement=0.9404. source=docs/t20_route_row_output_ablation_results.csv; case_name=none_routing_only; final_nmse=0.3005816340446472; tokens_per_second=36521.26306354089; active_rows_per_token=108.0; validation_accuracy_after_replacement=0.9404</title>
+</circle>
+<text class="point-label" x="637.76" y="170.83">none routing</text>
+<circle class="point" cx="198.19" cy="105.38" r="6" fill="#dc2626">
+<title>shared one: Tokens per second=29,079, Validation accuracy after replacement=0.9406. source=docs/t20_route_row_output_ablation_results.csv; case_name=shared_one_per_node; final_nmse=0.2933182418346405; tokens_per_second=29078.716513503216; active_rows_per_token=113.0; validation_accuracy_after_replacement=0.9406</title>
+</circle>
+<text class="point-label" x="206.19" y="97.38">shared one</text>
+<circle class="point" cx="141.10" cy="178.83" r="6" fill="#dc2626">
+<title>shared all: Tokens per second=28,094, Validation accuracy after replacement=0.9404. source=docs/t20_route_row_output_ablation_results.csv; case_name=shared_all; final_nmse=0.2871333360671997; tokens_per_second=28094.08930594686; active_rows_per_token=118.0; validation_accuracy_after_replacement=0.9404</title>
+</circle>
+<text class="point-label" x="149.10" y="170.83">shared all</text>
+<circle class="point" cx="139.31" cy="178.83" r="6" fill="#dc2626">
+<title>shared half: Tokens per second=28,063, Validation accuracy after replacement=0.9404. source=docs/t20_route_row_output_ablation_results.csv; case_name=shared_half_fraction; final_nmse=0.2933366298675537; tokens_per_second=28063.255503049728; active_rows_per_token=113.0; validation_accuracy_after_replacement=0.9404</title>
+</circle>
+<text class="point-label" x="147.31" y="170.83">shared half</text>
+<circle class="point" cx="500.71" cy="472.62" r="6" fill="#059669">
+<title>split one: Tokens per second=34,296, Validation accuracy after replacement=0.9396. source=docs/t20_route_row_output_ablation_results.csv; case_name=split_one_per_node; final_nmse=0.2921988368034363; tokens_per_second=34295.62407062493; active_rows_per_token=113.0; validation_accuracy_after_replacement=0.9396</title>
+</circle>
+<text class="point-label" x="508.71" y="464.62">split one</text>
+<circle class="point" cx="149.57" cy="399.17" r="6" fill="#059669">
+<title>split all: Tokens per second=28,240, Validation accuracy after replacement=0.9398. source=docs/t20_route_row_output_ablation_results.csv; case_name=split_all; final_nmse=0.2844492793083191; tokens_per_second=28240.111486291473; active_rows_per_token=118.0; validation_accuracy_after_replacement=0.9398</title>
+</circle>
+<text class="point-label" x="157.57" y="391.17">split all</text>
+<circle class="point" cx="680.69" cy="472.62" r="6" fill="#059669">
+<title>split half: Tokens per second=37,399, Validation accuracy after replacement=0.9396. source=docs/t20_route_row_output_ablation_results.csv; case_name=split_half_fraction; final_nmse=0.29211580753326416; tokens_per_second=37399.48677126725; active_rows_per_token=113.0; validation_accuracy_after_replacement=0.9396</title>
+</circle>
+<text class="point-label" x="688.69" y="464.62">split half</text>
+<text class="label" x="780" y="62">Series</text>
+<circle cx="780" cy="84" r="5" fill="#2563eb"/>
+<text class="legend" x="792" y="88">routing_only</text>
+<circle cx="780" cy="106" r="5" fill="#dc2626"/>
+<text class="legend" x="792" y="110">shared_routing_and_output</text>
+<circle cx="780" cy="128" r="5" fill="#059669"/>
+<text class="legend" x="792" y="132">split_routing_output</text>
+</svg>

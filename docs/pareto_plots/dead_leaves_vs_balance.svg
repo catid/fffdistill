@@ -1,0 +1,86 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="620" viewBox="0 0 960 620" role="img" aria-labelledby="title desc">
+<title id="title">Dead Leaves vs Balance</title>
+<desc id="desc">Dead leaves by balance recipe and balance coefficient from Stage D.</desc>
+<style>
+  .bg { fill: #ffffff; }
+  .grid { stroke: #e5e7eb; stroke-width: 1; }
+  .axis { stroke: #111827; stroke-width: 1.4; }
+  .tick { fill: #374151; font: 12px sans-serif; }
+  .title { fill: #111827; font: 700 24px sans-serif; }
+  .subtitle { fill: #4b5563; font: 13px sans-serif; }
+  .label { fill: #111827; font: 14px sans-serif; }
+  .point-label { fill: #111827; font: 10px sans-serif; }
+  .legend { fill: #111827; font: 12px sans-serif; }
+  .point { stroke: #ffffff; stroke-width: 1.5; }
+</style>
+<rect class="bg" x="0" y="0" width="960" height="620"/>
+<text class="title" x="96" y="38">Dead Leaves vs Balance</text>
+<text class="subtitle" x="96" y="60">Stage D architecture sweep categories by balance recipe and coefficient</text>
+<line class="grid" x1="96.00" y1="76" x2="96.00" y2="502"/>
+<text class="tick" transform="translate(96.00 526) rotate(-22)" text-anchor="end">none coeff=0.001</text>
+<line class="grid" x1="221.60" y1="76" x2="221.60" y2="502"/>
+<text class="tick" transform="translate(221.60 526) rotate(-22)" text-anchor="end">none coeff=0.01</text>
+<line class="grid" x1="347.20" y1="76" x2="347.20" y2="502"/>
+<text class="tick" transform="translate(347.20 526) rotate(-22)" text-anchor="end">split_minleaf_margin coeff=0.003</text>
+<line class="grid" x1="472.80" y1="76" x2="472.80" y2="502"/>
+<text class="tick" transform="translate(472.80 526) rotate(-22)" text-anchor="end">split_minleaf_margin coeff=0.001</text>
+<line class="grid" x1="598.40" y1="76" x2="598.40" y2="502"/>
+<text class="tick" transform="translate(598.40 526) rotate(-22)" text-anchor="end">split_minleaf_margin coeff=0.0</text>
+<line class="grid" x1="724.00" y1="76" x2="724.00" y2="502"/>
+<text class="tick" transform="translate(724.00 526) rotate(-22)" text-anchor="end">split_minleaf coeff=0.001</text>
+<line class="grid" x1="96" y1="502.00" x2="724" y2="502.00"/>
+<text class="tick" x="84" y="506.00" text-anchor="end">-5.120</text>
+<line class="grid" x1="96" y1="416.80" x2="724" y2="416.80"/>
+<text class="tick" x="84" y="420.80" text-anchor="end">21.33</text>
+<line class="grid" x1="96" y1="331.60" x2="724" y2="331.60"/>
+<text class="tick" x="84" y="335.60" text-anchor="end">47.78</text>
+<line class="grid" x1="96" y1="246.40" x2="724" y2="246.40"/>
+<text class="tick" x="84" y="250.40" text-anchor="end">74.22</text>
+<line class="grid" x1="96" y1="161.20" x2="724" y2="161.20"/>
+<text class="tick" x="84" y="165.20" text-anchor="end">100.7</text>
+<line class="grid" x1="96" y1="76.00" x2="724" y2="76.00"/>
+<text class="tick" x="84" y="80.00" text-anchor="end">127.1</text>
+<line class="axis" x1="96" y1="502" x2="724" y2="502"/>
+<line class="axis" x1="96" y1="76" x2="96" y2="502"/>
+<text class="label" x="410.00" y="582" text-anchor="middle">Balance recipe and coefficient</text>
+<text class="label" transform="translate(28 289.00) rotate(-90)" text-anchor="middle">Dead leaves</text>
+<circle class="point" cx="80.00" cy="440.41" r="6" fill="#7c3aed">
+<title>vanilla_ste d5: Dead leaves=14.00. source=docs/t13_stage_d_arch_summary.csv; balance_recipe=none; balance_coeff=0.001; final_nmse=0.004614771343767643; tokens_per_second=44221.904617032145; dead_leaves=14</title>
+</circle>
+<circle class="point" cx="96.00" cy="105.38" r="6" fill="#dc2626">
+<title>sigmoid_surrogate_ste d7: Dead leaves=118.0. source=docs/t13_stage_d_arch_summary.csv; balance_recipe=none; balance_coeff=0.001; final_nmse=0.011140787973999977; tokens_per_second=20161.338719094518; dead_leaves=118</title>
+</circle>
+<circle class="point" cx="112.00" cy="115.04" r="6" fill="#059669">
+<title>st_gumbel d7: Dead leaves=115.0. source=docs/t13_stage_d_arch_summary.csv; balance_recipe=none; balance_coeff=0.001; final_nmse=0.019196517765522003; tokens_per_second=20878.227922773516; dead_leaves=115</title>
+</circle>
+<circle class="point" cx="213.60" cy="472.62" r="6" fill="#059669">
+<title>st_gumbel d3: Dead leaves=4.000. source=docs/t13_stage_d_arch_summary.csv; balance_recipe=none; balance_coeff=0.01; final_nmse=0.012248126789927483; tokens_per_second=51741.54639959634; dead_leaves=4</title>
+</circle>
+<circle class="point" cx="229.60" cy="392.09" r="6" fill="#2563eb">
+<title>clipped_ste d5: Dead leaves=29.00. source=docs/t13_stage_d_arch_summary.csv; balance_recipe=none; balance_coeff=0.01; final_nmse=0.012347257696092129; tokens_per_second=37200.840753252305; dead_leaves=29</title>
+</circle>
+<circle class="point" cx="339.20" cy="395.31" r="6" fill="#dc2626">
+<title>sigmoid_surrogate_ste d5: Dead leaves=28.00. source=docs/t13_stage_d_arch_summary.csv; balance_recipe=split_minleaf_margin; balance_coeff=0.003; final_nmse=0.02058408223092556; tokens_per_second=30585.633110282382; dead_leaves=28</title>
+</circle>
+<circle class="point" cx="355.20" cy="440.41" r="6" fill="#059669">
+<title>st_gumbel d4: Dead leaves=14.00. source=docs/t13_stage_d_arch_summary.csv; balance_recipe=split_minleaf_margin; balance_coeff=0.003; final_nmse=0.026492847129702568; tokens_per_second=45113.809470802924; dead_leaves=14</title>
+</circle>
+<circle class="point" cx="472.80" cy="401.75" r="6" fill="#dc2626">
+<title>sigmoid_surrogate_ste d5: Dead leaves=26.00. source=docs/t13_stage_d_arch_summary.csv; balance_recipe=split_minleaf_margin; balance_coeff=0.001; final_nmse=0.02152986451983452; tokens_per_second=26896.021105178577; dead_leaves=26</title>
+</circle>
+<circle class="point" cx="598.40" cy="443.63" r="6" fill="#059669">
+<title>st_gumbel d4: Dead leaves=13.00. source=docs/t13_stage_d_arch_summary.csv; balance_recipe=split_minleaf_margin; balance_coeff=0.0; final_nmse=0.025693099945783615; tokens_per_second=54333.846056988565; dead_leaves=13</title>
+</circle>
+<circle class="point" cx="724.00" cy="459.74" r="6" fill="#7c3aed">
+<title>vanilla_ste d4: Dead leaves=8.000. source=docs/t13_stage_d_arch_summary.csv; balance_recipe=split_minleaf; balance_coeff=0.001; final_nmse=0.03851555287837982; tokens_per_second=36428.289886670245; dead_leaves=8</title>
+</circle>
+<text class="label" x="780" y="62">Series</text>
+<circle cx="780" cy="84" r="5" fill="#2563eb"/>
+<text class="legend" x="792" y="88">clipped_ste</text>
+<circle cx="780" cy="106" r="5" fill="#dc2626"/>
+<text class="legend" x="792" y="110">sigmoid_surrogate_ste</text>
+<circle cx="780" cy="128" r="5" fill="#059669"/>
+<text class="legend" x="792" y="132">st_gumbel</text>
+<circle cx="780" cy="150" r="5" fill="#7c3aed"/>
+<text class="legend" x="792" y="154">vanilla_ste</text>
+</svg>

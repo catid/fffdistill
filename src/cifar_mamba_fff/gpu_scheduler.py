@@ -16,7 +16,7 @@ from .utils import bool_arg, git_commit
 DEFAULT_PYTHON_BIN = ".venv/bin/python"
 DEFAULT_SMOKE_MODE = "metadata"
 DEFAULT_JOB_KIND = "teacher_train"
-COLLECTED_ARTIFACT_NAMES = (
+ROOT_COLLECTED_ARTIFACT_NAMES = (
     "status.json",
     "stdout.log",
     "stderr.log",
@@ -27,17 +27,23 @@ COLLECTED_ARTIFACT_NAMES = (
     "metrics.jsonl",
     "teacher_hpo_summary.json",
     "teacher_hpo_events.jsonl",
-    "trials/trial_000000/trial_config.json",
-    "trials/trial_000000/trial_summary.json",
-    "trials/trial_000000/run_context.json",
-    "trials/trial_000000/metrics_summary.json",
-    "trials/trial_000000/metrics.jsonl",
     "distill_hpo_summary.json",
-    "trials/trial_000000/distill_config.yaml",
-    "trials/trial_000000/trial_result.json",
-    "trials/trial_000000/distill_summary.json",
-    "trials/trial_000000/layer_summary.json",
-    "trials/trial_000000/layer_metrics.jsonl",
+)
+TRIAL_COLLECTED_ARTIFACT_NAMES = (
+    "trial_config.json",
+    "trial_summary.json",
+    "run_context.json",
+    "metrics_summary.json",
+    "metrics.jsonl",
+    "distill_config.yaml",
+    "trial_result.json",
+    "distill_summary.json",
+    "layer_summary.json",
+    "layer_metrics.jsonl",
+)
+COLLECTED_ARTIFACT_NAMES = (
+    *ROOT_COLLECTED_ARTIFACT_NAMES,
+    *(f"trials/trial_000000/{name}" for name in TRIAL_COLLECTED_ARTIFACT_NAMES),
 )
 
 
@@ -232,14 +238,14 @@ def build_distill_hpo_command(
     teacher_checkpoint: str | None = None,
     base_config: str = "configs/fff_distill_default.yaml",
     hpo_config: str = "configs/fff_distill_hpo.yaml",
-    sample_split: str = "train",
+    sample_split: str = "train_eval",
     max_sample_batches: int = 1,
     max_trials: int = 1,
     max_attempts: int = 32,
     grid_offset: int = 0,
 ) -> str:
-    if sample_split not in {"train", "val"}:
-        raise ValueError("sample_split must be train or val")
+    if sample_split not in {"train", "train_eval", "val"}:
+        raise ValueError("sample_split must be train, train_eval, or val")
     if max_sample_batches <= 0:
         raise ValueError("max_sample_batches must be positive")
     if grid_offset < 0:
@@ -277,7 +283,7 @@ def build_dry_run_jobs(
     distill_base_config: str = "configs/fff_distill_default.yaml",
     distill_hpo_config: str = "configs/fff_distill_hpo.yaml",
     distill_teacher_checkpoint: str | None = None,
-    distill_sample_split: str = "train",
+    distill_sample_split: str = "train_eval",
     distill_max_sample_batches: int = 1,
     distill_grid_offset_base: int = 0,
     hpo_trials_per_job: int = 1,
@@ -725,6 +731,157 @@ def launch_detached_jobs(
     return results
 
 
+def _list_remote_trial_dirs(
+    spec: MachineSpec,
+    output_dir: Path,
+    *,
+    timeout_s: int,
+) -> dict[str, Any]:
+    trials_dir = output_dir / "trials"
+    command = "\n".join(
+        [
+            "python3 - <<'PY'",
+            "import json",
+            "from pathlib import Path",
+            f"path = Path({str(trials_dir)!r})",
+            "if not path.exists():",
+            "    print('[]')",
+            "elif not path.is_dir():",
+            "    raise SystemExit(45)",
+            "else:",
+            "    print(json.dumps(sorted(",
+            "        child.name for child in path.iterdir()",
+            "        if child.is_dir() and child.name.startswith('trial_')",
+            "    )))",
+            "PY",
+        ]
+    )
+    result = run_remote(spec, command, timeout_s=timeout_s)
+    if not result["ok"]:
+        return {
+            "ok": False,
+            "returncode": result["returncode"],
+            "stderr": str(result["stderr"]),
+            "trial_dirs": [],
+        }
+    try:
+        trial_dirs = json.loads(str(result["stdout"]) or "[]")
+    except json.JSONDecodeError as exc:
+        return {
+            "ok": False,
+            "returncode": result["returncode"],
+            "stderr": f"invalid trial directory listing: {type(exc).__name__}: {exc}",
+            "trial_dirs": [],
+        }
+    return {
+        "ok": True,
+        "returncode": result["returncode"],
+        "stderr": str(result["stderr"]),
+        "trial_dirs": [str(name) for name in trial_dirs],
+    }
+
+
+def _trial_dir_name_from_record(record: dict[str, Any]) -> str | None:
+    output_dir = record.get("output_dir")
+    if output_dir is not None:
+        name = Path(str(output_dir)).name
+        if name.startswith("trial_"):
+            return name
+    trial_index = record.get("trial_index")
+    if trial_index is None:
+        return None
+    try:
+        return f"trial_{int(trial_index):06d}"
+    except (TypeError, ValueError):
+        return None
+
+
+def _expected_trial_dirs_from_summary(payload: dict[str, Any]) -> list[str]:
+    trials = payload.get("trials")
+    expected: set[str] = set()
+    if isinstance(trials, list):
+        for trial in trials:
+            if not isinstance(trial, dict):
+                continue
+            name = _trial_dir_name_from_record(trial)
+            if name is not None:
+                expected.add(name)
+    if expected:
+        return sorted(expected)
+
+    accepted_trials = payload.get("accepted_trials")
+    if accepted_trials is None:
+        return []
+    try:
+        count = int(accepted_trials)
+        grid_offset = int(payload.get("grid_offset", 0))
+    except (TypeError, ValueError):
+        return []
+    if count <= 0 or count > 100_000 or grid_offset < 0:
+        return []
+    return [f"trial_{grid_offset + index:06d}" for index in range(count)]
+
+
+def _expected_trial_dirs_from_collected_summaries(files: dict[str, Any]) -> list[str]:
+    expected: set[str] = set()
+    for artifact_name in ("teacher_hpo_summary.json", "distill_hpo_summary.json"):
+        record = files.get(artifact_name)
+        if not isinstance(record, dict) or not record.get("ok") or record.get("truncated"):
+            continue
+        local_path = record.get("local_path")
+        if local_path is None:
+            continue
+        try:
+            payload = json.loads(Path(str(local_path)).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(payload, dict):
+            expected.update(_expected_trial_dirs_from_summary(payload))
+    return sorted(expected)
+
+
+def _is_metrics_artifact(artifact_name: str) -> bool:
+    path = Path(artifact_name)
+    return "metrics" in path.name or path.name in {
+        "teacher_hpo_events.jsonl",
+        "layer_metrics.jsonl",
+    }
+
+
+def _collect_one_artifact(
+    spec: MachineSpec,
+    source_path: Path,
+    artifact_name: str,
+    *,
+    destination: Path,
+    timeout_s: int,
+    max_bytes: int,
+) -> dict[str, Any]:
+    result = read_remote_text(
+        spec,
+        source_path,
+        max_bytes=max_bytes,
+        timeout_s=timeout_s,
+    )
+    record: dict[str, Any] = {
+        "source": str(source_path),
+        "ok": bool(result["ok"]),
+        "returncode": result["returncode"],
+        "stderr": str(result["stderr"]),
+        "remote_size_bytes": result.get("remote_size_bytes"),
+        "copied_size_bytes": result.get("copied_size_bytes"),
+        "local_size_bytes": None,
+        "truncated": bool(result.get("truncated")) if result.get("truncated") is not None else None,
+    }
+    if result["ok"]:
+        target = destination / artifact_name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(str(result["stdout"]), encoding="utf-8")
+        record["local_path"] = str(target)
+        record["local_size_bytes"] = target.stat().st_size
+    return record
+
+
 def collect_detached_job_artifacts(
     spec: MachineSpec,
     job: GpuJob,
@@ -737,32 +894,84 @@ def collect_detached_job_artifacts(
     destination = local_root / str(job.machine) / str(job.gpu_id)
     destination.mkdir(parents=True, exist_ok=True)
     collected: dict[str, Any] = {
+        "status": "artifacts_collected",
         "machine": job.machine,
         "gpu_id": job.gpu_id,
         "source_output_dir": str(files.output_dir),
         "local_output_dir": str(destination),
         "files": {},
+        "trial_dirs": {
+            "remote": [],
+            "expected": [],
+            "missing": [],
+            "listing_ok": None,
+            "listing_stderr": "",
+        },
+        "artifact_integrity": {
+            "truncated": False,
+            "truncated_files": [],
+            "metrics_truncated_files": [],
+            "missing_files": [],
+        },
     }
-    for artifact_name in COLLECTED_ARTIFACT_NAMES:
+    for artifact_name in ROOT_COLLECTED_ARTIFACT_NAMES:
         relative_path = files.output_dir / artifact_name
-        result = read_remote_text(
+        collected["files"][artifact_name] = _collect_one_artifact(
             spec,
             relative_path,
-            max_bytes=max_bytes,
+            artifact_name,
+            destination=destination,
             timeout_s=timeout_s,
+            max_bytes=max_bytes,
         )
-        record = {
-            "source": str(relative_path),
-            "ok": bool(result["ok"]),
-            "returncode": result["returncode"],
-            "stderr": str(result["stderr"]),
-        }
-        if result["ok"]:
-            target = destination / artifact_name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(str(result["stdout"]), encoding="utf-8")
-            record["local_path"] = str(target)
-        collected["files"][artifact_name] = record
+
+    listing = _list_remote_trial_dirs(spec, files.output_dir, timeout_s=timeout_s)
+    remote_trial_dirs = sorted(set(str(name) for name in listing["trial_dirs"]))
+    expected_trial_dirs = _expected_trial_dirs_from_collected_summaries(collected["files"])
+    trial_dirs = sorted(set(remote_trial_dirs) | set(expected_trial_dirs))
+    missing_trial_dirs = sorted(set(expected_trial_dirs) - set(remote_trial_dirs))
+    collected["trial_dirs"] = {
+        "remote": remote_trial_dirs,
+        "expected": expected_trial_dirs,
+        "missing": missing_trial_dirs,
+        "listing_ok": bool(listing["ok"]),
+        "listing_stderr": str(listing["stderr"]),
+    }
+
+    for trial_dir in trial_dirs:
+        for artifact_name in TRIAL_COLLECTED_ARTIFACT_NAMES:
+            relative_name = f"trials/{trial_dir}/{artifact_name}"
+            relative_path = files.output_dir / relative_name
+            collected["files"][relative_name] = _collect_one_artifact(
+                spec,
+                relative_path,
+                relative_name,
+                destination=destination,
+                timeout_s=timeout_s,
+                max_bytes=max_bytes,
+            )
+
+    truncated_files = sorted(
+        name
+        for name, record in collected["files"].items()
+        if isinstance(record, dict) and bool(record.get("truncated"))
+    )
+    metrics_truncated_files = [name for name in truncated_files if _is_metrics_artifact(name)]
+    missing_files = sorted(
+        name
+        for name, record in collected["files"].items()
+        if isinstance(record, dict) and not bool(record.get("ok")) and record.get("returncode") == 44
+    )
+    if metrics_truncated_files:
+        collected["status"] = "artifacts_collected_truncated_metrics"
+    elif truncated_files:
+        collected["status"] = "artifacts_collected_truncated"
+    collected["artifact_integrity"] = {
+        "truncated": bool(truncated_files),
+        "truncated_files": truncated_files,
+        "metrics_truncated_files": metrics_truncated_files,
+        "missing_files": missing_files,
+    }
     return collected
 
 
@@ -834,8 +1043,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--distill-hpo-config", default="configs/fff_distill_hpo.yaml")
     parser.add_argument(
         "--distill-sample-split",
-        choices=("train", "val"),
-        default="train",
+        choices=("train", "train_eval", "val"),
+        default="train_eval",
         help="CIFAR split used to sample teacher Linear activations for distillation HPO.",
     )
     parser.add_argument("--distill-max-sample-batches", type=int, default=1)

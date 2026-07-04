@@ -2,6 +2,13 @@
 
 This is a short validation-split smoke/ablation gate for optimizer plumbing, not a final accuracy result. CIFAR-10 test was not accessed.
 
+T18 protocol caveat: the recorded 2026-07-04 smoke rows below used one different
+seed per optimizer/schedule case (`7331` through `7336`), so they are
+seed-confounded and must not be read as optimizer quality comparisons. The runner
+and config now support an explicit shared `seeds:` list per case, write
+`seed_list`/`seed_count` to artifacts, and require a NorMuon/PACE+NorMuon update-RMS
+calibration note before future ablation claims.
+
 - Run id: `t19_optimizer_ablation_20260704_094958`
 - Git commit for launch: `c4425c03000273f76cf3a3892e1abf90c1dd8f68`
 - Budget per case: `epochs=1`, `max_train_steps=2`, `max_val_steps=2`, batch size `256`, train/validation split only.
@@ -22,6 +29,7 @@ This is a short validation-split smoke/ablation gate for optimizer plumbing, not
 ## Interpretation
 
 - The goal of this gate was correctness/provenance and equal-budget execution, not optimizer ranking. Two training steps are too short for quality claims.
+- The recorded rows are also seed-confounded as described above; rerun with the updated shared-seed protocol before comparing optimizer families.
 - Reported `imgs/s` includes first-run Mamba/TileLang compile and launch overhead on some remotes; use T16/profiled runs for throughput claims.
 - `pace_muon` wraps the official KellerJordan/Muon optimizer; this preserves the official baseline and adds PACE EMA evaluation.
 - `normuon_adamw` and `pace_normuon` are explicitly non-official vendored optimizer-experiments ablations using this repo's audited parameter split.

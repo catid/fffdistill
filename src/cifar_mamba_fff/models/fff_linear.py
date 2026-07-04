@@ -24,7 +24,11 @@ RouteRowsOutputCount = int | Literal["all"]
 
 @dataclass(frozen=True)
 class FFFLinearConfig:
-    """Configuration for :class:`FFFLinear`."""
+    """Configuration for :class:`FFFLinear`.
+
+    ``region_leak`` is a train-only regularizer. Evaluation/inference uses an
+    effective leak of zero so hard-routed grouped inference remains conditional.
+    """
 
     in_features: int
     out_features: int
@@ -110,7 +114,8 @@ class FFFRouteInfo:
     """Routing diagnostics for a batch.
 
     ``leaf_probs`` are the router probabilities before ``region_leak``.
-    ``leaf_weights`` are the effective regular-leaf output weights.
+    ``leaf_weights`` are the effective regular-leaf output weights under the
+    module's current train/eval leak policy.
     Route output contribution, when enabled, follows the hard/argmax path for
     both hard and soft routing.
     """
@@ -606,6 +611,9 @@ class FFFLinear(nn.Module):
                 "route_rows_output_count": self.config.route_rows_output_count,
                 "route_rows_output_fraction": self.config.route_rows_output_fraction,
                 "leaf_rows": self.leaf_rows,
+                "region_leak": self.config.region_leak,
+                "effective_region_leak": self._effective_region_leak(),
+                "region_leak_policy": "train_only",
                 "max_visited_route_rows_per_token": self.max_visited_route_rows_per_token,
                 "max_route_output_rows_per_token": self.max_route_output_rows_per_token,
                 "stored_route_output_rows": self.stored_route_output_rows,
@@ -798,7 +806,7 @@ class FFFLinear(nn.Module):
         return torch.stack(node_ids, dim=1), torch.stack(bits_by_depth, dim=1)
 
     def _regular_leaf_weights(self, leaf_probs: Tensor) -> tuple[Tensor, float]:
-        leak = float(self.config.region_leak)
+        leak = self._effective_region_leak()
         if leak == 0.0:
             return leaf_probs, 0.0
         if self.config.fallback_leaf:
@@ -807,6 +815,11 @@ class FFFLinear(nn.Module):
 
     def _fallback_weight(self) -> float:
         if not self.config.fallback_leaf:
+            return 0.0
+        return self._effective_region_leak()
+
+    def _effective_region_leak(self) -> float:
+        if not self.training:
             return 0.0
         return float(self.config.region_leak)
 
@@ -819,12 +832,12 @@ class FFFLinear(nn.Module):
             return self._selected_leaf_output_grouped(flat, route_info)
         if (
             self.config.hard_routing
-            and self.config.region_leak > 0.0
+            and self._effective_region_leak() > 0.0
             and not self.config.fallback_leaf
         ):
             selected = self._selected_leaf_raw_output_grouped(flat, route_info)
             uniform = self._uniform_regular_leaf_output_grouped(flat)
-            leak = float(self.config.region_leak)
+            leak = self._effective_region_leak()
             return selected.mul(1.0 - leak).add(uniform, alpha=leak)
 
         leaf_values = self._activation(
@@ -837,14 +850,14 @@ class FFFLinear(nn.Module):
     def _can_use_selected_leaf_grouped_path(self) -> bool:
         if not self.config.hard_routing:
             return False
-        if self.config.region_leak == 0.0:
+        if self._effective_region_leak() == 0.0:
             return True
         return self.config.fallback_leaf
 
     def _selected_leaf_output_grouped(self, flat: Tensor, route_info: _FlatRouteInfo) -> Tensor:
         if flat.shape[0] == 0:
             return flat.new_empty(0, self.out_features)
-        if self.config.fallback_leaf and self.config.region_leak == 1.0:
+        if self.config.fallback_leaf and self._effective_region_leak() == 1.0:
             return flat.new_zeros(flat.shape[0], self.out_features)
 
         weights = route_info.leaf_weights.gather(1, route_info.leaf_ids.unsqueeze(1)).squeeze(1)
@@ -986,10 +999,11 @@ class FFFLinear(nn.Module):
 
     def _static_active_rows_per_token(self) -> int:
         route_rows = self._route_output_count()
+        leak = self._effective_region_leak()
         if self.config.hard_routing:
             if self.config.fallback_leaf:
-                regular_leaf_rows = 0 if self.config.region_leak == 1.0 else self.leaf_rows
-            elif self.config.region_leak > 0.0:
+                regular_leaf_rows = 0 if leak == 1.0 else self.leaf_rows
+            elif leak > 0.0:
                 regular_leaf_rows = self.leaves * self.leaf_rows
             else:
                 regular_leaf_rows = self.leaf_rows
@@ -998,7 +1012,7 @@ class FFFLinear(nn.Module):
         master_rows = self.leaf_rows if self.config.master_leaf else 0
         fallback_rows = (
             self.leaf_rows
-            if self.config.fallback_leaf and self.config.region_leak != 0.0
+            if self.config.fallback_leaf and leak != 0.0
             else 0
         )
         return self.shared_rows + regular_leaf_rows + master_rows + fallback_rows + route_rows
@@ -1030,6 +1044,9 @@ class FFFLinear(nn.Module):
             "route_rows_output_count": self.config.route_rows_output_count,
             "route_rows_output_fraction": self.config.route_rows_output_fraction,
             "leaf_rows": self.leaf_rows,
+            "region_leak": self.config.region_leak,
+            "effective_region_leak": self._effective_region_leak(),
+            "region_leak_policy": "train_only",
             "max_visited_route_rows_per_token": self.max_visited_route_rows_per_token,
             "max_route_output_rows_per_token": self.max_route_output_rows_per_token,
             "stored_route_output_rows": self.stored_route_output_rows,

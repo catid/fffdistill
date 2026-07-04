@@ -1,0 +1,272 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="620" viewBox="0 0 960 620" role="img" aria-labelledby="title desc">
+<title id="title">MSE vs Active Rows</title>
+<desc id="desc">Final normalized MSE against active rows from T20 and Stage F CSVs.</desc>
+<style>
+  .bg { fill: #ffffff; }
+  .grid { stroke: #e5e7eb; stroke-width: 1; }
+  .axis { stroke: #111827; stroke-width: 1.4; }
+  .tick { fill: #374151; font: 12px sans-serif; }
+  .title { fill: #111827; font: 700 24px sans-serif; }
+  .subtitle { fill: #4b5563; font: 13px sans-serif; }
+  .label { fill: #111827; font: 14px sans-serif; }
+  .point-label { fill: #111827; font: 10px sans-serif; }
+  .legend { fill: #111827; font: 12px sans-serif; }
+  .point { stroke: #ffffff; stroke-width: 1.5; }
+</style>
+<rect class="bg" x="0" y="0" width="960" height="620"/>
+<text class="title" x="96" y="38">MSE vs Active Rows</text>
+<text class="subtitle" x="96" y="60">T20 route-output cases plus all Stage F layerwise distillations</text>
+<line class="grid" x1="96.00" y1="76" x2="96.00" y2="502"/>
+<text class="tick" x="96.00" y="524" text-anchor="middle">89.04</text>
+<line class="grid" x1="221.60" y1="76" x2="221.60" y2="502"/>
+<text class="tick" x="221.60" y="524" text-anchor="middle">144.0</text>
+<line class="grid" x1="347.20" y1="76" x2="347.20" y2="502"/>
+<text class="tick" x="347.20" y="524" text-anchor="middle">199.0</text>
+<line class="grid" x1="472.80" y1="76" x2="472.80" y2="502"/>
+<text class="tick" x="472.80" y="524" text-anchor="middle">254.0</text>
+<line class="grid" x1="598.40" y1="76" x2="598.40" y2="502"/>
+<text class="tick" x="598.40" y="524" text-anchor="middle">309.0</text>
+<line class="grid" x1="724.00" y1="76" x2="724.00" y2="502"/>
+<text class="tick" x="724.00" y="524" text-anchor="middle">364.0</text>
+<line class="grid" x1="96" y1="502.00" x2="724" y2="502.00"/>
+<text class="tick" x="84" y="506.00" text-anchor="end">-0.0315</text>
+<line class="grid" x1="96" y1="416.80" x2="724" y2="416.80"/>
+<text class="tick" x="84" y="420.80" text-anchor="end">0.1222</text>
+<line class="grid" x1="96" y1="331.60" x2="724" y2="331.60"/>
+<text class="tick" x="84" y="335.60" text-anchor="end">0.2759</text>
+<line class="grid" x1="96" y1="246.40" x2="724" y2="246.40"/>
+<text class="tick" x="84" y="250.40" text-anchor="end">0.4295</text>
+<line class="grid" x1="96" y1="161.20" x2="724" y2="161.20"/>
+<text class="tick" x="84" y="165.20" text-anchor="end">0.5832</text>
+<line class="grid" x1="96" y1="76.00" x2="724" y2="76.00"/>
+<text class="tick" x="84" y="80.00" text-anchor="end">0.7369</text>
+<line class="axis" x1="96" y1="502" x2="724" y2="502"/>
+<line class="axis" x1="96" y1="76" x2="96" y2="502"/>
+<text class="label" x="410.00" y="582" text-anchor="middle">Active rows per token</text>
+<text class="label" transform="translate(28 289.00) rotate(-90)" text-anchor="middle">Final normalized MSE</text>
+<circle class="point" cx="139.31" cy="317.89" r="6" fill="#dc2626">
+<title>none_routing_only: Active rows per token=108.0, Final normalized MSE=0.3006. source=docs/t20_route_row_output_ablation_results.csv; case_name=none_routing_only; active_rows_per_token=108.0; final_nmse=0.3005816340446472</title>
+</circle>
+<text class="point-label" x="147.31" y="309.89">none_routing_only</text>
+<circle class="point" cx="150.73" cy="321.92" r="6" fill="#dc2626">
+<title>shared_one_per_node: Active rows per token=113.0, Final normalized MSE=0.2933. source=docs/t20_route_row_output_ablation_results.csv; case_name=shared_one_per_node; active_rows_per_token=113.0; final_nmse=0.2933182418346405</title>
+</circle>
+<text class="point-label" x="158.73" y="313.92">shared_one_per_node</text>
+<circle class="point" cx="162.15" cy="325.35" r="6" fill="#dc2626">
+<title>shared_all: Active rows per token=118.0, Final normalized MSE=0.2871. source=docs/t20_route_row_output_ablation_results.csv; case_name=shared_all; active_rows_per_token=118.0; final_nmse=0.2871333360671997</title>
+</circle>
+<text class="point-label" x="170.15" y="317.35">shared_all</text>
+<circle class="point" cx="150.73" cy="321.91" r="6" fill="#dc2626">
+<title>shared_half_fraction: Active rows per token=113.0, Final normalized MSE=0.2933. source=docs/t20_route_row_output_ablation_results.csv; case_name=shared_half_fraction; active_rows_per_token=113.0; final_nmse=0.2933366298675537</title>
+</circle>
+<text class="point-label" x="158.73" y="313.91">shared_half_fraction</text>
+<circle class="point" cx="150.73" cy="322.54" r="6" fill="#dc2626">
+<title>split_one_per_node: Active rows per token=113.0, Final normalized MSE=0.2922. source=docs/t20_route_row_output_ablation_results.csv; case_name=split_one_per_node; active_rows_per_token=113.0; final_nmse=0.2921988368034363</title>
+</circle>
+<text class="point-label" x="158.73" y="314.54">split_one_per_node</text>
+<circle class="point" cx="162.15" cy="326.84" r="6" fill="#dc2626">
+<title>split_all: Active rows per token=118.0, Final normalized MSE=0.2844. source=docs/t20_route_row_output_ablation_results.csv; case_name=split_all; active_rows_per_token=118.0; final_nmse=0.2844492793083191</title>
+</circle>
+<text class="point-label" x="170.15" y="318.84">split_all</text>
+<circle class="point" cx="150.73" cy="322.59" r="6" fill="#dc2626">
+<title>split_half_fraction: Active rows per token=113.0, Final normalized MSE=0.2921. source=docs/t20_route_row_output_ablation_results.csv; case_name=split_half_fraction; active_rows_per_token=113.0; final_nmse=0.29211580753326416</title>
+</circle>
+<text class="point-label" x="158.73" y="314.59">split_half_fraction</text>
+<circle class="point" cx="680.69" cy="468.50" r="6" fill="#2563eb">
+<title>blocks.0.forward_block.mixer.mixer.in_proj: Active rows per token=345.0, Final normalized MSE=0.0289. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.0.forward_block.mixer.mixer.in_proj; active_rows_per_token=345.0; final_nmse=0.02892218343913555</title>
+</circle>
+<circle class="point" cx="283.22" cy="410.49" r="6" fill="#2563eb">
+<title>blocks.0.forward_block.mixer.mixer.out_proj: Active rows per token=171.0, Final normalized MSE=0.1336. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.0.forward_block.mixer.mixer.out_proj; active_rows_per_token=171.0; final_nmse=0.13355807960033417</title>
+</circle>
+<circle class="point" cx="680.69" cy="472.62" r="6" fill="#2563eb">
+<title>blocks.0.reverse_block.mixer.mixer.in_proj: Active rows per token=345.0, Final normalized MSE=0.0215. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.0.reverse_block.mixer.mixer.in_proj; active_rows_per_token=345.0; final_nmse=0.02149125747382641</title>
+</circle>
+<circle class="point" cx="283.22" cy="391.10" r="6" fill="#2563eb">
+<title>blocks.0.reverse_block.mixer.mixer.out_proj: Active rows per token=171.0, Final normalized MSE=0.1685. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.0.reverse_block.mixer.mixer.out_proj; active_rows_per_token=171.0; final_nmse=0.1685357391834259</title>
+</circle>
+<circle class="point" cx="680.69" cy="464.04" r="6" fill="#2563eb">
+<title>blocks.1.forward_block.mixer.mixer.in_proj: Active rows per token=345.0, Final normalized MSE=0.0370. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.1.forward_block.mixer.mixer.in_proj; active_rows_per_token=345.0; final_nmse=0.03696983680129051</title>
+</circle>
+<circle class="point" cx="283.22" cy="325.21" r="6" fill="#2563eb">
+<title>blocks.1.forward_block.mixer.mixer.out_proj: Active rows per token=171.0, Final normalized MSE=0.2874. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.1.forward_block.mixer.mixer.out_proj; active_rows_per_token=171.0; final_nmse=0.2873818278312683</title>
+</circle>
+<circle class="point" cx="680.69" cy="461.48" r="6" fill="#2563eb">
+<title>blocks.1.reverse_block.mixer.mixer.in_proj: Active rows per token=345.0, Final normalized MSE=0.0416. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.1.reverse_block.mixer.mixer.in_proj; active_rows_per_token=345.0; final_nmse=0.041584182530641556</title>
+</circle>
+<circle class="point" cx="283.22" cy="307.42" r="6" fill="#2563eb">
+<title>blocks.1.reverse_block.mixer.mixer.out_proj: Active rows per token=171.0, Final normalized MSE=0.3195. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.1.reverse_block.mixer.mixer.out_proj; active_rows_per_token=171.0; final_nmse=0.3194620907306671</title>
+</circle>
+<circle class="point" cx="680.69" cy="453.37" r="6" fill="#2563eb">
+<title>blocks.2.forward_block.mixer.mixer.in_proj: Active rows per token=345.0, Final normalized MSE=0.0562. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.2.forward_block.mixer.mixer.in_proj; active_rows_per_token=345.0; final_nmse=0.056214019656181335</title>
+</circle>
+<circle class="point" cx="283.22" cy="257.28" r="6" fill="#2563eb">
+<title>blocks.2.forward_block.mixer.mixer.out_proj: Active rows per token=171.0, Final normalized MSE=0.4099. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.2.forward_block.mixer.mixer.out_proj; active_rows_per_token=171.0; final_nmse=0.40990984439849854</title>
+</circle>
+<circle class="point" cx="680.69" cy="455.34" r="6" fill="#2563eb">
+<title>blocks.2.reverse_block.mixer.mixer.in_proj: Active rows per token=345.0, Final normalized MSE=0.0527. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.2.reverse_block.mixer.mixer.in_proj; active_rows_per_token=345.0; final_nmse=0.052654415369033813</title>
+</circle>
+<circle class="point" cx="283.22" cy="301.86" r="6" fill="#2563eb">
+<title>blocks.2.reverse_block.mixer.mixer.out_proj: Active rows per token=171.0, Final normalized MSE=0.3295. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.2.reverse_block.mixer.mixer.out_proj; active_rows_per_token=171.0; final_nmse=0.32949504256248474</title>
+</circle>
+<circle class="point" cx="680.69" cy="446.78" r="6" fill="#2563eb">
+<title>blocks.3.forward_block.mixer.mixer.in_proj: Active rows per token=345.0, Final normalized MSE=0.0681. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.3.forward_block.mixer.mixer.in_proj; active_rows_per_token=345.0; final_nmse=0.06809797137975693</title>
+</circle>
+<circle class="point" cx="283.22" cy="264.76" r="6" fill="#2563eb">
+<title>blocks.3.forward_block.mixer.mixer.out_proj: Active rows per token=171.0, Final normalized MSE=0.3964. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.3.forward_block.mixer.mixer.out_proj; active_rows_per_token=171.0; final_nmse=0.39641693234443665</title>
+</circle>
+<circle class="point" cx="680.69" cy="444.21" r="6" fill="#2563eb">
+<title>blocks.3.reverse_block.mixer.mixer.in_proj: Active rows per token=345.0, Final normalized MSE=0.0727. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.3.reverse_block.mixer.mixer.in_proj; active_rows_per_token=345.0; final_nmse=0.07273661345243454</title>
+</circle>
+<circle class="point" cx="283.22" cy="249.94" r="6" fill="#2563eb">
+<title>blocks.3.reverse_block.mixer.mixer.out_proj: Active rows per token=171.0, Final normalized MSE=0.4231. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.3.reverse_block.mixer.mixer.out_proj; active_rows_per_token=171.0; final_nmse=0.4231436848640442</title>
+</circle>
+<circle class="point" cx="680.69" cy="429.45" r="6" fill="#2563eb">
+<title>blocks.4.forward_block.mixer.mixer.in_proj: Active rows per token=345.0, Final normalized MSE=0.0994. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.4.forward_block.mixer.mixer.in_proj; active_rows_per_token=345.0; final_nmse=0.09936721622943878</title>
+</circle>
+<circle class="point" cx="283.22" cy="212.82" r="6" fill="#2563eb">
+<title>blocks.4.forward_block.mixer.mixer.out_proj: Active rows per token=171.0, Final normalized MSE=0.4901. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.4.forward_block.mixer.mixer.out_proj; active_rows_per_token=171.0; final_nmse=0.49010169506073</title>
+</circle>
+<circle class="point" cx="680.69" cy="434.13" r="6" fill="#2563eb">
+<title>blocks.4.reverse_block.mixer.mixer.in_proj: Active rows per token=345.0, Final normalized MSE=0.0909. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.4.reverse_block.mixer.mixer.in_proj; active_rows_per_token=345.0; final_nmse=0.09092391282320023</title>
+</circle>
+<circle class="point" cx="283.22" cy="208.56" r="6" fill="#2563eb">
+<title>blocks.4.reverse_block.mixer.mixer.out_proj: Active rows per token=171.0, Final normalized MSE=0.4978. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.4.reverse_block.mixer.mixer.out_proj; active_rows_per_token=171.0; final_nmse=0.49779075384140015</title>
+</circle>
+<circle class="point" cx="680.69" cy="426.24" r="6" fill="#2563eb">
+<title>blocks.5.forward_block.mixer.mixer.in_proj: Active rows per token=345.0, Final normalized MSE=0.1051. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.5.forward_block.mixer.mixer.in_proj; active_rows_per_token=345.0; final_nmse=0.10514088720083237</title>
+</circle>
+<circle class="point" cx="283.22" cy="187.55" r="6" fill="#2563eb">
+<title>blocks.5.forward_block.mixer.mixer.out_proj: Active rows per token=171.0, Final normalized MSE=0.5357. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.5.forward_block.mixer.mixer.out_proj; active_rows_per_token=171.0; final_nmse=0.5356885194778442</title>
+</circle>
+<circle class="point" cx="680.69" cy="418.91" r="6" fill="#2563eb">
+<title>blocks.5.reverse_block.mixer.mixer.in_proj: Active rows per token=345.0, Final normalized MSE=0.1184. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.5.reverse_block.mixer.mixer.in_proj; active_rows_per_token=345.0; final_nmse=0.11836642771959305</title>
+</circle>
+<circle class="point" cx="283.22" cy="188.49" r="6" fill="#2563eb">
+<title>blocks.5.reverse_block.mixer.mixer.out_proj: Active rows per token=171.0, Final normalized MSE=0.5340. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.5.reverse_block.mixer.mixer.out_proj; active_rows_per_token=171.0; final_nmse=0.5339922308921814</title>
+</circle>
+<circle class="point" cx="680.69" cy="407.65" r="6" fill="#2563eb">
+<title>blocks.6.forward_block.mixer.mixer.in_proj: Active rows per token=345.0, Final normalized MSE=0.1387. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.6.forward_block.mixer.mixer.in_proj; active_rows_per_token=345.0; final_nmse=0.13868412375450134</title>
+</circle>
+<circle class="point" cx="283.22" cy="140.54" r="6" fill="#2563eb">
+<title>blocks.6.forward_block.mixer.mixer.out_proj: Active rows per token=171.0, Final normalized MSE=0.6205. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.6.forward_block.mixer.mixer.out_proj; active_rows_per_token=171.0; final_nmse=0.6204773187637329</title>
+</circle>
+<circle class="point" cx="680.69" cy="412.00" r="6" fill="#2563eb">
+<title>blocks.6.reverse_block.mixer.mixer.in_proj: Active rows per token=345.0, Final normalized MSE=0.1308. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.6.reverse_block.mixer.mixer.in_proj; active_rows_per_token=345.0; final_nmse=0.13083435595035553</title>
+</circle>
+<circle class="point" cx="283.22" cy="145.84" r="6" fill="#2563eb">
+<title>blocks.6.reverse_block.mixer.mixer.out_proj: Active rows per token=171.0, Final normalized MSE=0.6109. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.6.reverse_block.mixer.mixer.out_proj; active_rows_per_token=171.0; final_nmse=0.6109112501144409</title>
+</circle>
+<circle class="point" cx="680.69" cy="400.56" r="6" fill="#2563eb">
+<title>blocks.7.forward_block.mixer.mixer.in_proj: Active rows per token=345.0, Final normalized MSE=0.1515. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.7.forward_block.mixer.mixer.in_proj; active_rows_per_token=345.0; final_nmse=0.15146316587924957</title>
+</circle>
+<circle class="point" cx="283.22" cy="152.90" r="6" fill="#2563eb">
+<title>blocks.7.forward_block.mixer.mixer.out_proj: Active rows per token=171.0, Final normalized MSE=0.5982. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.7.forward_block.mixer.mixer.out_proj; active_rows_per_token=171.0; final_nmse=0.5981863141059875</title>
+</circle>
+<circle class="point" cx="680.69" cy="400.89" r="6" fill="#2563eb">
+<title>blocks.7.reverse_block.mixer.mixer.in_proj: Active rows per token=345.0, Final normalized MSE=0.1509. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.7.reverse_block.mixer.mixer.in_proj; active_rows_per_token=345.0; final_nmse=0.15087899565696716</title>
+</circle>
+<circle class="point" cx="283.22" cy="137.66" r="6" fill="#2563eb">
+<title>blocks.7.reverse_block.mixer.mixer.out_proj: Active rows per token=171.0, Final normalized MSE=0.6257. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.7.reverse_block.mixer.mixer.out_proj; active_rows_per_token=171.0; final_nmse=0.6256627440452576</title>
+</circle>
+<circle class="point" cx="680.69" cy="394.43" r="6" fill="#2563eb">
+<title>blocks.8.forward_block.mixer.mixer.in_proj: Active rows per token=345.0, Final normalized MSE=0.1625. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.8.forward_block.mixer.mixer.in_proj; active_rows_per_token=345.0; final_nmse=0.1625267118215561</title>
+</circle>
+<circle class="point" cx="283.22" cy="128.96" r="6" fill="#2563eb">
+<title>blocks.8.forward_block.mixer.mixer.out_proj: Active rows per token=171.0, Final normalized MSE=0.6414. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.8.forward_block.mixer.mixer.out_proj; active_rows_per_token=171.0; final_nmse=0.6413702964782715</title>
+</circle>
+<circle class="point" cx="680.69" cy="393.06" r="6" fill="#2563eb">
+<title>blocks.8.reverse_block.mixer.mixer.in_proj: Active rows per token=345.0, Final normalized MSE=0.1650. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.8.reverse_block.mixer.mixer.in_proj; active_rows_per_token=345.0; final_nmse=0.1649935245513916</title>
+</circle>
+<circle class="point" cx="283.22" cy="119.65" r="6" fill="#2563eb">
+<title>blocks.8.reverse_block.mixer.mixer.out_proj: Active rows per token=171.0, Final normalized MSE=0.6582. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.8.reverse_block.mixer.mixer.out_proj; active_rows_per_token=171.0; final_nmse=0.6581509113311768</title>
+</circle>
+<circle class="point" cx="680.69" cy="386.06" r="6" fill="#2563eb">
+<title>blocks.9.forward_block.mixer.mixer.in_proj: Active rows per token=345.0, Final normalized MSE=0.1776. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.9.forward_block.mixer.mixer.in_proj; active_rows_per_token=345.0; final_nmse=0.17762459814548492</title>
+</circle>
+<circle class="point" cx="283.22" cy="121.54" r="6" fill="#2563eb">
+<title>blocks.9.forward_block.mixer.mixer.out_proj: Active rows per token=171.0, Final normalized MSE=0.6548. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.9.forward_block.mixer.mixer.out_proj; active_rows_per_token=171.0; final_nmse=0.654752254486084</title>
+</circle>
+<circle class="point" cx="680.69" cy="386.48" r="6" fill="#2563eb">
+<title>blocks.9.reverse_block.mixer.mixer.in_proj: Active rows per token=345.0, Final normalized MSE=0.1769. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.9.reverse_block.mixer.mixer.in_proj; active_rows_per_token=345.0; final_nmse=0.17686404287815094</title>
+</circle>
+<circle class="point" cx="283.22" cy="105.38" r="6" fill="#2563eb">
+<title>blocks.9.reverse_block.mixer.mixer.out_proj: Active rows per token=171.0, Final normalized MSE=0.6839. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.9.reverse_block.mixer.mixer.out_proj; active_rows_per_token=171.0; final_nmse=0.6838973760604858</title>
+</circle>
+<circle class="point" cx="680.69" cy="380.35" r="6" fill="#2563eb">
+<title>blocks.10.forward_block.mixer.mixer.in_proj: Active rows per token=345.0, Final normalized MSE=0.1879. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.10.forward_block.mixer.mixer.in_proj; active_rows_per_token=345.0; final_nmse=0.18792420625686646</title>
+</circle>
+<circle class="point" cx="283.22" cy="106.52" r="6" fill="#2563eb">
+<title>blocks.10.forward_block.mixer.mixer.out_proj: Active rows per token=171.0, Final normalized MSE=0.6818. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.10.forward_block.mixer.mixer.out_proj; active_rows_per_token=171.0; final_nmse=0.6818343997001648</title>
+</circle>
+<circle class="point" cx="680.69" cy="385.44" r="6" fill="#2563eb">
+<title>blocks.10.reverse_block.mixer.mixer.in_proj: Active rows per token=345.0, Final normalized MSE=0.1787. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.10.reverse_block.mixer.mixer.in_proj; active_rows_per_token=345.0; final_nmse=0.17874731123447418</title>
+</circle>
+<circle class="point" cx="283.22" cy="113.58" r="6" fill="#2563eb">
+<title>blocks.10.reverse_block.mixer.mixer.out_proj: Active rows per token=171.0, Final normalized MSE=0.6691. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.10.reverse_block.mixer.mixer.out_proj; active_rows_per_token=171.0; final_nmse=0.669104814529419</title>
+</circle>
+<circle class="point" cx="680.69" cy="375.51" r="6" fill="#2563eb">
+<title>blocks.11.forward_block.mixer.mixer.in_proj: Active rows per token=345.0, Final normalized MSE=0.1967. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.11.forward_block.mixer.mixer.in_proj; active_rows_per_token=345.0; final_nmse=0.1966600865125656</title>
+</circle>
+<circle class="point" cx="283.22" cy="117.92" r="6" fill="#2563eb">
+<title>blocks.11.forward_block.mixer.mixer.out_proj: Active rows per token=171.0, Final normalized MSE=0.6613. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.11.forward_block.mixer.mixer.out_proj; active_rows_per_token=171.0; final_nmse=0.6612691879272461</title>
+</circle>
+<circle class="point" cx="680.69" cy="379.16" r="6" fill="#2563eb">
+<title>blocks.11.reverse_block.mixer.mixer.in_proj: Active rows per token=345.0, Final normalized MSE=0.1901. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.11.reverse_block.mixer.mixer.in_proj; active_rows_per_token=345.0; final_nmse=0.19006256759166718</title>
+</circle>
+<circle class="point" cx="283.22" cy="109.20" r="6" fill="#2563eb">
+<title>blocks.11.reverse_block.mixer.mixer.out_proj: Active rows per token=171.0, Final normalized MSE=0.6770. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.11.reverse_block.mixer.mixer.out_proj; active_rows_per_token=171.0; final_nmse=0.676997721195221</title>
+</circle>
+<circle class="point" cx="680.69" cy="377.84" r="6" fill="#2563eb">
+<title>blocks.12.forward_block.mixer.mixer.in_proj: Active rows per token=345.0, Final normalized MSE=0.1924. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.12.forward_block.mixer.mixer.in_proj; active_rows_per_token=345.0; final_nmse=0.19244928658008575</title>
+</circle>
+<circle class="point" cx="283.22" cy="201.44" r="6" fill="#2563eb">
+<title>blocks.12.forward_block.mixer.mixer.out_proj: Active rows per token=171.0, Final normalized MSE=0.5106. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.12.forward_block.mixer.mixer.out_proj; active_rows_per_token=171.0; final_nmse=0.5106356739997864</title>
+</circle>
+<circle class="point" cx="680.69" cy="376.75" r="6" fill="#2563eb">
+<title>blocks.12.reverse_block.mixer.mixer.in_proj: Active rows per token=345.0, Final normalized MSE=0.1944. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.12.reverse_block.mixer.mixer.in_proj; active_rows_per_token=345.0; final_nmse=0.1944233477115631</title>
+</circle>
+<circle class="point" cx="283.22" cy="189.12" r="6" fill="#2563eb">
+<title>blocks.12.reverse_block.mixer.mixer.out_proj: Active rows per token=171.0, Final normalized MSE=0.5328. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.12.reverse_block.mixer.mixer.out_proj; active_rows_per_token=171.0; final_nmse=0.5328450798988342</title>
+</circle>
+<circle class="point" cx="680.69" cy="379.91" r="6" fill="#2563eb">
+<title>blocks.13.forward_block.mixer.mixer.in_proj: Active rows per token=345.0, Final normalized MSE=0.1887. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.13.forward_block.mixer.mixer.in_proj; active_rows_per_token=345.0; final_nmse=0.18871644139289856</title>
+</circle>
+<circle class="point" cx="283.22" cy="318.53" r="6" fill="#2563eb">
+<title>blocks.13.forward_block.mixer.mixer.out_proj: Active rows per token=171.0, Final normalized MSE=0.2994. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.13.forward_block.mixer.mixer.out_proj; active_rows_per_token=171.0; final_nmse=0.2994259297847748</title>
+</circle>
+<circle class="point" cx="680.69" cy="380.20" r="6" fill="#2563eb">
+<title>blocks.13.reverse_block.mixer.mixer.in_proj: Active rows per token=345.0, Final normalized MSE=0.1882. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.13.reverse_block.mixer.mixer.in_proj; active_rows_per_token=345.0; final_nmse=0.18819387257099152</title>
+</circle>
+<circle class="point" cx="283.22" cy="295.24" r="6" fill="#2563eb">
+<title>blocks.13.reverse_block.mixer.mixer.out_proj: Active rows per token=171.0, Final normalized MSE=0.3414. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.13.reverse_block.mixer.mixer.out_proj; active_rows_per_token=171.0; final_nmse=0.3414463996887207</title>
+</circle>
+<circle class="point" cx="680.69" cy="397.79" r="6" fill="#2563eb">
+<title>blocks.14.forward_block.mixer.mixer.in_proj: Active rows per token=345.0, Final normalized MSE=0.1565. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.14.forward_block.mixer.mixer.in_proj; active_rows_per_token=345.0; final_nmse=0.1564720869064331</title>
+</circle>
+<circle class="point" cx="283.22" cy="413.32" r="6" fill="#2563eb">
+<title>blocks.14.forward_block.mixer.mixer.out_proj: Active rows per token=171.0, Final normalized MSE=0.1285. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.14.forward_block.mixer.mixer.out_proj; active_rows_per_token=171.0; final_nmse=0.12845145165920258</title>
+</circle>
+<circle class="point" cx="680.69" cy="399.95" r="6" fill="#2563eb">
+<title>blocks.14.reverse_block.mixer.mixer.in_proj: Active rows per token=345.0, Final normalized MSE=0.1526. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.14.reverse_block.mixer.mixer.in_proj; active_rows_per_token=345.0; final_nmse=0.1525731086730957</title>
+</circle>
+<circle class="point" cx="283.22" cy="413.48" r="6" fill="#2563eb">
+<title>blocks.14.reverse_block.mixer.mixer.out_proj: Active rows per token=171.0, Final normalized MSE=0.1282. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.14.reverse_block.mixer.mixer.out_proj; active_rows_per_token=171.0; final_nmse=0.12816505134105682</title>
+</circle>
+<circle class="point" cx="680.69" cy="441.65" r="6" fill="#2563eb">
+<title>blocks.15.forward_block.mixer.mixer.in_proj: Active rows per token=345.0, Final normalized MSE=0.0773. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.15.forward_block.mixer.mixer.in_proj; active_rows_per_token=345.0; final_nmse=0.07734907418489456</title>
+</circle>
+<circle class="point" cx="283.22" cy="434.78" r="6" fill="#2563eb">
+<title>blocks.15.forward_block.mixer.mixer.out_proj: Active rows per token=171.0, Final normalized MSE=0.0898. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.15.forward_block.mixer.mixer.out_proj; active_rows_per_token=171.0; final_nmse=0.08975257724523544</title>
+</circle>
+<circle class="point" cx="680.69" cy="434.99" r="6" fill="#2563eb">
+<title>blocks.15.reverse_block.mixer.mixer.in_proj: Active rows per token=345.0, Final normalized MSE=0.0894. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.15.reverse_block.mixer.mixer.in_proj; active_rows_per_token=345.0; final_nmse=0.08935986459255219</title>
+</circle>
+<circle class="point" cx="283.22" cy="429.55" r="6" fill="#2563eb">
+<title>blocks.15.reverse_block.mixer.mixer.out_proj: Active rows per token=171.0, Final normalized MSE=0.0992. source=docs/t13_stage_f_layerwise_summary.csv; layer=blocks.15.reverse_block.mixer.mixer.out_proj; active_rows_per_token=171.0; final_nmse=0.09917433559894562</title>
+</circle>
+<text class="label" x="780" y="62">Series</text>
+<circle cx="780" cy="84" r="5" fill="#2563eb"/>
+<text class="legend" x="792" y="88">T13 Stage F layerwise</text>
+<circle cx="780" cy="106" r="5" fill="#dc2626"/>
+<text class="legend" x="792" y="110">T20 route-output sweep</text>
+</svg>

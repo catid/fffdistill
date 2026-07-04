@@ -99,6 +99,42 @@ def test_region_leak_without_fallback_activates_all_regular_leaves() -> None:
     assert torch.equal(route_info.diagnostics["active_rows_per_token"], torch.full((4,), 4))
 
 
+def test_region_leak_is_train_only_for_eval_route_accounting() -> None:
+    layer = FFFLinear(
+        8,
+        4,
+        depth=2,
+        route_rows=1,
+        leaf_rows=1,
+        hard_routing=True,
+        region_leak=0.1,
+        bias=False,
+    )
+    x = torch.randn(4, 8)
+
+    train_route_info = layer.route(x)
+    assert train_route_info.diagnostics["region_leak"] == pytest.approx(0.1)
+    assert train_route_info.diagnostics["effective_region_leak"] == pytest.approx(0.1)
+    assert train_route_info.diagnostics["region_leak_policy"] == "train_only"
+    assert torch.allclose(train_route_info.leaf_weights.sum(dim=-1), torch.ones(4))
+    assert torch.equal(
+        train_route_info.diagnostics["active_rows_per_token"],
+        torch.full((4,), 4),
+    )
+
+    layer.eval()
+    eval_route_info = layer.route(x)
+
+    assert eval_route_info.diagnostics["region_leak"] == pytest.approx(0.1)
+    assert eval_route_info.diagnostics["effective_region_leak"] == pytest.approx(0.0)
+    assert eval_route_info.diagnostics["region_leak_policy"] == "train_only"
+    assert torch.equal(eval_route_info.leaf_weights, eval_route_info.leaf_probs)
+    assert torch.equal(
+        eval_route_info.diagnostics["active_rows_per_token"],
+        torch.ones(4, dtype=torch.long),
+    )
+
+
 def test_master_leaf_adds_active_rows() -> None:
     layer = FFFLinear(
         8,

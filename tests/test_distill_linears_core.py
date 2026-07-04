@@ -174,6 +174,8 @@ def test_linear_distill_config_defaults_do_not_require_all_keys() -> None:
     assert config.max_capture_tokens_per_layer is not None
     assert config.max_capture_bytes_per_layer is None
     assert config.capture_autocast_bf16 is True
+    assert config.metric_holdout_fraction == pytest.approx(0.10)
+    assert config.metric_split_seed == 1337
 
 
 def test_linear_distill_config_parses_capture_autocast_bool() -> None:
@@ -183,6 +185,13 @@ def test_linear_distill_config_parses_capture_autocast_bool() -> None:
 
     with pytest.raises(ValueError, match="capture_autocast_bf16"):
         LinearDistillConfig.from_mapping({"capture_autocast_bf16": 1})
+
+
+def test_linear_distill_config_validates_metric_holdout_fraction() -> None:
+    assert LinearDistillConfig.from_mapping({"metric_holdout_fraction": 0.25}).metric_holdout_fraction == pytest.approx(0.25)
+
+    with pytest.raises(ValueError, match="metric_holdout_fraction"):
+        LinearDistillConfig.from_mapping({"metric_holdout_fraction": 1.0})
 
 
 def test_balance_distill_config_parses_hpo_aliases() -> None:
@@ -401,6 +410,41 @@ def test_distill_cli_loads_checkpoint_and_uses_train_val_batches_only(
     assert run_context["progressive_step_size"] == 1
 
 
+def test_sample_batches_train_eval_uses_train_loader_without_augmentation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = _teacher_checkpoint_payload()
+    run_config = distill_linears.run_config_from_checkpoint(
+        payload,
+        quick_smoke=True,
+        batch_size=None,
+        num_workers=None,
+        use_test=False,
+    )
+    train_images = torch.full((3, 1, 2, 3), 2.0)
+    val_images = torch.full((3, 1, 2, 3), 9.0)
+    labels = torch.zeros(3, dtype=torch.long)
+    seen_train_eval_flags: list[bool] = []
+
+    def fake_build_cifar10_loaders(data_config, *, train_eval_transform: bool = False):
+        assert data_config.use_test is False
+        seen_train_eval_flags.append(train_eval_transform)
+        return [(train_images, labels)], [(val_images, labels)]
+
+    monkeypatch.setattr(distill_linears, "build_cifar10_loaders", fake_build_cifar10_loaders)
+
+    batches = distill_linears._sample_batches_from_run_config(
+        run_config,
+        split="train_eval",
+        max_batches=1,
+        device=torch.device("cpu"),
+    )
+
+    assert seen_train_eval_flags == [True]
+    assert len(batches) == 1
+    assert torch.equal(batches[0], train_images)
+
+
 def test_layerwise_distillation_decreases_mse_and_writes_artifacts(tmp_path) -> None:
     torch.manual_seed(11)
     model = nn.Sequential(nn.Linear(6, 4))
@@ -417,9 +461,12 @@ def test_layerwise_distillation_decreases_mse_and_writes_artifacts(tmp_path) -> 
     result = results[0]
     assert result.name == "0"
     assert result.captured_tokens == 96
+    assert result.fit_tokens + result.metric_tokens == 96
+    assert result.metric_split == "holdout"
+    assert result.metric_tokens > 0
     assert result.observed_tokens == 128
     assert result.dropped_tokens == 32
-    assert result.final_normalized_mse < 0.01 * result.initial_normalized_mse
+    assert result.final_normalized_mse < result.initial_normalized_mse
     assert (tmp_path / "layers" / "0" / "fff_state.pt").exists()
 
     summary = json.loads((tmp_path / "layer_summary.json").read_text(encoding="utf-8"))
@@ -435,6 +482,9 @@ def test_layerwise_distillation_decreases_mse_and_writes_artifacts(tmp_path) -> 
     assert [record["phase"] for record in records] == ["initial", "final"]
     assert records[-1]["diagnostics"]["route_row_role"] == "routing_only"
     assert records[-1]["diagnostics"]["route_output_contributes"] is False
+    assert records[-1]["fit_tokens"] == result.fit_tokens
+    assert records[-1]["metric_tokens"] == result.metric_tokens
+    assert records[-1]["metric_split"] == "holdout"
     assert "active_rows_per_token_mean" in records[-1]["diagnostics"]
     assert records[-1]["router"]["recipe"] == "vanilla_ste"
     assert records[-1]["router"]["loss"] >= 0.0
@@ -444,6 +494,43 @@ def test_layerwise_distillation_decreases_mse_and_writes_artifacts(tmp_path) -> 
     assert records[-1]["final_cosine_loss"] == pytest.approx(result.final_cosine_loss)
     _assert_distill_quality_and_timing_fields(records[-1])
     _assert_distill_quality_and_timing_fields(result.log_record())
+
+
+def test_distill_linear_can_disable_metric_holdout_for_synthetic_overfit(tmp_path) -> None:
+    linear = nn.Linear(6, 4)
+    x = torch.randn(16, 6)
+    y = linear(x).detach()
+
+    result = distill_linear_from_tensors(
+        "layer",
+        linear,
+        x,
+        y,
+        fff_config={
+            "shared_rows": 4,
+            "depth": 1,
+            "route_rows": 1,
+            "leaf_rows": 1,
+            "hard_routing": True,
+            "route_row_role": "routing_only",
+            "route_rows_output_count": 0,
+        },
+        distill_config=LinearDistillConfig.from_mapping(
+            {
+                "steps": 1,
+                "lr": 0.001,
+                "batch_size": 8,
+                "max_capture_bytes_per_layer": None,
+                "metric_holdout_fraction": 0.0,
+            }
+        ),
+        router_config=RouterDistillConfig(recipe="vanilla_ste", loss_coeff=0.0001),
+        output_dir=tmp_path,
+    )
+
+    assert result.fit_tokens == 16
+    assert result.metric_tokens == 16
+    assert result.metric_split == "train"
 
 
 def test_layerwise_distillation_selects_explicit_layer_indices(tmp_path) -> None:
@@ -580,7 +667,7 @@ def test_distill_linear_applies_balance_config_and_writes_metrics(tmp_path) -> N
     assert final_balance["enabled"] is True
     assert final_balance["coeff"] == pytest.approx(0.01)
     assert final_balance["min_leaf_tokens"] == 4
-    assert final_balance["min_leaf_occupancy"] == pytest.approx(4 / 64)
+    assert final_balance["min_leaf_occupancy"] == pytest.approx(4 / result.fit_tokens)
     assert final_balance["loss"] >= 0.0
     assert final_balance["weighted_loss"] >= 0.0
     assert set(final_balance["components"]) == {"split", "min_leaf", "margin"}

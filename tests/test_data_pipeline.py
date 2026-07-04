@@ -151,6 +151,20 @@ def test_train_transform_uses_crop_flip_and_optional_randaugment(
     assert isinstance(val_set.dataset.transform, _ToTensor)
 
 
+def test_train_eval_transform_uses_train_indices_without_augmentation(
+    fake_torchvision,
+    tmp_path,
+) -> None:
+    config = data.Cifar10DataConfig(data_dir=tmp_path, download=False, randaugment=True)
+
+    train_set, val_set = data.build_cifar10_datasets(config, train_eval_transform=True)
+
+    assert train_set.indices
+    assert set(train_set.indices).isdisjoint(set(val_set.indices))
+    assert isinstance(train_set.dataset.transform, _ToTensor)
+    assert isinstance(val_set.dataset.transform, _ToTensor)
+
+
 def test_quick_smoke_uses_small_splits_and_disables_download(
     fake_torchvision,
     tmp_path,

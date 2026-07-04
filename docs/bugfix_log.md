@@ -152,3 +152,35 @@ T18 adversarial-review findings and closure evidence are recorded at the end of 
 - `cifar_mamba_fff.make_report` now validates that `docs/t15_fairness_summary.csv` exists, has the expected row count, has test access only on final or partial-final rows, and exactly matches fairness rows regenerated from the source docs. This keeps the final report tied to committed fairness provenance rather than prose snippets or stale CSVs alone.
 - Focused checks after these fixes: `pytest -q tests/test_student_final_eval.py tests/test_fairness_summary.py tests/test_make_report.py` passed with 15 tests; focused ruff passed; `python -m cifar_mamba_fff.fairness` and `python -m cifar_mamba_fff.make_report --quick-smoke true` passed. Full `bash scripts/run_tests.sh` passed with environment verification, ruff, and 343 pytest tests; the only warnings were the known upstream TVM/TileLang duplicate-field warnings.
 - Residual risks: the one-step FFF student partial CIFAR-10 test artifact already exists and remains documented as plumbing/failure-analysis evidence only; full multi-seed FFF student final accuracy and several matched baselines remain unrun limitations. Report validation checks row counts and test-access provenance but does not yet cross-check every prose metric against every source CSV cell.
+
+## Post-T18 Claude/Fable Findings
+
+- Fixed `fff-0om` code path for future layerwise distillation: `distill_linears.py`,
+  `distill_hpo.py`, and scheduler distillation-HPO commands now default to
+  `sample_split=train_eval`, which captures CIFAR-10 train-split images using eval/no-
+  augmentation transforms. `LinearDistillConfig` now records a deterministic held-out
+  token metric split through `metric_holdout_fraction` and `metric_split_seed`. Existing
+  Stage F artifacts remain explicitly documented as legacy validation-capture evidence;
+  they are not CIFAR-10 test leakage, but they are leakage-limited for layerwise validation
+  metrics and must be rerun before Stage H quality claims.
+- Fixed `fff-cht` inference accounting: `FFFLinear.region_leak` is train-only, eval uses
+  `effective_region_leak=0.0`, diagnostics report `region_leak_policy=train_only`, and
+  eval hard routing keeps the selected-leaf grouped path instead of silently evaluating
+  all leaves. CUDA BF16 eval smoke with configured `region_leak=0.01` measured grouped
+  selected-leaf inference at `2.05M` tok/s, naive `1.96K` tok/s, dense `135.66M` tok/s,
+  and grouped-vs-naive max difference `0.0078125`; see
+  `docs/t18_region_leak_policy.md`.
+- Fixed `fff-vt9` optimizer-ablation protocol for future T19 runs: each case now iterates
+  the same explicit seed list, `seed_list`/`seed_count` are written to JSON and CSV, and
+  NorMuon/PACE+NorMuon ablations require an update-RMS calibration note unless an
+  optimizer-specific LR sweep is added. Existing two-step T19 rows remain smoke evidence,
+  not optimizer quality rankings.
+- Hardened `fff-djb` remote artifact collection: scheduler collection records remote,
+  copied, and local byte counts plus truncation flags per artifact; discovers all remote
+  `trial_*` directories; infers expected trial directories from non-truncated HPO
+  summaries; and marks truncated metrics as `artifacts_collected_truncated_metrics`.
+- Focused verification after these changes: `.venv/bin/python -m pytest -q
+  tests/test_data_pipeline.py tests/test_distill_linears_core.py` passed with 48 tests;
+  scheduler/cluster focused tests passed with 41 tests; optimizer/fairness focused tests
+  passed with 9 tests; FFF grouped/routes/shapes focused tests passed with 87 tests;
+  changed-file ruff and compileall passed.

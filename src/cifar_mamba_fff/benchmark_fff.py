@@ -68,7 +68,9 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--route-rows-output-count", default=None)
     parser.add_argument("--route-rows-output-fraction", type=float, default=None)
+    parser.add_argument("--region-leak", type=float, default=0.0)
     parser.add_argument("--hard-routing", type=bool_arg, default=True)
+    parser.add_argument("--eval-mode", type=bool_arg, default=False)
     parser.add_argument("--iterations", type=int, default=50)
     parser.add_argument("--warmup", type=int, default=5)
     parser.add_argument(
@@ -204,10 +206,14 @@ def _run_benchmark(args: argparse.Namespace) -> list[dict[str, Any]]:
         route_row_role=route_row_role,
         route_rows_output_count=route_rows_output_count,
         route_rows_output_fraction=args.route_rows_output_fraction,
+        region_leak=args.region_leak,
         hard_routing=args.hard_routing,
         device=device,
         dtype=dtype,
     )
+    if args.eval_mode:
+        dense.eval()
+        fff.eval()
 
     diagnostics = fff.diagnostics(x)
     route_metadata = {
@@ -221,6 +227,9 @@ def _run_benchmark(args: argparse.Namespace) -> list[dict[str, Any]]:
         "route_result_rows": diagnostics["route_result_rows"],
         "route_rows_output_count": diagnostics["route_rows_output_count"],
         "route_rows_output_fraction": diagnostics["route_rows_output_fraction"],
+        "region_leak": diagnostics["region_leak"],
+        "effective_region_leak": diagnostics["effective_region_leak"],
+        "region_leak_policy": diagnostics["region_leak_policy"],
         "max_visited_route_rows_per_token": diagnostics["max_visited_route_rows_per_token"],
         "max_route_output_rows_per_token": diagnostics["max_route_output_rows_per_token"],
         "stored_route_output_rows": diagnostics["stored_route_output_rows"],

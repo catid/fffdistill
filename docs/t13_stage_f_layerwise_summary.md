@@ -6,6 +6,7 @@
 - Teacher parameter count: `9,053,258`
 - Selected teacher validation accuracy recorded in checkpoint summary: `0.9418`
 - Data access: CIFAR-10 `val` split sampling only, `2` batches per shard; all records report `test_accessed=false`.
+- Provenance caveat added after T18 review: these artifacts fit FFF replacements on validation-split images and also report validation-layer metrics from that capture stream. This is not CIFAR-10 test leakage, but it is train-on-validation leakage for layerwise distillation metrics. Corrected future Stage F runs must use `--sample-split train_eval` and held-out token metrics before any final full-student FFF quality claim.
 - Scope: 64 eligible Linear layers, sharded once each across 10 one-GPU jobs on `work`, `ripper`, `foureyes`, and `ai`.
 - Recipe: Stage D/E fixed architecture, `vanilla_ste`, `split_routing_output`, `shared_unrouted_frac=0.2`, `route_rows=1`, `leaf_rows=4`, `depth=5`, `route_result_rows=2`, `route_rows_output_count=all`, `route_rows_output_fraction=0.5`, LocoProp-S every 500/one post-loop refit.
 
@@ -59,7 +60,8 @@
 
 ## Notes
 
-- This is validation-split layerwise distillation evidence, not CIFAR-10 final-test student evaluation.
+- This is validation-split layerwise distillation evidence, not CIFAR-10 final-test student evaluation, and not clean held-out validation evidence for FFF layer fitting because the captured tokens came from the validation split.
+- The code now supports CIFAR-10 train-split activation capture with eval/no-augmentation transforms via `--sample-split train_eval`, plus deterministic held-out token metrics through `distill.metric_holdout_fraction`; rerun Stage F with that mode before Stage H final claims.
 - The full-layer pass substantially reduced local NMSE versus initialization for every eligible Linear layer, but late/middle `out_proj` layers remain the hardest and need recipe/budget tuning before final student claims.
 - LocoProp-S succeeded for every layer and decreased or preserved local MSE in every recorded refit.
 - No checkpoints or raw scheduler outputs are committed; this Markdown summary and CSV are the committed compact artifacts.

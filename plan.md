@@ -235,6 +235,14 @@ Stage F: full layerwise distillation HPO.
   succeeded and decreased or preserved local MSE for every layer. Late and middle
   `out_proj` layers remain the hardest and need additional recipe/budget tuning before
   final student claims. See `docs/t13_stage_f_layerwise_summary.md`.
+- T18 review found that the completed Stage F layerwise pass trained FFF replacements on
+  CIFAR-10 validation-split images and then reported layerwise metrics from that capture
+  stream. This is not CIFAR-10 test leakage, but it is train-on-validation leakage for
+  layerwise distillation metrics. The corrected distillation default is now
+  `--sample-split train_eval`, which captures CIFAR-10 train-split images through
+  eval/no-augmentation transforms, and `LinearDistillConfig` records deterministic held-out
+  token metrics. Rerun Stage F with train-eval capture before Stage H full-student FFF
+  quality claims.
 - Fairness limitation to handle in T15/T18: Stage F trial configs retain the base
   distillation seed even though scheduler status metadata records per-slot launch seeds.
   Future multi-seed comparisons must explicitly vary and report training seeds.

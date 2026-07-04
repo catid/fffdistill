@@ -900,7 +900,7 @@ def run_distill_trial_command(
     output_dir: Path,
     teacher_checkpoint: str | None,
     quick_smoke: bool,
-    sample_split: str = "train",
+    sample_split: str = "train_eval",
     max_sample_batches: int = 1,
 ) -> dict[str, object]:
     command = [
@@ -953,7 +953,7 @@ def run_distill_hpo_trials(
     teacher_checkpoint: str | None,
     grid_offset: int = 0,
     quick_smoke: bool = False,
-    sample_split: str = "train",
+    sample_split: str = "train_eval",
     max_sample_batches: int = 1,
     trial_runner: DistillTrialRunner = run_distill_trial_command,
 ) -> dict[str, object]:
@@ -1037,7 +1037,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--grid-offset", type=int, default=0)
     parser.add_argument("--teacher-checkpoint", default=None)
     parser.add_argument("--quick-smoke", type=bool_arg, default=False)
-    parser.add_argument("--sample-split", choices=("train", "val"), default="train")
+    parser.add_argument("--sample-split", choices=("train", "train_eval", "val"), default="train_eval")
     parser.add_argument("--max-sample-batches", type=int, default=1)
     parser.add_argument(
         "--execute-trials",

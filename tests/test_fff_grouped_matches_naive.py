@@ -318,6 +318,73 @@ def test_grouped_path_keeps_all_leaves_for_soft_or_leak_to_all() -> None:
     )
 
 
+def test_eval_region_leak_uses_selected_leaf_grouped_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    torch.manual_seed(161)
+    layer = FFFLinear(
+        8,
+        4,
+        depth=2,
+        route_rows=1,
+        leaf_rows=2,
+        hard_routing=True,
+        region_leak=0.1,
+        fallback_leaf=False,
+        bias=False,
+    )
+    x = torch.randn(7, 8)
+
+    train_diagnostics = layer.diagnostics(x)
+    assert train_diagnostics["region_leak"] == pytest.approx(0.1)
+    assert train_diagnostics["effective_region_leak"] == pytest.approx(0.1)
+    assert train_diagnostics["region_leak_policy"] == "train_only"
+    assert train_diagnostics["grouped_leaf_path"] == "all_leaves"
+    assert torch.equal(
+        train_diagnostics["active_rows_per_token"],
+        torch.full((7,), layer.leaves * layer.leaf_rows),
+    )
+
+    layer.eval()
+    selected_calls = 0
+    uniform_calls = 0
+    original_selected = layer._selected_leaf_output_grouped
+    original_uniform = layer._uniform_regular_leaf_output_grouped
+
+    def wrapped_selected_leaf(
+        flat: torch.Tensor,
+        route_info: object,
+    ) -> torch.Tensor:
+        nonlocal selected_calls
+        selected_calls += 1
+        return original_selected(flat, route_info)  # type: ignore[arg-type]
+
+    def wrapped_uniform(flat: torch.Tensor) -> torch.Tensor:
+        nonlocal uniform_calls
+        uniform_calls += 1
+        return original_uniform(flat)
+
+    monkeypatch.setattr(layer, "_selected_leaf_output_grouped", wrapped_selected_leaf)
+    monkeypatch.setattr(layer, "_uniform_regular_leaf_output_grouped", wrapped_uniform)
+
+    eval_diagnostics = layer.diagnostics(x)
+    y_naive = layer.forward_naive(x)
+    y_grouped = layer.forward_grouped(x)
+
+    assert y_grouped.shape == (7, 4)
+    assert selected_calls == 1
+    assert uniform_calls == 0
+    assert eval_diagnostics["region_leak"] == pytest.approx(0.1)
+    assert eval_diagnostics["effective_region_leak"] == pytest.approx(0.0)
+    assert eval_diagnostics["region_leak_policy"] == "train_only"
+    assert eval_diagnostics["grouped_leaf_path"] == "selected_leaf"
+    assert torch.equal(
+        eval_diagnostics["active_rows_per_token"],
+        torch.full((7,), layer.leaf_rows),
+    )
+    assert torch.allclose(y_naive, y_grouped, atol=1e-5, rtol=1e-5)
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [

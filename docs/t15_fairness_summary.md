@@ -7,7 +7,7 @@ final-test, and full final-test rows are deliberately separated.
 | Method | Split | Status | Test accessed | Val acc | Final/partial test acc | NMSE | Tokens/s | Budget note |
 | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- |
 | dense_mamba3_teacher | final_test | selected_full_test | true | 0.941800 | 0.939900 |  |  | Full teacher HPO selection followed by one full CIFAR-10 test evaluation. |
-| assembled_fff_stage_f_layerwise | validation_layerwise | completed | false |  |  | 0.288707 | 42752.755801 | Validation-split layerwise distillation, 2 sample batches per layer shard. |
+| assembled_fff_stage_f_layerwise | validation_layerwise | completed | false |  |  | 0.288707 | 42752.755801 | Legacy validation-split layerwise distillation, 2 sample batches per layer shard; leakage-limited for layerwise validation metrics. |
 | route_output_none_routing_only | validation_single_layer | completed | false | 0.940400 |  | 0.300582 | 36521.263064 | Matched representative layer and token budget; active/stored rows are reported per route-output setting. |
 | route_output_shared_one_per_node | validation_single_layer | completed | false | 0.940600 |  | 0.293318 | 29078.716514 | Matched representative layer and token budget; active/stored rows are reported per route-output setting. |
 | route_output_shared_all | validation_single_layer | completed | false | 0.940400 |  | 0.287133 | 28094.089306 | Matched representative layer and token budget; active/stored rows are reported per route-output setting. |
@@ -40,5 +40,5 @@ final-test, and full final-test rows are deliberately separated.
 - CIFAR-10 test access appears only in `final_test` or `partial_final_test` rows.
 - Optimizer ablations use equal two-step smoke budgets and are not ranked as final quality results.
 - Route-output ablations use one representative layer with reported active/stored row budgets.
-- Stage F layerwise rows report validation-split MSE/cosine/throughput, not final accuracy.
+- Stage F layerwise rows are legacy validation-capture MSE/cosine/throughput evidence, not clean held-out validation metrics and not final accuracy.
 - Required baselines without committed metrics are explicitly marked `not_run`.

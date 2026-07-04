@@ -212,7 +212,11 @@ def _validate_cifar_size(name: str, dataset: Dataset, expected_size: int) -> Non
         raise ValueError(f"{name} must contain {expected_size} examples, found {actual_size}")
 
 
-def build_cifar10_datasets(config: Cifar10DataConfig) -> tuple[Dataset, Dataset]:
+def build_cifar10_datasets(
+    config: Cifar10DataConfig,
+    *,
+    train_eval_transform: bool = False,
+) -> tuple[Dataset, Dataset]:
     config.validate()
     _datasets, transforms = _import_torchvision()
     if not Cifar10TrainOnly.train_files_ready(config.data_dir):
@@ -238,11 +242,19 @@ def build_cifar10_datasets(config: Cifar10DataConfig) -> tuple[Dataset, Dataset]
         val_size=val_size,
         seed=config.split_seed,
     )
-    return Subset(full_train, train_indices), Subset(full_eval, val_indices)
+    train_source = full_eval if train_eval_transform else full_train
+    return Subset(train_source, train_indices), Subset(full_eval, val_indices)
 
 
-def build_cifar10_loaders(config: Cifar10DataConfig) -> tuple[DataLoader, DataLoader]:
-    train_set, val_set = build_cifar10_datasets(config)
+def build_cifar10_loaders(
+    config: Cifar10DataConfig,
+    *,
+    train_eval_transform: bool = False,
+) -> tuple[DataLoader, DataLoader]:
+    train_set, val_set = build_cifar10_datasets(
+        config,
+        train_eval_transform=train_eval_transform,
+    )
     loader_kwargs = {
         "batch_size": config.batch_size,
         "num_workers": config.num_workers,

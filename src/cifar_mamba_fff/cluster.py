@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -115,14 +116,54 @@ def read_remote_text(
     remote_path = Path(path)
     if remote_path.is_absolute():
         raise ValueError("remote repository paths must be relative")
-    command = (
-        "python3 - <<'PY'\n"
-        "import sys\n"
-        "from pathlib import Path\n"
-        f"path = Path({str(remote_path)!r})\n"
-        "if not path.exists():\n"
-        "    raise SystemExit(44)\n"
-        f"sys.stdout.buffer.write(path.read_bytes()[-{int(max_bytes)}:])\n"
-        "PY"
+    command = "\n".join(
+        [
+            "python3 - <<'PY'",
+            "import base64",
+            "import json",
+            "from pathlib import Path",
+            f"path = Path({str(remote_path)!r})",
+            "if not path.exists():",
+            "    raise SystemExit(44)",
+            "data = path.read_bytes()",
+            f"max_bytes = {int(max_bytes)}",
+            "content = b'' if max_bytes <= 0 else data[-max_bytes:]",
+            "payload = {",
+            "    'content_b64': base64.b64encode(content).decode('ascii'),",
+            "    'remote_size_bytes': len(data),",
+            "    'copied_size_bytes': len(content),",
+            "    'truncated': len(content) < len(data),",
+            "}",
+            "print(json.dumps(payload, sort_keys=True))",
+            "PY",
+        ]
     )
-    return run_remote(spec, command, timeout_s=timeout_s)
+    result = run_remote(spec, command, timeout_s=timeout_s)
+    enriched = {
+        **result,
+        "remote_size_bytes": None,
+        "copied_size_bytes": None,
+        "truncated": None,
+    }
+    if not result["ok"]:
+        return enriched
+    try:
+        payload = json.loads(str(result["stdout"]))
+        content = base64.b64decode(str(payload["content_b64"]))
+    except Exception as exc:
+        return {
+            **enriched,
+            "ok": False,
+            "returncode": result["returncode"],
+            "stdout": "",
+            "stderr": f"invalid remote read envelope: {type(exc).__name__}: {exc}",
+        }
+    enriched.update(
+        {
+            "stdout": content.decode("utf-8", errors="replace"),
+            "remote_size_bytes": int(payload["remote_size_bytes"]),
+            "copied_size_bytes": int(payload["copied_size_bytes"]),
+            "truncated": bool(payload["truncated"]),
+        }
+    )
+    return enriched

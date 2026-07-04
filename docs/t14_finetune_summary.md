@@ -40,7 +40,10 @@ artifacts.
 The first CUDA smoke at batch size 512 failed before backward with CUDA OOM inside `FFFLinear._regular_leaf_output_grouped`.
 
 Cause:
-- Stage F uses `region_leak=0.01` with hard routing and no fallback leaf.
+- Stage F configured `region_leak=0.01` with hard routing and no fallback leaf.
+- After T18 review, `region_leak` is train-only: eval/inference uses
+  `effective_region_leak=0.0` and keeps selected-leaf grouped execution. See
+  `docs/t18_region_leak_policy.md` for the bounded CUDA BF16 smoke.
 - The previous grouped path materialized `[tokens, leaves, out_features]` for the leak-to-all-leaves contribution.
 - At batch 512 this attempted a 16.53 GiB allocation inside one FFF linear and exhausted a 95 GiB GPU.
 

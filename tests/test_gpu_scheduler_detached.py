@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from cifar_mamba_fff import gpu_scheduler
-from cifar_mamba_fff.cluster import MachineSpec
+from cifar_mamba_fff.cluster import MachineSpec, read_remote_text
 from cifar_mamba_fff.gpu_scheduler import GpuJob, JobStatus
 
 DETACHED_API_MESSAGE = (
@@ -78,6 +78,125 @@ def test_collected_artifact_names_include_distill_hpo_summaries() -> None:
     assert "trials/trial_000000/distill_summary.json" in gpu_scheduler.COLLECTED_ARTIFACT_NAMES
     assert "trials/trial_000000/layer_summary.json" in gpu_scheduler.COLLECTED_ARTIFACT_NAMES
     assert "trials/trial_000000/layer_metrics.jsonl" in gpu_scheduler.COLLECTED_ARTIFACT_NAMES
+
+
+def test_read_remote_text_reports_copy_integrity_for_truncated_file(tmp_path: Path) -> None:
+    spec = MachineSpec(name="local", host="localhost", gpus=0, role="local", workdir=str(tmp_path))
+    (tmp_path / "metrics.jsonl").write_text("0123456789", encoding="utf-8")
+
+    result = read_remote_text(spec, "metrics.jsonl", max_bytes=4, timeout_s=3)
+
+    assert result["ok"] is True
+    assert result["stdout"] == "6789"
+    assert result["remote_size_bytes"] == 10
+    assert result["copied_size_bytes"] == 4
+    assert result["truncated"] is True
+
+
+def test_collect_detached_job_artifacts_marks_truncated_metrics_and_missing_trials(
+    monkeypatch, tmp_path: Path
+) -> None:
+    collect_detached_job_artifacts = _require_public_helper("collect_detached_job_artifacts")
+    job = GpuJob(
+        command="PYTHONPATH=src CUDA_VISIBLE_DEVICES=0 .venv/bin/python -m trainer",
+        output_dir=Path("outputs/hpo/work/0"),
+        machine="work",
+        gpu_id=0,
+    )
+    spec = MachineSpec(name="work", host="localhost", gpus=2, role="local", workdir="/repo")
+    output_dir = gpu_scheduler.detached_job_files(job).output_dir
+
+    def payload_result(text: str, *, truncated: bool = False, remote_size: int | None = None):
+        copied_size = len(text.encode("utf-8"))
+        return {
+            "ok": True,
+            "returncode": 0,
+            "stdout": text,
+            "stderr": "",
+            "remote_size_bytes": remote_size if remote_size is not None else copied_size,
+            "copied_size_bytes": copied_size,
+            "truncated": truncated,
+        }
+
+    def fake_read_remote_text(
+        spec_arg: MachineSpec,
+        path: Path,
+        *,
+        max_bytes: int,
+        timeout_s: int,
+    ) -> Mapping[str, object]:
+        assert spec_arg == spec
+        assert max_bytes == 4
+        assert timeout_s == 9
+        if path == output_dir / "teacher_hpo_summary.json":
+            return payload_result(
+                json.dumps(
+                    {
+                        "mode": "teacher_hpo",
+                        "accepted_trials": 3,
+                        "status": "completed",
+                    }
+                )
+            )
+        if path == output_dir / "trials/trial_000000/metrics.jsonl":
+            return payload_result("tail", truncated=True, remote_size=100)
+        if path == output_dir / "trials/trial_000001/trial_config.json":
+            return payload_result(json.dumps({"trial_index": 1}))
+        return {
+            "ok": False,
+            "returncode": 44,
+            "stdout": "",
+            "stderr": "",
+            "remote_size_bytes": None,
+            "copied_size_bytes": None,
+            "truncated": None,
+        }
+
+    def fake_run_remote(
+        spec_arg: MachineSpec,
+        command: str,
+        *,
+        timeout_s: int,
+    ) -> Mapping[str, object]:
+        assert spec_arg == spec
+        assert timeout_s == 9
+        assert "outputs/hpo/work/0/trials" in command
+        return {
+            "ok": True,
+            "returncode": 0,
+            "stdout": json.dumps(["trial_000000", "trial_000001"]),
+            "stderr": "",
+        }
+
+    monkeypatch.setattr(gpu_scheduler, "read_remote_text", fake_read_remote_text)
+    monkeypatch.setattr(gpu_scheduler, "run_remote", fake_run_remote)
+
+    record = collect_detached_job_artifacts(
+        spec,
+        job,
+        local_root=tmp_path,
+        timeout_s=9,
+        max_bytes=4,
+    )
+
+    assert record["status"] == "artifacts_collected_truncated_metrics"
+    assert record["trial_dirs"] == {
+        "remote": ["trial_000000", "trial_000001"],
+        "expected": ["trial_000000", "trial_000001", "trial_000002"],
+        "missing": ["trial_000002"],
+        "listing_ok": True,
+        "listing_stderr": "",
+    }
+    assert "trials/trial_000001/trial_config.json" in record["files"]
+    assert "trials/trial_000002/trial_config.json" in record["files"]
+    truncated_record = record["files"]["trials/trial_000000/metrics.jsonl"]
+    assert truncated_record["remote_size_bytes"] == 100
+    assert truncated_record["copied_size_bytes"] == 4
+    assert truncated_record["local_size_bytes"] == 4
+    assert truncated_record["truncated"] is True
+    assert record["artifact_integrity"]["metrics_truncated_files"] == [
+        "trials/trial_000000/metrics.jsonl"
+    ]
 
 
 @pytest.mark.parametrize(

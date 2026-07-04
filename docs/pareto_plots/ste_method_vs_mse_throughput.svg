@@ -1,0 +1,116 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="620" viewBox="0 0 960 620" role="img" aria-labelledby="title desc">
+<title id="title">STE Method vs MSE/Throughput</title>
+<desc id="desc">Router or STE method final normalized MSE against throughput.</desc>
+<style>
+  .bg { fill: #ffffff; }
+  .grid { stroke: #e5e7eb; stroke-width: 1; }
+  .axis { stroke: #111827; stroke-width: 1.4; }
+  .tick { fill: #374151; font: 12px sans-serif; }
+  .title { fill: #111827; font: 700 24px sans-serif; }
+  .subtitle { fill: #4b5563; font: 13px sans-serif; }
+  .label { fill: #111827; font: 14px sans-serif; }
+  .point-label { fill: #111827; font: 10px sans-serif; }
+  .legend { fill: #111827; font: 12px sans-serif; }
+  .point { stroke: #ffffff; stroke-width: 1.5; }
+</style>
+<rect class="bg" x="0" y="0" width="960" height="620"/>
+<text class="title" x="96" y="38">STE Method vs MSE/Throughput</text>
+<text class="subtitle" x="96" y="60">Stage C recipes, Stage D architecture sweep, and Stage F vanilla mean</text>
+<line class="grid" x1="96.00" y1="76" x2="96.00" y2="502"/>
+<text class="tick" x="96.00" y="524" text-anchor="middle">17,428</text>
+<line class="grid" x1="221.60" y1="76" x2="221.60" y2="502"/>
+<text class="tick" x="221.60" y="524" text-anchor="middle">25,356</text>
+<line class="grid" x1="347.20" y1="76" x2="347.20" y2="502"/>
+<text class="tick" x="347.20" y="524" text-anchor="middle">33,284</text>
+<line class="grid" x1="472.80" y1="76" x2="472.80" y2="502"/>
+<text class="tick" x="472.80" y="524" text-anchor="middle">41,212</text>
+<line class="grid" x1="598.40" y1="76" x2="598.40" y2="502"/>
+<text class="tick" x="598.40" y="524" text-anchor="middle">49,140</text>
+<line class="grid" x1="724.00" y1="76" x2="724.00" y2="502"/>
+<text class="tick" x="724.00" y="524" text-anchor="middle">57,068</text>
+<line class="grid" x1="96" y1="502.00" x2="724" y2="502.00"/>
+<text class="tick" x="84" y="506.00" text-anchor="end">-0.0181</text>
+<line class="grid" x1="96" y1="416.80" x2="724" y2="416.80"/>
+<text class="tick" x="84" y="420.80" text-anchor="end">0.0478</text>
+<line class="grid" x1="96" y1="331.60" x2="724" y2="331.60"/>
+<text class="tick" x="84" y="335.60" text-anchor="end">0.1137</text>
+<line class="grid" x1="96" y1="246.40" x2="724" y2="246.40"/>
+<text class="tick" x="84" y="250.40" text-anchor="end">0.1796</text>
+<line class="grid" x1="96" y1="161.20" x2="724" y2="161.20"/>
+<text class="tick" x="84" y="165.20" text-anchor="end">0.2455</text>
+<line class="grid" x1="96" y1="76.00" x2="724" y2="76.00"/>
+<text class="tick" x="84" y="80.00" text-anchor="end">0.3114</text>
+<line class="axis" x1="96" y1="502" x2="724" y2="502"/>
+<line class="axis" x1="96" y1="76" x2="96" y2="502"/>
+<text class="label" x="410.00" y="582" text-anchor="middle">Tokens per second</text>
+<text class="label" transform="translate(28 289.00) rotate(-90)" text-anchor="middle">Final normalized MSE</text>
+<circle class="point" cx="294.84" cy="385.27" r="6" fill="#2563eb">
+<title>vanilla_ste: Tokens per second=29,979, Final normalized MSE=0.0722. source=docs/t13_stage_c_router_summary.csv; router_recipe=vanilla_ste; tokens_per_second=29978.82700254167; final_nmse=0.07218901813030243</title>
+</circle>
+<text class="point-label" x="302.84" y="377.27">vanilla_ste</text>
+<circle class="point" cx="279.29" cy="381.37" r="6" fill="#2563eb">
+<title>clipped_ste: Tokens per second=28,997, Final normalized MSE=0.0752. source=docs/t13_stage_c_router_summary.csv; router_recipe=clipped_ste; tokens_per_second=28997.31031800864; final_nmse=0.07520823180675507</title>
+</circle>
+<text class="point-label" x="287.29" y="373.37">clipped_ste</text>
+<circle class="point" cx="266.94" cy="382.46" r="6" fill="#2563eb">
+<title>sigmoid_surrogate_ste: Tokens per second=28,217, Final normalized MSE=0.0744. source=docs/t13_stage_c_router_summary.csv; router_recipe=sigmoid_surrogate_ste; tokens_per_second=28217.2209160208; final_nmse=0.07436472922563553</title>
+</circle>
+<text class="point-label" x="274.94" y="374.46">sigmoid_surrogate_ste</text>
+<circle class="point" cx="294.01" cy="378.30" r="6" fill="#2563eb">
+<title>st_gumbel: Tokens per second=29,926, Final normalized MSE=0.0776. source=docs/t13_stage_c_router_summary.csv; router_recipe=st_gumbel; tokens_per_second=29926.467879814925; final_nmse=0.07758151739835739</title>
+</circle>
+<text class="point-label" x="302.01" y="370.30">st_gumbel</text>
+<circle class="point" cx="223.27" cy="355.23" r="6" fill="#2563eb">
+<title>utility_targeted_ste: Tokens per second=25,461, Final normalized MSE=0.0954. source=docs/t13_stage_c_router_summary.csv; router_recipe=utility_targeted_ste; tokens_per_second=25461.222641168748; final_nmse=0.09542977064847946</title>
+</circle>
+<text class="point-label" x="231.27" y="347.23">utility_targeted_ste</text>
+<circle class="point" cx="220.85" cy="355.23" r="6" fill="#2563eb">
+<title>hard_em_utility_ste: Tokens per second=25,308, Final normalized MSE=0.0954. source=docs/t13_stage_c_router_summary.csv; router_recipe=hard_em_utility_ste; tokens_per_second=25308.188661779615; final_nmse=0.09543021768331528</title>
+</circle>
+<text class="point-label" x="228.85" y="347.23">hard_em_utility_ste</text>
+<circle class="point" cx="225.03" cy="113.98" r="6" fill="#2563eb">
+<title>expert_choice_imitation: Tokens per second=25,572, Final normalized MSE=0.2821. source=docs/t13_stage_c_router_summary.csv; router_recipe=expert_choice_imitation; tokens_per_second=25572.068372636484; final_nmse=0.2820553481578827</title>
+</circle>
+<text class="point-label" x="233.03" y="105.98">expert_choice_imitation</text>
+<circle class="point" cx="520.49" cy="472.62" r="6" fill="#dc2626">
+<title>vanilla_ste d5: Tokens per second=44,222, Final normalized MSE=0.00461. source=docs/t13_stage_d_arch_summary.csv; router_recipe=vanilla_ste; depth=5; route_row_role=split_routing_output; final_nmse=0.004614771343767643</title>
+</circle>
+<circle class="point" cx="139.31" cy="464.18" r="6" fill="#dc2626">
+<title>sigmoid_surrogate_ste d7: Tokens per second=20,161, Final normalized MSE=0.0111. source=docs/t13_stage_d_arch_summary.csv; router_recipe=sigmoid_surrogate_ste; depth=7; route_row_role=routing_only; final_nmse=0.011140787973999977</title>
+</circle>
+<circle class="point" cx="639.62" cy="462.75" r="6" fill="#dc2626">
+<title>st_gumbel d3: Tokens per second=51,742, Final normalized MSE=0.0122. source=docs/t13_stage_d_arch_summary.csv; router_recipe=st_gumbel; depth=3; route_row_role=shared_routing_and_output; final_nmse=0.012248126789927483</title>
+</circle>
+<circle class="point" cx="409.26" cy="462.63" r="6" fill="#dc2626">
+<title>clipped_ste d5: Tokens per second=37,201, Final normalized MSE=0.0123. source=docs/t13_stage_d_arch_summary.csv; router_recipe=clipped_ste; depth=5; route_row_role=shared_routing_and_output; final_nmse=0.012347257696092129</title>
+</circle>
+<circle class="point" cx="150.67" cy="453.77" r="6" fill="#dc2626">
+<title>st_gumbel d7: Tokens per second=20,878, Final normalized MSE=0.0192. source=docs/t13_stage_d_arch_summary.csv; router_recipe=st_gumbel; depth=7; route_row_role=shared_routing_and_output; final_nmse=0.019196517765522003</title>
+</circle>
+<circle class="point" cx="304.46" cy="451.98" r="6" fill="#dc2626">
+<title>sigmoid_surrogate_ste d5: Tokens per second=30,586, Final normalized MSE=0.0206. source=docs/t13_stage_d_arch_summary.csv; router_recipe=sigmoid_surrogate_ste; depth=5; route_row_role=split_routing_output; final_nmse=0.02058408223092556</title>
+</circle>
+<circle class="point" cx="246.00" cy="450.75" r="6" fill="#dc2626">
+<title>sigmoid_surrogate_ste d5: Tokens per second=26,896, Final normalized MSE=0.0215. source=docs/t13_stage_d_arch_summary.csv; router_recipe=sigmoid_surrogate_ste; depth=5; route_row_role=split_routing_output; final_nmse=0.02152986451983452</title>
+</circle>
+<circle class="point" cx="680.69" cy="445.37" r="6" fill="#dc2626">
+<title>st_gumbel d4: Tokens per second=54,334, Final normalized MSE=0.0257. source=docs/t13_stage_d_arch_summary.csv; router_recipe=st_gumbel; depth=4; route_row_role=split_routing_output; final_nmse=0.025693099945783615</title>
+</circle>
+<circle class="point" cx="534.62" cy="444.34" r="6" fill="#dc2626">
+<title>st_gumbel d4: Tokens per second=45,114, Final normalized MSE=0.0265. source=docs/t13_stage_d_arch_summary.csv; router_recipe=st_gumbel; depth=4; route_row_role=routing_only; final_nmse=0.026492847129702568</title>
+</circle>
+<circle class="point" cx="397.02" cy="428.80" r="6" fill="#dc2626">
+<title>vanilla_ste d4: Tokens per second=36,428, Final normalized MSE=0.0385. source=docs/t13_stage_d_arch_summary.csv; router_recipe=vanilla_ste; depth=4; route_row_role=shared_routing_and_output; final_nmse=0.03851555287837982</title>
+</circle>
+<circle class="point" cx="497.22" cy="105.38" r="6" fill="#059669">
+<title>Stage F vanilla mean: Tokens per second=42,753, Final normalized MSE=0.2887. source=docs/t13_stage_f_layerwise_summary.csv; rows=64; router_recipe=vanilla_ste</title>
+</circle>
+<text class="point-label" x="505.22" y="97.38">Stage F vanilla mean</text>
+<text class="label" x="780" y="62">Series</text>
+<circle cx="780" cy="84" r="5" fill="#2563eb"/>
+<text class="legend" x="792" y="88">Stage C router recipe</text>
+<circle cx="780" cy="106" r="5" fill="#dc2626"/>
+<text class="legend" x="792" y="110">Stage D architecture sweep</text>
+<circle cx="780" cy="128" r="5" fill="#059669"/>
+<text class="legend" x="792" y="132">Stage F layerwise mean</text>
+</svg>

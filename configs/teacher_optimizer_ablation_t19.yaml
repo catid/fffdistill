@@ -1,4 +1,7 @@
 seed: 7331
+seeds:
+  - 7331
+update_rms_calibration_note: "NorMuon/PACE+NorMuon use the vendored optimizer-experiments update scale; equal-LR rows are plumbing smoke only until update RMS is calibrated or an optimizer-specific LR sweep is run."
 cases:
   - name: official_muon_cosine
     train:

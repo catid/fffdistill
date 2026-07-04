@@ -50,6 +50,7 @@ from .models.replacement import (
 from .train_teacher import TeacherRunConfig, build_teacher_model
 from .utils import RunContext, append_jsonl, bool_arg, load_yaml, write_json
 
+SampleSplit = Literal["train", "train_eval", "val"]
 RouterRecipe = Literal[
     "none",
     "no_ste_soft_router",
@@ -119,6 +120,8 @@ class LinearDistillConfig:
     max_capture_bytes_per_layer: int | None = DEFAULT_LINEAR_CAPTURE_MAX_BYTES
     device: str = "cpu"
     capture_autocast_bf16: bool = True
+    metric_holdout_fraction: float = 0.10
+    metric_split_seed: int = 1337
 
     @classmethod
     def from_mapping(cls, raw: dict[str, Any] | None) -> LinearDistillConfig:
@@ -155,6 +158,10 @@ class LinearDistillConfig:
                 raw.get("capture_autocast_bf16", cls.capture_autocast_bf16),
                 key="capture_autocast_bf16",
             ),
+            metric_holdout_fraction=float(
+                raw.get("metric_holdout_fraction", cls.metric_holdout_fraction)
+            ),
+            metric_split_seed=int(raw.get("metric_split_seed", cls.metric_split_seed)),
         )
         config.validate()
         return config
@@ -180,6 +187,14 @@ class LinearDistillConfig:
             raise ValueError("distill.max_capture_bytes_per_layer must be non-negative or null")
         if not isinstance(self.capture_autocast_bf16, bool):
             raise ValueError("distill.capture_autocast_bf16 must be a bool")
+        if (
+            not math.isfinite(self.metric_holdout_fraction)
+            or self.metric_holdout_fraction < 0.0
+            or self.metric_holdout_fraction >= 1.0
+        ):
+            raise ValueError("distill.metric_holdout_fraction must be finite and in [0, 1)")
+        if self.metric_split_seed < 0:
+            raise ValueError("distill.metric_split_seed must be non-negative")
 
 
 @dataclass(frozen=True)
@@ -339,6 +354,10 @@ class LayerDistillResult:
     observed_tokens: int
     dropped_tokens: int
     replacement_path: str
+    fit_tokens: int = 0
+    metric_tokens: int = 0
+    metric_split: str = "train"
+    metric_holdout_fraction: float = 0.0
 
     def log_record(self) -> dict[str, object]:
         return asdict(self)
@@ -404,7 +423,7 @@ def load_teacher_for_distillation(
 def _sample_batches_from_run_config(
     run_config: TeacherRunConfig,
     *,
-    split: Literal["train", "val"],
+    split: SampleSplit,
     max_batches: int,
     device: torch.device,
 ) -> list[torch.Tensor]:
@@ -412,8 +431,14 @@ def _sample_batches_from_run_config(
         raise ValueError("max_sample_batches must be positive")
     if run_config.data.use_test:
         raise RuntimeError("distillation sample batches must not use CIFAR-10 test data")
-    train_loader, val_loader = build_cifar10_loaders(run_config.data)
-    loader = train_loader if split == "train" else val_loader
+    if split == "train_eval":
+        train_loader, val_loader = build_cifar10_loaders(
+            run_config.data,
+            train_eval_transform=True,
+        )
+    else:
+        train_loader, val_loader = build_cifar10_loaders(run_config.data)
+    loader = val_loader if split == "val" else train_loader
     batches: list[torch.Tensor] = []
     for batch_idx, batch in enumerate(loader):
         if batch_idx >= max_batches:
@@ -1148,6 +1173,28 @@ def _batch_indices(total: int, batch_size: int, *, device: torch.device) -> torc
     return torch.randperm(total, device=device)[: min(batch_size, total)]
 
 
+def _fit_metric_split_indices(
+    total: int,
+    *,
+    holdout_fraction: float,
+    seed: int,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor, str]:
+    if total <= 0:
+        raise ValueError("total tokens must be positive")
+    if holdout_fraction <= 0.0 or total < 2:
+        indices = torch.arange(total, device=device)
+        return indices, indices, "train"
+
+    holdout_tokens = max(1, round(float(total) * holdout_fraction))
+    holdout_tokens = min(holdout_tokens, total - 1)
+    generator = torch.Generator().manual_seed(seed)
+    perm = torch.randperm(total, generator=generator).to(device=device)
+    metric_indices = perm[:holdout_tokens]
+    fit_indices = perm[holdout_tokens:]
+    return fit_indices, metric_indices, "holdout"
+
+
 def _synchronize_if_cuda(device: torch.device) -> None:
     if device.type == "cuda":
         torch.cuda.synchronize(device)
@@ -1194,8 +1241,18 @@ def distill_linear_from_tensors(
         raise ValueError(f"no captured tokens for {name}")
 
     device = torch.device(distill_config.device)
-    x_train = x.to(device=device, dtype=torch.float32)
-    y_train = y.to(device=device, dtype=torch.float32)
+    x_all = x.to(device=device, dtype=torch.float32)
+    y_all = y.to(device=device, dtype=torch.float32)
+    fit_indices, metric_indices, metric_split = _fit_metric_split_indices(
+        x_all.shape[0],
+        holdout_fraction=distill_config.metric_holdout_fraction,
+        seed=distill_config.metric_split_seed,
+        device=device,
+    )
+    x_train = x_all[fit_indices]
+    y_train = y_all[fit_indices]
+    x_metric = x_all[metric_indices]
+    y_metric = y_all[metric_indices]
     replacement = make_fff_replacement(linear, config=fff_config).to(
         device=device,
         dtype=torch.float32,
@@ -1227,10 +1284,10 @@ def distill_linear_from_tensors(
         return main_loss + router_loss + balance_loss
 
     with torch.no_grad():
-        initial_loss_tensor = compute_loss(x_train, y_train)
+        initial_loss_tensor = compute_loss(x_metric, y_metric)
         initial_mse = distillation_loss(
-            replacement(x_train),
-            y_train,
+            replacement(x_metric),
+            y_metric,
             normalized_mse_weight=1.0,
             cosine_weight=0.0,
             variance_weight=0.0,
@@ -1242,7 +1299,11 @@ def distill_linear_from_tensors(
             "phase": "initial",
             "loss": float(initial_loss_tensor.item()),
             "normalized_mse": float(initial_mse.item()),
-            "tokens": int(x_train.shape[0]),
+            "tokens": int(x_metric.shape[0]),
+            "fit_tokens": int(x_train.shape[0]),
+            "metric_tokens": int(x_metric.shape[0]),
+            "metric_split": metric_split,
+            "metric_holdout_fraction": distill_config.metric_holdout_fraction,
             "diagnostics": _diagnostics_record(replacement, x_train[: distill_config.batch_size]),
             "router": _router_auxiliary_loss(
                 replacement,
@@ -1301,20 +1362,23 @@ def distill_linear_from_tensors(
                 "layer": name,
                 "phase": "locoprop_refit",
                 "tokens": int(x_train.shape[0]),
+                "fit_tokens": int(x_train.shape[0]),
+                "metric_tokens": int(x_metric.shape[0]),
+                "metric_split": metric_split,
                 "locoprop": locoprop_record,
             },
         )
 
     with torch.no_grad():
-        final_loss_tensor = compute_loss(x_train, y_train)
+        final_loss_tensor = compute_loss(x_metric, y_metric)
         final_mse = distillation_loss(
-            replacement(x_train),
-            y_train,
+            replacement(x_metric),
+            y_metric,
             normalized_mse_weight=1.0,
             cosine_weight=0.0,
             variance_weight=0.0,
         )
-        final_alignment = _cosine_alignment_metrics(replacement(x_train), y_train)
+        final_alignment = _cosine_alignment_metrics(replacement(x_metric), y_metric)
     layer_dir = output_dir / "layers" / name.replace(".", "__")
     layer_dir.mkdir(parents=True, exist_ok=True)
     state_path = layer_dir / "fff_state.pt"
@@ -1329,10 +1393,14 @@ def distill_linear_from_tensors(
         final_cosine_loss=final_alignment["final_cosine_loss"],
         train_seconds=float(train_seconds),
         tokens_per_second=float(tokens_per_second),
-        captured_tokens=int(x_train.shape[0]),
-        observed_tokens=int(x_train.shape[0]),
+        captured_tokens=int(x_all.shape[0]),
+        observed_tokens=int(x_all.shape[0]),
         dropped_tokens=0,
         replacement_path=str(state_path),
+        fit_tokens=int(x_train.shape[0]),
+        metric_tokens=int(x_metric.shape[0]),
+        metric_split=metric_split,
+        metric_holdout_fraction=distill_config.metric_holdout_fraction,
     )
     append_jsonl(
         metrics_path,
@@ -1346,6 +1414,10 @@ def distill_linear_from_tensors(
             "train_seconds": result.train_seconds,
             "tokens_per_second": result.tokens_per_second,
             "tokens": result.captured_tokens,
+            "fit_tokens": result.fit_tokens,
+            "metric_tokens": result.metric_tokens,
+            "metric_split": result.metric_split,
+            "metric_holdout_fraction": result.metric_holdout_fraction,
             "diagnostics": _diagnostics_record(replacement, x_train[: distill_config.batch_size]),
             "router": _router_auxiliary_loss(
                 replacement,
@@ -1439,6 +1511,10 @@ def run_layerwise_distillation(
                 observed_tokens=capture.observed_tokens,
                 dropped_tokens=capture.dropped_tokens,
                 replacement_path=result.replacement_path,
+                fit_tokens=result.fit_tokens,
+                metric_tokens=result.metric_tokens,
+                metric_split=result.metric_split,
+                metric_holdout_fraction=result.metric_holdout_fraction,
             )
         )
     write_json(output_dir / "layer_summary.json", [result.log_record() for result in results])
@@ -1457,7 +1533,7 @@ def main() -> int:
     parser.add_argument("--quick-smoke", type=bool_arg, default=False)
     parser.add_argument("--progressive-step", type=int, default=None)
     parser.add_argument("--progressive-step-size", type=int, default=1)
-    parser.add_argument("--sample-split", choices=("train", "val"), default="train")
+    parser.add_argument("--sample-split", choices=("train", "train_eval", "val"), default="train_eval")
     parser.add_argument("--max-sample-batches", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--num-workers", type=int, default=None)
