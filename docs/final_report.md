@@ -8,6 +8,6 @@ This report must not contain final CIFAR-10 test accuracy until validation-selec
 
 When route-row contribution experiments are run, report these controls explicitly:
 
-| Recipe | route_rows_contribute | route_output_contributes | route_row_role | route_rows_output_count | route_rows_output_fraction | route_result_rows | route output rows/node | active rows/token | stored rows | validation MSE | throughput |
-| --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| pending | pending | pending | pending | pending | pending | pending | pending | pending | pending | pending | pending |
+| Recipe | route_rows_contribute | route_output_contributes | route_row_role | route_rows_output_count | route_rows_output_fraction | route_result_rows | route output rows/node | active rows/token | stored rows | effective stored rows | effective trainable rows | unused route-output rows | unused stored route-output rows | validation MSE | throughput |
+| --- | --- | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| pending | pending | pending | pending | pending | pending | pending | pending | pending | pending | pending | pending | pending | pending | pending | pending |

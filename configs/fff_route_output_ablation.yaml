@@ -73,6 +73,12 @@ report_columns:
   - route_output_rows_per_token
   - active_rows_per_token
   - stored_rows
+  - effective_stored_rows
+  - effective_trainable_rows
+  - stored_route_output_rows
+  - effective_route_output_rows
+  - unused_route_output_rows
+  - unused_stored_route_output_rows
   - active_flops
   - validation_mse
   - validation_accuracy

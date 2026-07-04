@@ -120,6 +120,8 @@ def test_diagnostics_report_depth_leaves_stored_and_active_rows() -> None:
     assert diagnostics["depth"] == 2
     assert diagnostics["leaves"] == 4
     assert diagnostics["stored_rows"] == 1 + 3 * 1 + 4 * 2
+    assert diagnostics["effective_stored_rows"] == diagnostics["stored_rows"]
+    assert diagnostics["effective_trainable_rows"] == diagnostics["stored_rows"]
     assert diagnostics["route_rows_contribute"] is False
     assert diagnostics["route_output_contributes"] is False
     assert diagnostics["route_row_role"] == "routing_only"
@@ -127,18 +129,35 @@ def test_diagnostics_report_depth_leaves_stored_and_active_rows() -> None:
     assert diagnostics["route_rows_output_fraction"] is None
     assert diagnostics["max_visited_route_rows_per_token"] == 2
     assert diagnostics["max_route_output_rows_per_token"] == 0
+    assert diagnostics["stored_route_output_rows"] == 0
+    assert diagnostics["effective_route_output_rows"] == 0
+    assert diagnostics["unused_route_output_rows"] == 0
     assert diagnostics["route_output_rows_per_node"] == 0
     assert diagnostics["route_output_rows_per_token"] == 0
     assert diagnostics["active_rows_per_token"] == 3
 
 
 @pytest.mark.parametrize(
-    ("role", "route_result_rows", "count", "expected_route_outputs", "expected_stored"),
+    (
+        "role",
+        "route_result_rows",
+        "count",
+        "expected_route_outputs",
+        "expected_stored",
+        "expected_effective",
+    ),
     [
-        ("routing_only", 0, 0, 0, 1 + 3 * 2 + 4 * 1),
-        ("shared_routing_and_output", 0, 1, 2, 1 + 3 * 2 + 4 * 1),
-        ("shared_routing_and_output", 0, "all", 4, 1 + 3 * 2 + 4 * 1),
-        ("split_routing_output", 2, 3, 4, 1 + 3 * 2 + 3 * 2 + 4 * 1),
+        ("routing_only", 0, 0, 0, 1 + 3 * 2 + 4 * 1, 1 + 3 * 2 + 4 * 1),
+        ("shared_routing_and_output", 0, 1, 2, 1 + 3 * 2 + 4 * 1, 1 + 3 * 2 + 4 * 1),
+        ("shared_routing_and_output", 0, "all", 4, 1 + 3 * 2 + 4 * 1, 1 + 3 * 2 + 4 * 1),
+        (
+            "split_routing_output",
+            2,
+            3,
+            4,
+            1 + 3 * 2 + 3 * 2 + 4 * 1,
+            1 + 3 * 2 + 3 * 2 + 4 * 1,
+        ),
     ],
 )
 def test_route_row_role_diagnostics(
@@ -147,6 +166,7 @@ def test_route_row_role_diagnostics(
     count: int | str,
     expected_route_outputs: int,
     expected_stored: int,
+    expected_effective: int,
 ) -> None:
     layer = FFFLinear(
         8,
@@ -164,6 +184,8 @@ def test_route_row_role_diagnostics(
     diagnostics = layer.diagnostics(torch.randn(3, 8))
 
     assert diagnostics["stored_rows"] == expected_stored
+    assert diagnostics["effective_stored_rows"] == expected_effective
+    assert diagnostics["effective_trainable_rows"] == expected_effective
     assert diagnostics["route_output_rows_per_token"] == expected_route_outputs
     assert diagnostics["route_output_rows_per_node"] == expected_route_outputs // layer.depth
     assert diagnostics["active_rows_per_token"].shape == (3,)
@@ -189,8 +211,14 @@ def test_route_output_fraction_bounds_active_rows() -> None:
     diagnostics = layer.diagnostics(torch.randn(2, 8))
 
     assert diagnostics["max_route_output_rows_per_token"] == 6
+    assert diagnostics["stored_route_output_rows"] == layer.internal_nodes * 2
+    assert diagnostics["effective_route_output_rows"] == layer.internal_nodes
+    assert diagnostics["unused_route_output_rows"] == layer.internal_nodes
+    assert diagnostics["unused_stored_route_output_rows"] == 0
     assert diagnostics["route_output_rows_per_node"] == 1
     assert diagnostics["route_output_rows_per_token"] == 3
+    assert diagnostics["effective_stored_rows"] == diagnostics["stored_rows"]
+    assert diagnostics["effective_trainable_rows"] == diagnostics["effective_stored_rows"]
     assert diagnostics["route_rows_contribute"] is True
     assert diagnostics["route_output_contributes"] is True
     assert diagnostics["route_rows_output_count"] == "all"
@@ -449,6 +477,53 @@ def test_route_output_ablation_config_cases_are_valid() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    (
+        "role",
+        "route_result_rows",
+        "expected_stored_rows",
+        "expected_effective_rows",
+    ),
+    [
+        ("shared_routing_and_output", 0, 1 + 7 * 2 + 8 * 1, 1 + 7 * 2 + 8 * 1),
+        ("split_routing_output", 2, 1 + 7 * 2 + 7 * 2 + 8 * 1, 1 + 7 * 2 + 7 * 1 + 8 * 1),
+    ],
+)
+def test_half_fraction_route_output_reports_effective_rows(
+    role: str,
+    route_result_rows: int,
+    expected_stored_rows: int,
+    expected_effective_rows: int,
+) -> None:
+    layer = FFFLinear(
+        8,
+        4,
+        depth=3,
+        shared_rows=1,
+        route_rows=2,
+        route_result_rows=route_result_rows,
+        leaf_rows=1,
+        route_row_role=role,
+        route_rows_output_count="all",
+        route_rows_output_fraction=0.5,
+        bias=False,
+    )
+
+    diagnostics = layer.diagnostics(torch.randn(2, 8))
+
+    assert diagnostics["stored_rows"] == expected_stored_rows
+    assert diagnostics["stored_route_output_rows"] == 7 * 2
+    assert diagnostics["effective_route_output_rows"] == 7 * 1
+    assert diagnostics["unused_route_output_rows"] == 7
+    assert diagnostics["unused_stored_route_output_rows"] == (
+        7 if role == "split_routing_output" else 0
+    )
+    assert diagnostics["effective_stored_rows"] == expected_effective_rows
+    assert diagnostics["effective_trainable_rows"] == expected_effective_rows
+    assert diagnostics["route_output_rows_per_node"] == 1
+    assert diagnostics["route_output_rows_per_token"] == 3
+
+
 def test_route_output_zero_count_reports_no_effective_contribution() -> None:
     layer = FFFLinear(
         8,
@@ -465,5 +540,11 @@ def test_route_output_zero_count_reports_no_effective_contribution() -> None:
 
     assert diagnostics["route_rows_contribute"] is True
     assert diagnostics["route_output_contributes"] is False
+    assert diagnostics["stored_route_output_rows"] == 3 * 2
+    assert diagnostics["effective_route_output_rows"] == 0
+    assert diagnostics["unused_route_output_rows"] == 3 * 2
+    assert diagnostics["unused_stored_route_output_rows"] == 0
+    assert diagnostics["effective_stored_rows"] == diagnostics["stored_rows"]
+    assert diagnostics["effective_trainable_rows"] == diagnostics["effective_stored_rows"]
     assert diagnostics["route_output_rows_per_node"] == 0
     assert diagnostics["route_output_rows_per_token"] == 0

@@ -11,9 +11,17 @@ Status: implementation/config/report scaffold complete; real distillation metric
 - `split_routing_output`: routing rows score branches, and separate `route_result_rows` contribute along the visited path.
 
 Reports distinguish the configured request (`route_rows_contribute`) from effective
-nonzero contribution (`route_output_contributes`). Split-role kernels evaluate only
-the selected result rows per visited node, so active-row and throughput metadata match
-the selected ablation case rather than the maximum stored `route_result_rows`.
+nonzero contribution (`route_output_contributes`). They also report physical
+`stored_rows` separately from effective selected row counts:
+`effective_stored_rows`, `effective_trainable_rows`,
+`stored_route_output_rows`, `effective_route_output_rows`, and
+`unused_route_output_rows`. `unused_stored_route_output_rows` is nonzero only
+when separate split-role route-result rows are physically allocated but not
+selected. Partial shared-role cases keep the physical route rows for routing
+while only selected route-output vectors count as effective route-output rows.
+Split-role kernels evaluate only the selected result rows per visited node, so
+active-row, effective-row, and throughput metadata match the selected ablation
+case rather than the maximum stored `route_result_rows`.
 
 ## Named Cases
 
@@ -37,7 +45,8 @@ When layerwise distillation and fine-tuning runs are available, report:
 - validation accuracy and final-test accuracy only after validation selection;
 - throughput and GPU utilization;
 - active rows per token and estimated active FLOPs;
-- stored rows and parameter count;
+- stored rows, effective stored/trainable rows, unused route-output rows,
+  unused stored route-output rows, and parameter count;
 - route entropy, dead leaves, and leaf occupancy percentiles;
 - route-row role, count, fraction, route-result rows, requested contribution, and
   effective nonzero route-output contribution.

@@ -409,6 +409,32 @@ class FFFLinear(nn.Module):
         )
 
     @property
+    def stored_route_output_rows(self) -> int:
+        return self.internal_nodes * self._route_output_rows_per_node()
+
+    @property
+    def effective_route_output_rows(self) -> int:
+        return self.internal_nodes * self._route_output_rows_per_node_selected()
+
+    @property
+    def unused_route_output_rows(self) -> int:
+        return self.stored_route_output_rows - self.effective_route_output_rows
+
+    @property
+    def unused_stored_route_output_rows(self) -> int:
+        if self.route_row_role == "split_routing_output":
+            return self.unused_route_output_rows
+        return 0
+
+    @property
+    def effective_stored_rows(self) -> int:
+        return self.stored_rows - self.unused_stored_route_output_rows
+
+    @property
+    def effective_trainable_rows(self) -> int:
+        return self.effective_stored_rows
+
+    @property
     def max_visited_route_rows_per_token(self) -> int:
         return self.depth * self.route_rows
 
@@ -551,6 +577,8 @@ class FFFLinear(nn.Module):
                 "leaves": self.leaves,
                 "internal_nodes": self.internal_nodes,
                 "stored_rows": self.stored_rows,
+                "effective_stored_rows": self.effective_stored_rows,
+                "effective_trainable_rows": self.effective_trainable_rows,
                 "shared_rows": self.shared_rows,
                 "route_rows": self.route_rows,
                 "route_result_rows": self.route_result_rows,
@@ -562,6 +590,10 @@ class FFFLinear(nn.Module):
                 "leaf_rows": self.leaf_rows,
                 "max_visited_route_rows_per_token": self.max_visited_route_rows_per_token,
                 "max_route_output_rows_per_token": self.max_route_output_rows_per_token,
+                "stored_route_output_rows": self.stored_route_output_rows,
+                "effective_route_output_rows": self.effective_route_output_rows,
+                "unused_route_output_rows": self.unused_route_output_rows,
+                "unused_stored_route_output_rows": self.unused_stored_route_output_rows,
                 "route_output_rows_per_node": self._route_output_rows_per_node_selected(),
                 "route_output_rows_per_token": self.route_output_rows_per_token,
                 "active_rows_per_token": self._static_active_rows_per_token(),
@@ -923,6 +955,8 @@ class FFFLinear(nn.Module):
             "leaves": self.leaves,
             "internal_nodes": self.internal_nodes,
             "stored_rows": self.stored_rows,
+            "effective_stored_rows": self.effective_stored_rows,
+            "effective_trainable_rows": self.effective_trainable_rows,
             "shared_rows": self.shared_rows,
             "route_rows": self.route_rows,
             "route_result_rows": self.route_result_rows,
@@ -934,6 +968,10 @@ class FFFLinear(nn.Module):
             "leaf_rows": self.leaf_rows,
             "max_visited_route_rows_per_token": self.max_visited_route_rows_per_token,
             "max_route_output_rows_per_token": self.max_route_output_rows_per_token,
+            "stored_route_output_rows": self.stored_route_output_rows,
+            "effective_route_output_rows": self.effective_route_output_rows,
+            "unused_route_output_rows": self.unused_route_output_rows,
+            "unused_stored_route_output_rows": self.unused_stored_route_output_rows,
             "route_output_rows_per_node": self._route_output_rows_per_node_selected(),
             "route_output_rows_per_token": self._route_output_count(),
             "active_rows_per_token": active,
