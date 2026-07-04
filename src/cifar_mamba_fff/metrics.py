@@ -13,12 +13,14 @@ def accuracy(logits: torch.Tensor, target: torch.Tensor) -> float:
 
 
 def normalized_mse(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
-    return (pred - target).square().sum() / (target.square().sum() + eps)
+    pred_f = pred.float()
+    target_f = target.float()
+    return (pred_f - target_f).square().sum() / (target_f.square().sum() + eps)
 
 
 def cosine_loss(pred: torch.Tensor, target: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
-    pred_f = pred.flatten(0, -2)
-    target_f = target.flatten(0, -2)
+    pred_f = pred.float().flatten(0, -2)
+    target_f = target.float().flatten(0, -2)
     return 1.0 - F.cosine_similarity(pred_f, target_f, dim=-1, eps=eps).mean()
 
 

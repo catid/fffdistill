@@ -14,7 +14,7 @@ def distillation_loss(
     cosine_weight: float = 0.0,
     variance_weight: float = 0.0,
 ) -> torch.Tensor:
-    loss = pred.new_tensor(0.0)
+    loss = pred.float().new_tensor(0.0)
     if normalized_mse_weight:
         loss = loss + normalized_mse_weight * normalized_mse(pred, target)
     if cosine_weight:
