@@ -9,8 +9,10 @@ Generated: 2026-07-04T18:00:01.610058+00:00
   errors, so remote repo updates use `scripts/sync_repo_remote.sh` rsync fallback
   from `work` after commits are pushed.
 - Before launching jobs, scheduler preflight must require the expected local git
-  commit so stale remote workdirs fail as infrastructure errors instead of
-  running experiments.
+  commit and record expected/local/remote commit hashes. Stale remote workdirs
+  fail as infrastructure errors, and detached launch scripts re-check
+  `git rev-parse HEAD` immediately before running the job command so a drifted
+  rsync target cannot silently enter an experiment.
 - `ai` has 2x RTX 5090 GPUs with about 32 GiB each, so batch-size caps should be
   separate from the 95 GiB Pro6000 class.
 

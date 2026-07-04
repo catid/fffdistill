@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -478,7 +479,116 @@ def test_preflight_machine_rejects_commit_mismatch(monkeypatch) -> None:
 
     assert result.ok is False
     assert result.commit == "oldcommit"
-    assert "remote commit mismatch: expected newcommit, got oldcommit" in result.stderr
+    assert result.expected_commit == "newcommit"
+    assert result.remote_commit == "oldcommit"
+    assert result.local_commit
+    assert "remote commit/config mismatch: expected newcommit, got oldcommit" in result.stderr
+
+
+def test_preflight_machine_records_matching_local_and_remote_commits(monkeypatch) -> None:
+    preflight_machine = _require_public_helper("preflight_machine")
+    spec = MachineSpec(name="work", host="localhost", gpus=2, role="local", workdir="/repo")
+
+    monkeypatch.setattr(gpu_scheduler, "git_commit", lambda: "localcommit")
+
+    def fake_run_remote(
+        spec_arg: MachineSpec,
+        command: str,
+        *,
+        timeout_s: int,
+    ) -> Mapping[str, object]:
+        assert spec_arg == spec
+        assert "git rev-parse HEAD" in command
+        assert timeout_s == 3
+        return {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "localcommit\nPython 3.12.11\n",
+            "stderr": "",
+        }
+
+    monkeypatch.setattr(gpu_scheduler, "run_remote", fake_run_remote)
+
+    result = preflight_machine(
+        spec,
+        python_bin=".venv/bin/python",
+        expected_commit="localcommit",
+        timeout_s=3,
+    )
+
+    assert result.ok is True
+    assert result.record() == {
+        "machine": "work",
+        "ok": True,
+        "returncode": 0,
+        "commit": "localcommit",
+        "expected_commit": "localcommit",
+        "local_commit": "localcommit",
+        "remote_commit": "localcommit",
+        "stdout": "localcommit\nPython 3.12.11",
+        "stderr": "",
+    }
+
+
+def test_detached_launch_script_refuses_commit_mismatch_before_command(tmp_path: Path) -> None:
+    render_detached_launch_script = _require_public_helper("render_detached_launch_script")
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True, text=True)
+    (tmp_path / "tracked.txt").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "tracked.txt"], cwd=tmp_path, check=True, capture_output=True, text=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=Test",
+            "commit",
+            "-m",
+            "base",
+        ],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    remote_commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_path,
+        text=True,
+    ).strip()
+    expected_commit = "0" * 40
+    job = GpuJob(
+        command="touch outputs/sync_guard/work/0/should_not_run",
+        output_dir=Path("outputs/sync_guard/work/0"),
+        machine="work",
+        gpu_id=0,
+    )
+    script_path = tmp_path / "launch.sh"
+    script_path.write_text(
+        render_detached_launch_script(job, expected_commit=expected_commit),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        ["bash", str(script_path)],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    output_dir = tmp_path / "outputs/sync_guard/work/0"
+    payload = json.loads((output_dir / "status.json").read_text(encoding="utf-8"))
+    assert completed.returncode == 125
+    assert not (output_dir / "should_not_run").exists()
+    assert payload["status"] == JobStatus.FAILED_INFRA
+    assert payload["returncode"] == 125
+    assert payload["expected_git_commit"] == expected_commit
+    assert payload["remote_git_commit"] == remote_commit
+    assert "remote commit/config mismatch" in payload["prelaunch_error"]
+    assert "remote commit/config mismatch" in (output_dir / "stderr.log").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_preflight_machine_can_require_cifar10_train_readiness(monkeypatch) -> None:

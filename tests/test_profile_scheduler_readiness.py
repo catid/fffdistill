@@ -10,7 +10,7 @@ import pytest
 import torch
 
 from cifar_mamba_fff import gpu_scheduler
-from cifar_mamba_fff.benchmark_fff import _build_parser, _run_benchmark
+from cifar_mamba_fff.benchmark_fff import _build_parser, _run_benchmark, _run_profile_report
 from cifar_mamba_fff.cluster import MachineSpec
 from cifar_mamba_fff.gpu_scheduler import (
     GpuJob,
@@ -86,6 +86,93 @@ def test_benchmark_backward_rows_are_opt_in() -> None:
     assert by_name["dense_backward"]["grad_enabled"] is True
     assert by_name["fff_grouped_backward"]["grad_enabled"] is True
     assert by_name["fff_grouped_backward"]["tokens_per_second"] > 0.0
+
+
+def test_benchmark_reports_dense_overhead_and_hot_path_metadata() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(
+        [
+            "--device",
+            "cpu",
+            "--batch-size",
+            "4",
+            "--in-features",
+            "8",
+            "--out-features",
+            "8",
+            "--iterations",
+            "1",
+            "--warmup",
+            "0",
+            "--include-naive",
+            "true",
+            "--measure-components",
+            "true",
+        ]
+    )
+
+    rows = _run_benchmark(args)
+    by_name = {row["name"]: row for row in rows}
+
+    assert {
+        "dense",
+        "fff_grouped",
+        "fff_naive",
+        "fff_route_setup",
+        "fff_selected_leaf_kernel",
+    } <= set(by_name)
+    assert by_name["dense"]["dense_slowdown"] == pytest.approx(1.0)
+    assert by_name["fff_grouped"]["dense_slowdown"] > 0.0
+    assert by_name["fff_grouped"]["tokens_per_second_fraction_of_dense"] > 0.0
+    assert by_name["fff_grouped"]["grouped_vs_naive_speedup"] > 0.0
+    assert by_name["fff_grouped"]["python_per_token_hot_path"] is False
+    assert by_name["fff_naive"]["python_per_token_hot_path"] is True
+    assert by_name["fff_grouped"]["sort_bucket_strategy"] == "not_used_selected_leaf_gather_bmm"
+    assert by_name["fff_grouped"]["sort_bucket_seconds_per_iteration"] == 0.0
+    assert by_name["fff_grouped"]["sort_bucket_overhead_fraction"] == 0.0
+
+
+def test_teacher_linear_profile_report_emits_reproducible_shape_matrix() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(
+        [
+            "--profile-report",
+            "teacher-linear",
+            "--quick-smoke",
+            "true",
+            "--device",
+            "cpu",
+            "--iterations",
+            "1",
+            "--warmup",
+            "0",
+            "--report-include-naive",
+            "false",
+        ]
+    )
+
+    rows = _run_profile_report(args)
+    cases = {row["profile_case"] for row in rows}
+    names_by_case: dict[str, set[str]] = {}
+    for row in rows:
+        names_by_case.setdefault(row["profile_case"], set()).add(row["name"])
+
+    assert cases == {
+        "mamba3_d_model_square_256",
+        "mamba3_expand_in_256x512",
+        "mamba3_expand_out_512x256",
+    }
+    for case in cases:
+        assert {"dense", "fff_grouped", "fff_route_setup", "fff_selected_leaf_kernel"} <= (
+            names_by_case[case]
+        )
+    grouped = next(row for row in rows if row["name"] == "fff_grouped")
+    assert grouped["profile_report"] == "teacher-linear"
+    assert grouped["requested_batch_size"] == 1024
+    assert grouped["tokens"] == 16
+    assert grouped["requested_in_features"] in {256, 512}
+    assert grouped["python_per_token_hot_path"] is False
+    assert grouped["sort_bucket_strategy"] == "not_used_selected_leaf_gather_bmm"
 
 
 def test_scheduler_dry_run_jobs_bind_gpu_venv_python_and_output_dir(tmp_path) -> None:

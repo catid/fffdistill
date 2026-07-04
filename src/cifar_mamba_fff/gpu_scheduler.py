@@ -67,6 +67,7 @@ class GpuJob:
     metadata: dict[str, object] = field(default_factory=dict)
 
     def record(self) -> dict[str, object]:
+        local_commit = git_commit()
         return {
             "command": self.command,
             "output_dir": str(self.output_dir),
@@ -75,7 +76,8 @@ class GpuJob:
             "seed": self.seed,
             "status": self.status,
             "metadata": self.metadata,
-            "git_commit": git_commit(),
+            "git_commit": local_commit,
+            "local_git_commit": local_commit,
         }
 
 
@@ -119,8 +121,24 @@ class PreflightResult:
     ok: bool
     returncode: int | None
     commit: str | None
-    stdout: str
-    stderr: str
+    expected_commit: str | None = None
+    local_commit: str = ""
+    remote_commit: str | None = None
+    stdout: str = ""
+    stderr: str = ""
+
+    def record(self) -> dict[str, object]:
+        return {
+            "machine": self.machine,
+            "ok": self.ok,
+            "returncode": self.returncode,
+            "commit": self.commit,
+            "expected_commit": self.expected_commit,
+            "local_commit": self.local_commit,
+            "remote_commit": self.remote_commit,
+            "stdout": self.stdout.strip(),
+            "stderr": self.stderr.strip(),
+        }
 
 
 def _utc_now() -> str:
@@ -454,25 +472,35 @@ def preflight_machine(
     result = run_remote(spec, command, timeout_s=timeout_s)
     stdout = str(result["stdout"])
     commit = stdout.splitlines()[0].strip() if stdout.splitlines() else None
+    local_commit = git_commit()
     ok = bool(result["ok"])
     stderr = str(result["stderr"])
     if expected_commit is not None and commit != expected_commit:
         ok = False
         stderr = (
             stderr.rstrip()
-            + f"\nremote commit mismatch: expected {expected_commit}, got {commit}"
+            + f"\nremote commit/config mismatch: expected {expected_commit}, got {commit}"
         ).strip()
     return PreflightResult(
         machine=spec.name,
         ok=ok,
         returncode=result["returncode"],
         commit=commit,
+        expected_commit=expected_commit,
+        local_commit=local_commit,
+        remote_commit=commit,
         stdout=stdout,
         stderr=stderr,
     )
 
 
-def _job_static_metadata(job: GpuJob, files: DetachedJobFiles) -> dict[str, object]:
+def _job_static_metadata(
+    job: GpuJob,
+    files: DetachedJobFiles,
+    *,
+    expected_commit: str | None = None,
+) -> dict[str, object]:
+    local_commit = git_commit()
     return {
         "command": job.command,
         "output_dir": str(job.output_dir),
@@ -480,14 +508,24 @@ def _job_static_metadata(job: GpuJob, files: DetachedJobFiles) -> dict[str, obje
         "gpu_id": job.gpu_id,
         "seed": job.seed,
         "metadata": job.metadata,
-        "git_commit": git_commit(),
+        "git_commit": local_commit,
+        "local_git_commit": local_commit,
+        "expected_git_commit": expected_commit,
         "files": files.record(),
     }
 
 
-def render_detached_launch_script(job: GpuJob) -> str:
+def render_detached_launch_script(
+    job: GpuJob,
+    *,
+    expected_commit: str | None = None,
+) -> str:
     files = detached_job_files(job)
-    static_metadata = json.dumps(_job_static_metadata(job, files), sort_keys=True)
+    static_metadata = json.dumps(
+        _job_static_metadata(job, files, expected_commit=expected_commit),
+        sort_keys=True,
+    )
+    expected_commit_value = "" if expected_commit is None else expected_commit
     return "\n".join(
         [
             "#!/usr/bin/env bash",
@@ -496,8 +534,9 @@ def render_detached_launch_script(job: GpuJob) -> str:
             "set +o pipefail",
             f"OUT_DIR={quote(str(files.output_dir))}",
             f"COMMAND={quote(job.command)}",
+            f"EXPECTED_GIT_COMMIT={quote(expected_commit_value)}",
             f"STATIC_METADATA={quote(static_metadata)}",
-            "export OUT_DIR STATIC_METADATA",
+            "export OUT_DIR COMMAND EXPECTED_GIT_COMMIT STATIC_METADATA",
             'mkdir -p "$OUT_DIR"',
             'printf "%s\\n" "$$" > "$OUT_DIR/pid.txt"',
             "write_status() {",
@@ -514,6 +553,10 @@ def render_detached_launch_script(job: GpuJob) -> str:
             "    'returncode': None if return_code == '' else int(return_code),",
             "    'updated_at': os.environ['UPDATED_AT'],",
             "})",
+            "payload['remote_git_commit'] = os.environ.get('REMOTE_GIT_COMMIT') or None",
+            "prelaunch_error = os.environ.get('PRELAUNCH_ERROR')",
+            "if prelaunch_error:",
+            "    payload['prelaunch_error'] = prelaunch_error",
             "pid_path = out_dir / 'pid.txt'",
             "if pid_path.exists():",
             "    payload['pid'] = int(pid_path.read_text(encoding='utf-8').strip())",
@@ -530,6 +573,16 @@ def render_detached_launch_script(job: GpuJob) -> str:
             "    sleep 30",
             "  done",
             "}",
+            'REMOTE_GIT_COMMIT="$(git rev-parse HEAD 2>/dev/null || true)"',
+            "export REMOTE_GIT_COMMIT",
+            'if [ -n "$EXPECTED_GIT_COMMIT" ] && [ "$REMOTE_GIT_COMMIT" != "$EXPECTED_GIT_COMMIT" ]; then',
+            '  PRELAUNCH_ERROR="remote commit/config mismatch: expected ${EXPECTED_GIT_COMMIT}, got ${REMOTE_GIT_COMMIT:-unknown}"',
+            "  export PRELAUNCH_ERROR",
+            '  printf "%s\\n" "$PRELAUNCH_ERROR" > "$OUT_DIR/stderr.log"',
+            '  printf "%s\\n" "125" > "$OUT_DIR/exit_code.txt"',
+            '  write_status "failed_infra" "125"',
+            "  exit 125",
+            "fi",
             'write_status "running" ""',
             "heartbeat_loop &",
             "heartbeat_pid=$!",
@@ -600,9 +653,15 @@ def build_detached_launch_command(files: DetachedJobFiles) -> str:
     )
 
 
-def launch_detached_job(spec: MachineSpec, job: GpuJob, *, timeout_s: int = 20) -> LaunchResult:
+def launch_detached_job(
+    spec: MachineSpec,
+    job: GpuJob,
+    *,
+    timeout_s: int = 20,
+    expected_commit: str | None = None,
+) -> LaunchResult:
     files = detached_job_files(job)
-    script = render_detached_launch_script(job)
+    script = render_detached_launch_script(job, expected_commit=expected_commit)
     write_result = write_remote_text(spec, files.script, script, executable=True, timeout_s=timeout_s)
     if not write_result["ok"]:
         job.status = JobStatus.FAILED_INFRA
@@ -717,6 +776,7 @@ def launch_detached_jobs(
     jobs: list[GpuJob],
     *,
     timeout_s: int = 20,
+    expected_commit: str | None = None,
 ) -> list[LaunchResult]:
     by_name = {machine.name: machine for machine in machines}
     results: list[LaunchResult] = []
@@ -727,7 +787,14 @@ def launch_detached_jobs(
             spec = by_name[job.machine]
         except KeyError as exc:
             raise ValueError(f"unknown job machine: {job.machine}") from exc
-        results.append(launch_detached_job(spec, job, timeout_s=timeout_s))
+        results.append(
+            launch_detached_job(
+                spec,
+                job,
+                timeout_s=timeout_s,
+                expected_commit=expected_commit,
+            )
+        )
     return results
 
 
@@ -1171,6 +1238,8 @@ def main(argv: list[str] | None = None) -> int:
     if not args.dry_run:
         launchable_jobs = list(jobs)
         skipped_results: list[dict[str, Any]] = []
+        preflight_records_by_machine: dict[str, dict[str, object]] = {}
+        expected_launch_commit = None if args.expected_commit == "any" else str(args.expected_commit)
         if args.preflight:
             specs_by_name = {machine.name: machine for machine in machines}
             machines_with_jobs = sorted({str(job.machine) for job in jobs if job.machine is not None})
@@ -1178,14 +1247,16 @@ def main(argv: list[str] | None = None) -> int:
                 machine_name: preflight_machine(
                     specs_by_name[machine_name],
                     python_bin=args.python_bin,
-                    expected_commit=None
-                    if args.expected_commit == "any"
-                    else str(args.expected_commit),
+                    expected_commit=expected_launch_commit,
                     require_cifar10_train=args.smoke_mode == "train"
                     or args.job_kind in {"teacher_hpo", "distill_hpo"},
                     timeout_s=args.launch_timeout_s,
                 )
                 for machine_name in machines_with_jobs
+            }
+            preflight_records_by_machine = {
+                machine_name: preflight.record()
+                for machine_name, preflight in preflight_by_machine.items()
             }
             launchable_jobs = []
             for job in jobs:
@@ -1203,18 +1274,14 @@ def main(argv: list[str] | None = None) -> int:
                         "machine": job.machine,
                         "gpu_id": job.gpu_id,
                         "output_dir": str(job.output_dir),
-                        "preflight": {
-                            "returncode": preflight.returncode,
-                            "commit": preflight.commit,
-                            "stdout": preflight.stdout.strip(),
-                            "stderr": preflight.stderr.strip(),
-                        },
+                        "preflight": preflight.record(),
                     }
                 )
         launch_results = launch_detached_jobs(
             machines,
             launchable_jobs,
             timeout_s=args.launch_timeout_s,
+            expected_commit=expected_launch_commit,
         )
         Path(args.launch_results_out).parent.mkdir(parents=True, exist_ok=True)
         with Path(args.launch_results_out).open("w", encoding="utf-8") as handle:
@@ -1231,6 +1298,9 @@ def main(argv: list[str] | None = None) -> int:
                             "output_dir": str(result.job.output_dir),
                             "launch_stdout": result.launch_stdout.strip(),
                             "launch_stderr": result.launch_stderr.strip(),
+                            "preflight": preflight_records_by_machine.get(
+                                str(result.job.machine)
+                            ),
                             "files": result.files.record(),
                         },
                         sort_keys=True,
