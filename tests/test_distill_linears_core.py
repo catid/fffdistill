@@ -11,6 +11,7 @@ import cifar_mamba_fff.distill_linears as distill_linears
 from cifar_mamba_fff.distill_linears import (
     LinearDistillConfig,
     RouterDistillConfig,
+    _capture_autocast_context,
     _router_auxiliary_loss,
     distill_linear_from_tensors,
     load_teacher_for_distillation,
@@ -142,6 +143,53 @@ def test_linear_distill_config_defaults_do_not_require_all_keys() -> None:
     assert config.steps == 3
     assert config.max_capture_tokens_per_layer is not None
     assert config.max_capture_bytes_per_layer is None
+    assert config.capture_autocast_bf16 is True
+
+
+def test_linear_distill_config_parses_capture_autocast_bool() -> None:
+    config = LinearDistillConfig.from_mapping({"capture_autocast_bf16": "false"})
+
+    assert config.capture_autocast_bf16 is False
+
+    with pytest.raises(ValueError, match="capture_autocast_bf16"):
+        LinearDistillConfig.from_mapping({"capture_autocast_bf16": 1})
+
+
+def test_capture_autocast_context_uses_bf16_only_for_cuda(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, torch.dtype]] = []
+
+    class FakeAutocast:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_autocast(*, device_type: str, dtype: torch.dtype):
+        calls.append((device_type, dtype))
+        return FakeAutocast()
+
+    monkeypatch.setattr(torch, "autocast", fake_autocast)
+
+    with _capture_autocast_context(
+        LinearDistillConfig.from_mapping({"device": "cpu", "capture_autocast_bf16": True})
+    ):
+        pass
+    assert calls == []
+
+    with _capture_autocast_context(
+        LinearDistillConfig.from_mapping({"device": "cuda", "capture_autocast_bf16": True})
+    ):
+        pass
+    assert calls == [("cuda", torch.bfloat16)]
+
+    with _capture_autocast_context(
+        LinearDistillConfig.from_mapping({"device": "cuda", "capture_autocast_bf16": False})
+    ):
+        pass
+    assert calls == [("cuda", torch.bfloat16)]
 
 
 def test_load_teacher_for_distillation_keeps_checkpoint_train_val_only(

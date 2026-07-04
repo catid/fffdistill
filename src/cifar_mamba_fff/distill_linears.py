@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import math
 import sys
+from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -66,6 +67,14 @@ ROUTER_RECIPES: tuple[str, ...] = (
 )
 
 
+def _parse_distill_bool(value: object, *, key: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return bool_arg(value)
+    raise ValueError(f"distill.{key} must be a bool")
+
+
 @dataclass(frozen=True)
 class LinearDistillConfig:
     steps: int = 100
@@ -78,6 +87,7 @@ class LinearDistillConfig:
     max_capture_tokens_per_layer: int | None = DEFAULT_LINEAR_CAPTURE_MAX_TOKENS
     max_capture_bytes_per_layer: int | None = DEFAULT_LINEAR_CAPTURE_MAX_BYTES
     device: str = "cpu"
+    capture_autocast_bf16: bool = True
 
     @classmethod
     def from_mapping(cls, raw: dict[str, Any] | None) -> LinearDistillConfig:
@@ -110,6 +120,10 @@ class LinearDistillConfig:
                 None if max_capture_bytes is None else int(max_capture_bytes)
             ),
             device=str(raw.get("device", cls.device)),
+            capture_autocast_bf16=_parse_distill_bool(
+                raw.get("capture_autocast_bf16", cls.capture_autocast_bf16),
+                key="capture_autocast_bf16",
+            ),
         )
         config.validate()
         return config
@@ -133,6 +147,8 @@ class LinearDistillConfig:
             and self.max_capture_bytes_per_layer < 0
         ):
             raise ValueError("distill.max_capture_bytes_per_layer must be non-negative or null")
+        if not isinstance(self.capture_autocast_bf16, bool):
+            raise ValueError("distill.capture_autocast_bf16 must be a bool")
 
 
 @dataclass(frozen=True)
@@ -553,6 +569,13 @@ def _batch_indices(total: int, batch_size: int, *, device: torch.device) -> torc
     return torch.randperm(total, device=device)[: min(batch_size, total)]
 
 
+def _capture_autocast_context(distill_config: LinearDistillConfig):
+    device = torch.device(distill_config.device)
+    if distill_config.capture_autocast_bf16 and device.type == "cuda":
+        return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+    return nullcontext()
+
+
 def distill_linear_from_tensors(
     name: str,
     linear: nn.Linear,
@@ -715,7 +738,8 @@ def run_layerwise_distillation(
         max_bytes_per_layer=distill_config.max_capture_bytes_per_layer,
     ) as captures, torch.no_grad():
         for batch in sample_batches:
-            model(batch)
+            with _capture_autocast_context(distill_config):
+                model(batch)
 
     results: list[LayerDistillResult] = []
     for report in selected:

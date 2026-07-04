@@ -15,6 +15,7 @@ distill:
   max_capture_tokens_per_layer: 262144
   max_capture_bytes_per_layer: 268435456
   device: cuda
+  capture_autocast_bf16: true
 fff:
   shared_unrouted_frac: 0.10
   route_rows: 1
