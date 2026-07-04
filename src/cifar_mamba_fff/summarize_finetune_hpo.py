@@ -540,12 +540,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--markdown-out", required=True)
     parser.add_argument("--family-csv-out", default=None)
     parser.add_argument("--title", default="Fine-Tune HPO Validation Summary")
+    parser.add_argument("--expect-rows", type=int, default=None)
     args = parser.parse_args(argv)
 
     roots = [Path(root) for root in args.collected_root]
     rows = collect_finetune_hpo_rows(roots)
     if not rows:
         raise RuntimeError(f"no fine-tune HPO trial_result.json files found under {roots}")
+    if args.expect_rows is not None and len(rows) != args.expect_rows:
+        raise RuntimeError(f"expected {args.expect_rows} fine-tune HPO rows, found {len(rows)}")
     write_csv(Path(args.csv_out), rows)
     if args.family_csv_out:
         write_family_csv(Path(args.family_csv_out), rows)

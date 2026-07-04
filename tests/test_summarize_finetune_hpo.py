@@ -305,6 +305,94 @@ def test_write_csv_markdown_and_cli_outputs(tmp_path: Path) -> None:
     assert cli_family_csv.exists()
     assert cli_md.exists()
 
+    cli_expected_csv = tmp_path / "cli_expected_summary.csv"
+    cli_expected_md = tmp_path / "cli_expected_summary.md"
+    assert (
+        main(
+            [
+                "--collected-root",
+                str(root),
+                "--csv-out",
+                str(cli_expected_csv),
+                "--markdown-out",
+                str(cli_expected_md),
+                "--expect-rows",
+                "1",
+            ],
+        )
+        == 0
+    )
+    assert cli_expected_csv.exists()
+    assert cli_expected_md.exists()
+
+    with pytest.raises(RuntimeError, match="expected 2 fine-tune HPO rows, found 1"):
+        main(
+            [
+                "--collected-root",
+                str(root),
+                "--csv-out",
+                str(tmp_path / "cli_bad_summary.csv"),
+                "--markdown-out",
+                str(tmp_path / "cli_bad_summary.md"),
+                "--expect-rows",
+                "2",
+            ],
+        )
+
+
+def test_cli_expect_rows_supports_multi_root_family_summary(tmp_path: Path) -> None:
+    root_a = tmp_path / "gc5_wave_a"
+    root_b = tmp_path / "gc5_wave_b"
+    _write_trial(
+        root_a,
+        machine="work",
+        gpu=0,
+        trial_index=0,
+        case="official_muon_cosine_lr_base",
+        seed=1337,
+        best_val_accuracy=0.9148,
+        train_steps=4218,
+    )
+    _write_trial(
+        root_b,
+        machine="ripper",
+        gpu=1,
+        trial_index=1,
+        case="pace_muon_cosine_lr_base",
+        seed=1337,
+        best_val_accuracy=0.9136,
+        train_steps=4218,
+    )
+    csv_out = tmp_path / "gc5_trials.csv"
+    family_csv = tmp_path / "gc5_families.csv"
+    md_out = tmp_path / "gc5_summary.md"
+
+    assert (
+        main(
+            [
+                "--collected-root",
+                str(root_a),
+                "--collected-root",
+                str(root_b),
+                "--csv-out",
+                str(csv_out),
+                "--family-csv-out",
+                str(family_csv),
+                "--markdown-out",
+                str(md_out),
+                "--expect-rows",
+                "2",
+            ],
+        )
+        == 0
+    )
+
+    with csv_out.open("r", encoding="utf-8", newline="") as handle:
+        assert len(list(csv.DictReader(handle))) == 2
+    with family_csv.open("r", encoding="utf-8", newline="") as handle:
+        assert len(list(csv.DictReader(handle))) == 2
+    assert "Trial rows: `2`" in md_out.read_text(encoding="utf-8")
+
 
 def test_validation_summary_rejects_test_accessed_true(tmp_path: Path) -> None:
     root = tmp_path / "stage_h_wave"

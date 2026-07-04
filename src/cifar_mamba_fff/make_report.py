@@ -831,6 +831,21 @@ def _validate_gc5_metrics(report_text: str, docs_dir: Path) -> None:
         raise ValueError(f"{trial_source} has unexpected GC5 cases: {sorted(trial_cases)}")
     if family_names != GC5_EXPECTED_FAMILIES:
         raise ValueError(f"{family_source} has unexpected GC5 families: {sorted(family_names)}")
+    trial_seeds = {_fmt_int(row["seed"]) for row in trial_rows}
+    family_seed_lists = {row["seeds"] for row in family_rows}
+    family_best_seeds = {_fmt_int(row["best_seed"]) for row in family_rows}
+    family_seed_counts = {_fmt_int(row["seed_count"]) for row in family_rows}
+    family_trial_counts = {_fmt_int(row["trials"]) for row in family_rows}
+    if (
+        trial_seeds != {"1337"}
+        or family_seed_lists != {"1337"}
+        or family_best_seeds != {"1337"}
+        or family_seed_counts != {"1"}
+        or family_trial_counts != {"1"}
+    ):
+        raise ValueError(
+            f"{trial_source} and {family_source} must contain exactly one seed 1337 trial per GC5 family"
+        )
     trial_steps = {_fmt_int(row["train_steps"]) for row in trial_rows}
     family_steps = {_fmt_int(row["mean_train_steps"]) for row in family_rows}
     if trial_steps != {"4218"} or family_steps != {"4218"}:
@@ -864,6 +879,18 @@ def _validate_gc5_metrics(report_text: str, docs_dir: Path) -> None:
         best_family["mean_best_val_accuracy"],
         label="GC5 best validation accuracy",
         source=family_source,
+    )
+    _expect_contains(
+        report_text,
+        "WSD cells in GC5 are limited to the official Muon family",
+        label="GC5 WSD coverage asymmetry",
+        source=family_source,
+    )
+    _expect_contains(
+        report_text,
+        "--expect-rows 15",
+        label="GC5 guarded regeneration command",
+        source=trial_source,
     )
 
 

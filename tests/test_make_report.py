@@ -190,16 +190,94 @@ def test_validate_final_report_checks_optional_gc5_validation_metrics(tmp_path: 
     )
 
     with pytest.raises(ValueError, match="GC5 validation trial row count"):
+        report.write_text(
+            report.read_text(encoding="utf-8").replace(
+                "GC5 optimizer/WSD validation rows: `15`",
+                "GC5 optimizer/WSD validation rows: `14`",
+            ),
+            encoding="utf-8",
+        )
         validate_final_report(report)
 
     report.write_text(
-        report.read_text(encoding="utf-8")
-        + "\nGC5 optimizer/WSD validation rows: `15`\n"
-        + "GC5 best validation family: `official_muon_cosine_lr_base`\n"
-        + "GC5 best validation accuracy: `0.914800`\n",
+        report.read_text(encoding="utf-8").replace(
+            "GC5 optimizer/WSD validation rows: `14`",
+            "GC5 optimizer/WSD validation rows: `15`",
+        ),
         encoding="utf-8",
     )
     validate_final_report(report)
+
+
+def test_validate_final_report_rejects_missing_gc5_wsd_scope_note(tmp_path: Path) -> None:
+    docs_dir = tmp_path / "docs"
+    shutil.copytree(Path("docs"), docs_dir)
+    _write_gc5_validation_csvs(docs_dir)
+    write_fairness_reports(docs_dir=docs_dir)
+    report = docs_dir / "final_report.md"
+    report.write_text(
+        report.read_text(encoding="utf-8")
+        .replace("The table contains 30 rows", "The table contains 45 rows")
+        .replace(
+            "GC5 are limited to the official Muon family",
+            "WSD cells in GC5 are not described here",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="GC5 WSD coverage asymmetry"):
+        validate_final_report(report)
+
+
+@pytest.mark.parametrize(
+    ("filename", "updates", "message"),
+    [
+        ("fff_gc5_optimizer_wsd_validation_trials.csv", {"seed": "9999"}, "seed 1337"),
+        ("fff_gc5_optimizer_wsd_validation_families.csv", {"seeds": "9999"}, "seed 1337"),
+        (
+            "fff_gc5_optimizer_wsd_validation_families.csv",
+            {"seed_count": "2"},
+            "exactly one trial and one seed",
+        ),
+        (
+            "fff_gc5_optimizer_wsd_validation_families.csv",
+            {"trials": "2"},
+            "exactly one trial and one seed",
+        ),
+    ],
+)
+def test_validate_final_report_rejects_gc5_seed_or_trial_count_drift(
+    tmp_path: Path,
+    filename: str,
+    updates: dict[str, str],
+    message: str,
+) -> None:
+    docs_dir = tmp_path / "docs"
+    shutil.copytree(Path("docs"), docs_dir)
+    _write_gc5_validation_csvs(docs_dir)
+    write_fairness_reports(docs_dir=docs_dir)
+    _rewrite_csv_row(docs_dir / filename, row_index=0, updates=updates)
+
+    with pytest.raises(ValueError, match=message):
+        validate_final_report(docs_dir / "final_report.md")
+
+
+def test_validate_final_report_rejects_partial_gc5_trial_rows(tmp_path: Path) -> None:
+    docs_dir = tmp_path / "docs"
+    shutil.copytree(Path("docs"), docs_dir)
+    _write_gc5_validation_csvs(docs_dir)
+    write_fairness_reports(docs_dir=docs_dir)
+    trial_path = docs_dir / "fff_gc5_optimizer_wsd_validation_trials.csv"
+    with trial_path.open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+        fieldnames = list(rows[0])
+    with trial_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows[:2])
+
+    with pytest.raises(ValueError, match="expected 15 rows"):
+        validate_final_report(docs_dir / "final_report.md")
 
 
 def test_validate_final_report_rejects_stale_corrected_stage_f_metric(tmp_path: Path) -> None:

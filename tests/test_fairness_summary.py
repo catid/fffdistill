@@ -8,6 +8,7 @@ import pytest
 
 from cifar_mamba_fff.fairness import (
     EXPECTED_FAIRNESS_ROWS,
+    EXPECTED_GC5_FAMILY_ROWS,
     build_fairness_rows,
     expected_fairness_rows,
     validate_fairness_rows,
@@ -132,67 +133,65 @@ def test_build_fairness_rows_rejects_missing_shared_only_family(tmp_path: Path) 
 def test_build_fairness_rows_adds_optional_gc5_validation_rows(tmp_path: Path) -> None:
     docs_dir = tmp_path / "docs"
     shutil.copytree(Path("docs"), docs_dir)
-    gc5_path = docs_dir / "fff_gc5_optimizer_wsd_validation_families.csv"
-    with gc5_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.writer(handle, lineterminator="\n")
-        writer.writerow(
-            [
-                "family",
-                "trials",
-                "seed_count",
-                "seeds",
-                "mean_best_val_accuracy",
-                "std_best_val_accuracy",
-                "mean_train_steps",
-                "test_accessed",
-                "best_case",
-                "best_seed",
-                "best_val_accuracy",
-                "checkpoint_path",
-            ]
-        )
-        writer.writerow(
-            [
-                "official_muon_cosine_lr_base",
-                "1",
-                "1",
-                "1337",
-                "0.914800",
-                "",
-                "4218.000000",
-                "false",
-                "official_muon_cosine_lr_base",
-                "1337",
-                "0.914800",
-                "outputs/scheduler_finetune_hpo/gc5/student_best.pt",
-            ]
-        )
-        writer.writerow(
-            [
-                "official_muon_wsd_lr_base",
-                "1",
-                "1",
-                "1337",
-                "0.902000",
-                "",
-                "4218.000000",
-                "false",
-                "official_muon_wsd_lr_base",
-                "1337",
-                "0.902000",
-                "outputs/scheduler_finetune_hpo/gc5_wsd/student_best.pt",
-            ]
-        )
 
     rows = build_fairness_rows(docs_dir)
     by_method = {str(row["method"]): row for row in rows}
 
-    assert expected_fairness_rows(docs_dir) == EXPECTED_FAIRNESS_ROWS + 2
-    assert len(rows) == EXPECTED_FAIRNESS_ROWS + 2
+    assert expected_fairness_rows(docs_dir) == EXPECTED_FAIRNESS_ROWS + EXPECTED_GC5_FAMILY_ROWS
+    assert len(rows) == EXPECTED_FAIRNESS_ROWS + EXPECTED_GC5_FAMILY_ROWS
     assert by_method["gc5_official_muon_cosine_lr_base"]["status"] == "completed"
     assert by_method["gc5_official_muon_cosine_lr_base"]["split"] == "validation"
     assert by_method["gc5_official_muon_cosine_lr_base"]["validation_accuracy"] == "0.914800"
     assert by_method["gc5_official_muon_wsd_lr_base"]["test_accessed"] == "false"
+
+
+def test_build_fairness_rows_rejects_partial_gc5_validation_rows(tmp_path: Path) -> None:
+    docs_dir = tmp_path / "docs"
+    shutil.copytree(Path("docs"), docs_dir)
+    gc5_path = docs_dir / "fff_gc5_optimizer_wsd_validation_families.csv"
+    with gc5_path.open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+        fieldnames = list(rows[0])
+    with gc5_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows[:2])
+
+    with pytest.raises(ValueError, match="expected 15 rows"):
+        build_fairness_rows(docs_dir)
+
+
+@pytest.mark.parametrize(
+    ("updates", "message"),
+    [
+        ({"family": "unexpected_gc5_family"}, "unexpected GC5 families"),
+        ({"test_accessed": "true"}, "accessed CIFAR-10 test"),
+        ({"seeds": "9999"}, "seed 1337"),
+        ({"best_seed": "9999"}, "seed 1337"),
+        ({"seed_count": "2"}, "exactly one trial and one seed"),
+        ({"trials": "2"}, "exactly one trial and one seed"),
+        ({"mean_train_steps": "123"}, "4218-step budget"),
+    ],
+)
+def test_build_fairness_rows_rejects_malformed_gc5_validation_rows(
+    tmp_path: Path,
+    updates: dict[str, str],
+    message: str,
+) -> None:
+    docs_dir = tmp_path / "docs"
+    shutil.copytree(Path("docs"), docs_dir)
+    gc5_path = docs_dir / "fff_gc5_optimizer_wsd_validation_families.csv"
+    with gc5_path.open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+        fieldnames = list(rows[0])
+    rows[0].update(updates)
+    with gc5_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
+
+    with pytest.raises(ValueError, match=message):
+        build_fairness_rows(docs_dir)
 
 
 def test_build_fairness_rows_rejects_missing_sources(tmp_path: Path) -> None:

@@ -16,6 +16,11 @@ The teacher is a roughly 10M-parameter official Mamba-3 CIFAR-10 model trained f
 - Do not substitute fake Mamba blocks, Mamba-2, Transformer, ResNet, AdamW-only, CPU-only, smaller models, another dataset, or fake dependencies.
 - If official Mamba-3 or official Muon fails to install/import/run, stop, diagnose, and report failure.
 - CIFAR-10 test set is used only for final selected checkpoints after validation/HPO.
+  Current allowed test accesses are the selected dense teacher full final test,
+  the T14 selected-checkpoint one-step partial final-test plumbing check, and
+  the validation-selected Stage H `no_balance_cosine` full final test. GC5
+  optimizer/WSD validation, shared-only baseline rows, and Stage H selection
+  records remain `test_accessed=false`.
 - Do not claim success without saved logs, configs, metrics, tests, profiler outputs, Beads task records, git commits, and reproducible commands.
 
 ## Hardware Assumption
@@ -69,7 +74,7 @@ AdamW fallback in assembled FFF student fine-tuning unless a future tested
 bank-specific Muon grouping is implemented. Optimizer conclusions for assembled
 FFF students must state whether replacement banks used AdamW fallback or Muon.
 
-Planned optimizer/schedule ablations:
+Optimizer/schedule ablations and evidence:
 
 - Official `muon_adamw` / `official_muon`: unchanged KellerJordan/Muon
   `SingleDeviceMuonWithAuxAdam` baseline with this repo's audited Muon/AdamW
@@ -88,6 +93,20 @@ Planned optimizer/schedule ablations:
 Optimizer comparisons must use the same teacher checkpoint, split, seeds, training tokens/epochs, HPO budget, and validation-selection protocol as comparable baselines. Report optimizer family and LR schedule separately.
 Vendored optimizer-experiments code is sourced from commit
 `689568d71ebe92093e5f5bf433127a5184ef0c35`.
+
+Current GC5 optimizer/WSD validation status:
+
+- GC5 matched-budget full-student optimizer/WSD validation completed 15 one-seed
+  validation-only cells with seed `1337`, `4218` train steps per cell, the same
+  Stage H selected student inputs, and `test_accessed=false` throughout.
+- WSD cells in GC5 are limited to the official Muon family; PACE+Muon, NorMuon,
+  and PACE+NorMuon GC5 rows are cosine-only LR-tier ablations.
+- The best validation family was `official_muon_cosine_lr_base` at `0.914800`.
+  This does not establish a final-test optimizer ranking; no GC5-selected
+  optimizer checkpoint has been evaluated on the CIFAR-10 final test set.
+- Committed evidence is in `docs/fff_gc5_optimizer_wsd_validation_trials.csv`,
+  `docs/fff_gc5_optimizer_wsd_validation_families.csv`, and
+  `docs/fff_gc5_optimizer_wsd_validation_summary.md`.
 
 ## Core Research Axes
 
@@ -325,7 +344,15 @@ Stage G: end-to-end KD fine-tuning.
   used. Full final CIFAR-10 test accuracy remains reserved for validation-selected
   checkpoints only and must not be inferred from smoke or partial-test artifacts.
 
-Stage H: final repeated runs with at least three seeds for top validation-selected recipes.
+Stage H: final repeated runs for validation-selected recipes.
+
+- The validation-selected `no_balance_cosine` Stage H FFF student family has a
+  full CIFAR-10 final-test evaluation after validation selection. Its three-seed
+  validation mean is `0.914800`, final-test mean accuracy is `0.914933`, and
+  final-test standard deviation is `0.004022`.
+- Other router, architecture, optimizer, and baseline rows remain validation-only
+  unless their evidence split is explicitly marked `final_test` or
+  `partial_final_test`.
 
 Fairness and baselines:
 
@@ -334,18 +361,21 @@ Fairness and baselines:
 - The table aggregates committed evidence only: selected dense teacher final test, Stage F
   corrected train-eval layerwise FFF held-out token metrics, legacy validation-capture
   Stage F provenance, T20 route-output single-layer ablations, T19 optimizer/schedule
-  smoke ablations, T14 KD/final-eval artifacts, official `fastfeedforward.FFF` shape
+  smoke ablations, GC5 matched-budget optimizer/WSD validation rows, T14 KD/final-eval
+  artifacts, official `fastfeedforward.FFF` shape
   smoke, three-seed validation-only dense-copy/low-rank/smaller-dense baseline
-  evidence, and explicit `not_run` rows for required baselines without metrics.
+  evidence, and explicit limitation rows when required baselines lack metrics.
 - Fairness validation enforces that CIFAR-10 test access is reported only on
   `final_test` or `partial_final_test` rows. The shared-only rows full-student
-  baseline remains a limitation, not a hidden success.
-- T18 hardened fairness/report provenance checks: required source CSVs and teacher
-  summary files must exist with expected row counts, the fairness table must contain
-  exactly 29 rows, exactly two rows may report test access unless the expected
-  counts are deliberately changed with tests, test-access booleans must parse
-  canonically, and final-report validation rejects stale committed fairness CSVs
-  by regenerating rows from the source evidence.
+  baseline now has three-seed validation-only evidence with validation accuracy
+  `0.910000`; it has not been used for final-test claims.
+- T18/GC5 hardened fairness/report provenance checks: required source CSVs and teacher
+  summary files must exist with expected row counts, the base fairness table must
+  contain exactly 30 rows, the optional GC5 family summary must contain exactly
+  15 rows when present, the committed fairness table must contain 45 rows with
+  GC5 included, exactly three rows may report test access, test-access booleans
+  must parse canonically, and final-report validation rejects stale committed
+  fairness CSVs by regenerating rows from the source evidence.
 
 ## Required Quality Gates
 

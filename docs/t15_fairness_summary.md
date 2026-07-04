@@ -36,6 +36,21 @@ validation, partial final-test, and full final-test rows are deliberately separa
 | dense_teacher_copied_student | validation | completed | false | 0.931667 |  |  |  | Three seeds, three fine-tune epochs, 4218 train steps each, same teacher checkpoint and validation-only selection protocol. |
 | matched_low_rank_linear | validation | completed | false | 0.926400 |  |  |  | Three seeds, three fine-tune epochs, 4218 train steps each, same teacher checkpoint and validation-only selection protocol. |
 | shared_only_rows_baseline | validation | completed | false | 0.910000 |  |  |  | Three seeds, three fine-tune epochs, 4218 train steps each, same teacher checkpoint and validation-only selection protocol. |
+| gc5_official_muon_cosine_lr_base | validation | completed | false | 0.914800 |  |  |  | GC5 matched-budget full-student fine-tune validation cell; same teacher, split, distillation artifact source, three epochs, and no CIFAR-10 test access. |
+| gc5_pace_muon_cosine_lr_base | validation | completed | false | 0.913600 |  |  |  | GC5 matched-budget full-student fine-tune validation cell; same teacher, split, distillation artifact source, three epochs, and no CIFAR-10 test access. |
+| gc5_normuon_cosine_lr_low | validation | completed | false | 0.912200 |  |  |  | GC5 matched-budget full-student fine-tune validation cell; same teacher, split, distillation artifact source, three epochs, and no CIFAR-10 test access. |
+| gc5_pace_normuon_cosine_lr_low | validation | completed | false | 0.912200 |  |  |  | GC5 matched-budget full-student fine-tune validation cell; same teacher, split, distillation artifact source, three epochs, and no CIFAR-10 test access. |
+| gc5_official_muon_wsd_lr_base | validation | completed | false | 0.907600 |  |  |  | GC5 matched-budget full-student fine-tune validation cell; same teacher, split, distillation artifact source, three epochs, and no CIFAR-10 test access. |
+| gc5_pace_muon_cosine_lr_high | validation | completed | false | 0.906600 |  |  |  | GC5 matched-budget full-student fine-tune validation cell; same teacher, split, distillation artifact source, three epochs, and no CIFAR-10 test access. |
+| gc5_pace_normuon_cosine_lr_base | validation | completed | false | 0.898200 |  |  |  | GC5 matched-budget full-student fine-tune validation cell; same teacher, split, distillation artifact source, three epochs, and no CIFAR-10 test access. |
+| gc5_official_muon_wsd_lr_low | validation | completed | false | 0.897200 |  |  |  | GC5 matched-budget full-student fine-tune validation cell; same teacher, split, distillation artifact source, three epochs, and no CIFAR-10 test access. |
+| gc5_official_muon_cosine_lr_low | validation | completed | false | 0.893800 |  |  |  | GC5 matched-budget full-student fine-tune validation cell; same teacher, split, distillation artifact source, three epochs, and no CIFAR-10 test access. |
+| gc5_normuon_cosine_lr_base | validation | completed | false | 0.892000 |  |  |  | GC5 matched-budget full-student fine-tune validation cell; same teacher, split, distillation artifact source, three epochs, and no CIFAR-10 test access. |
+| gc5_pace_muon_cosine_lr_low | validation | completed | false | 0.892000 |  |  |  | GC5 matched-budget full-student fine-tune validation cell; same teacher, split, distillation artifact source, three epochs, and no CIFAR-10 test access. |
+| gc5_official_muon_cosine_lr_high | validation | completed | false | 0.887800 |  |  |  | GC5 matched-budget full-student fine-tune validation cell; same teacher, split, distillation artifact source, three epochs, and no CIFAR-10 test access. |
+| gc5_official_muon_wsd_lr_high | validation | completed | false | 0.876000 |  |  |  | GC5 matched-budget full-student fine-tune validation cell; same teacher, split, distillation artifact source, three epochs, and no CIFAR-10 test access. |
+| gc5_pace_normuon_cosine_lr_high | validation | completed | false | 0.802800 |  |  |  | GC5 matched-budget full-student fine-tune validation cell; same teacher, split, distillation artifact source, three epochs, and no CIFAR-10 test access. |
+| gc5_normuon_cosine_lr_high | validation | completed | false | 0.747000 |  |  |  | GC5 matched-budget full-student fine-tune validation cell; same teacher, split, distillation artifact source, three epochs, and no CIFAR-10 test access. |
 
 ## Fairness Checks
 

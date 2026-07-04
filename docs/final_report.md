@@ -291,7 +291,7 @@ T15 generated fairness tables from committed evidence only:
 - `docs/t15_fairness_summary.md`
 - `docs/t15_fairness_summary.csv`
 
-The table contains 30 rows and enforces that `test_accessed=true` appears only on
+The table contains 45 rows and enforces that `test_accessed=true` appears only on
 `final_test` or `partial_final_test` rows. Exactly 3 fairness rows have
 `test_accessed=true`. Dense-copy, matched low-rank Linear, and matched smaller
 dense Linear baselines now have three-seed validation-only rows in
@@ -314,6 +314,21 @@ Optimizer ablation smoke:
   grouping. The T19 rows are dense-teacher smoke rows, not FFF-bank evidence.
 
 Detailed optimizer report: `docs/t19_optimizer_ablation_summary.md`.
+
+GC5 matched-budget full-student optimizer/WSD validation:
+
+- Detailed GC5 report: `docs/fff_gc5_optimizer_wsd_validation_summary.md`.
+- GC5 optimizer/WSD validation rows: `15`.
+- GC5 best validation family: `official_muon_cosine_lr_base`.
+- GC5 best validation accuracy: `0.914800`.
+- Every GC5 row used seed `1337`, `4218` train steps, the same Stage H
+  full-student fine-tune budget, and `test_accessed=false`.
+- Optimizer family and LR schedule are reported in the case names. WSD cells in GC5 are limited to the official Muon family; PACE+Muon, NorMuon, and PACE+NorMuon
+  GC5 rows are cosine-only LR-tier ablations. This is a
+  validation-only comparison; no CIFAR-10 final-test optimizer ranking is claimed
+  from GC5.
+- Regenerate the GC5 summary with `--expect-rows 15` so missing or stale trial
+  collection fails before reports are trusted.
 
 ## Pareto Inputs
 
@@ -381,8 +396,9 @@ Within the evidence that exists:
   and shared-only rows baselines have validation-only three-seed evidence, but
   no baseline final-test metrics are claimed.
 - Utility-targeted, hard-EM, expert-choice, and ST-Gumbel router recipes have equal-budget hard-layer validation evidence, but not full-student final-test comparisons.
-- GC5 optimizer/WSD validation is still running or awaiting collection for some
-  launched offsets, so no quality optimizer ranking is claimed here.
+- GC5 optimizer/WSD evidence is validation-only. It compares 15 matched-budget
+  optimizer/schedule/LR cells, but no GC5-selected optimizer checkpoint has been
+  evaluated on the CIFAR-10 final test set.
 - Grouped FFF is much faster than naive but still far slower than dense Linear in current PyTorch implementation.
 - FFF-bank optimizer policy is currently AdamW fallback for 3D replacement banks;
   optimizer conclusions for assembled FFF students must remain labeled accordingly

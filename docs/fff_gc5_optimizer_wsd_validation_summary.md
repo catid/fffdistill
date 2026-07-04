@@ -1,0 +1,70 @@
+# FFF GC5 Optimizer/WSD Validation Summary
+
+- Collected roots: `outputs/scheduler_collected/gc5_optimizer_wsd_validation_20260704_a1e311f_wave0, outputs/scheduler_collected/gc5_optimizer_wsd_validation_20260704_d27e50c_wave2_offsets2_5, outputs/scheduler_collected/gc5_optimizer_wsd_validation_20260704_a1e311f_wave1_foureyes_offsets6_9, outputs/scheduler_collected/gc5_optimizer_wsd_validation_20260704_d27e50c_wave3_offsets10_11, outputs/scheduler_collected/gc5_optimizer_wsd_validation_20260704_c6d011b_offsets12_13, outputs/scheduler_collected/gc5_optimizer_wsd_validation_20260704_a32f93f_offset14`
+- Trial rows: `15`
+- Families: `15`
+- CIFAR-10 test accessed: `false`
+- Accuracy statistic: family standard deviation is sample standard deviation; one-trial families report `0.000000`.
+
+These are validation summaries for Stage H fine-tune HPO runs. Rows with `test_accessed=true` are rejected rather than summarized.
+
+WSD cells in GC5 are limited to the official Muon family. PACE+Muon, NorMuon,
+and PACE+NorMuon rows are cosine-only LR-tier ablations, so this table should
+not be read as a full optimizer x schedule cross-product.
+
+Regeneration command:
+
+```bash
+PYTHONPATH=src .venv/bin/python -m cifar_mamba_fff.summarize_finetune_hpo \
+  --collected-root outputs/scheduler_collected/gc5_optimizer_wsd_validation_20260704_a1e311f_wave0 \
+  --collected-root outputs/scheduler_collected/gc5_optimizer_wsd_validation_20260704_d27e50c_wave2_offsets2_5 \
+  --collected-root outputs/scheduler_collected/gc5_optimizer_wsd_validation_20260704_a1e311f_wave1_foureyes_offsets6_9 \
+  --collected-root outputs/scheduler_collected/gc5_optimizer_wsd_validation_20260704_d27e50c_wave3_offsets10_11 \
+  --collected-root outputs/scheduler_collected/gc5_optimizer_wsd_validation_20260704_c6d011b_offsets12_13 \
+  --collected-root outputs/scheduler_collected/gc5_optimizer_wsd_validation_20260704_a32f93f_offset14 \
+  --csv-out docs/fff_gc5_optimizer_wsd_validation_trials.csv \
+  --family-csv-out docs/fff_gc5_optimizer_wsd_validation_families.csv \
+  --markdown-out docs/fff_gc5_optimizer_wsd_validation_summary.md \
+  --title "FFF GC5 Optimizer/WSD Validation Summary" \
+  --expect-rows 15
+```
+
+## Family Aggregate
+
+| Family | Trials | Seeds | Mean val acc | Std val acc | Mean train steps | Best case | Best seed | Best val acc |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| official_muon_cosine_lr_base | 1 | 1337 | 0.914800 | 0.000000 | 4218.000000 | official_muon_cosine_lr_base | 1337 | 0.914800 |
+| pace_muon_cosine_lr_base | 1 | 1337 | 0.913600 | 0.000000 | 4218.000000 | pace_muon_cosine_lr_base | 1337 | 0.913600 |
+| normuon_cosine_lr_low | 1 | 1337 | 0.912200 | 0.000000 | 4218.000000 | normuon_cosine_lr_low | 1337 | 0.912200 |
+| pace_normuon_cosine_lr_low | 1 | 1337 | 0.912200 | 0.000000 | 4218.000000 | pace_normuon_cosine_lr_low | 1337 | 0.912200 |
+| official_muon_wsd_lr_base | 1 | 1337 | 0.907600 | 0.000000 | 4218.000000 | official_muon_wsd_lr_base | 1337 | 0.907600 |
+| pace_muon_cosine_lr_high | 1 | 1337 | 0.906600 | 0.000000 | 4218.000000 | pace_muon_cosine_lr_high | 1337 | 0.906600 |
+| pace_normuon_cosine_lr_base | 1 | 1337 | 0.898200 | 0.000000 | 4218.000000 | pace_normuon_cosine_lr_base | 1337 | 0.898200 |
+| official_muon_wsd_lr_low | 1 | 1337 | 0.897200 | 0.000000 | 4218.000000 | official_muon_wsd_lr_low | 1337 | 0.897200 |
+| official_muon_cosine_lr_low | 1 | 1337 | 0.893800 | 0.000000 | 4218.000000 | official_muon_cosine_lr_low | 1337 | 0.893800 |
+| normuon_cosine_lr_base | 1 | 1337 | 0.892000 | 0.000000 | 4218.000000 | normuon_cosine_lr_base | 1337 | 0.892000 |
+| pace_muon_cosine_lr_low | 1 | 1337 | 0.892000 | 0.000000 | 4218.000000 | pace_muon_cosine_lr_low | 1337 | 0.892000 |
+| official_muon_cosine_lr_high | 1 | 1337 | 0.887800 | 0.000000 | 4218.000000 | official_muon_cosine_lr_high | 1337 | 0.887800 |
+| official_muon_wsd_lr_high | 1 | 1337 | 0.876000 | 0.000000 | 4218.000000 | official_muon_wsd_lr_high | 1337 | 0.876000 |
+| pace_normuon_cosine_lr_high | 1 | 1337 | 0.802800 | 0.000000 | 4218.000000 | pace_normuon_cosine_lr_high | 1337 | 0.802800 |
+| normuon_cosine_lr_high | 1 | 1337 | 0.747000 | 0.000000 | 4218.000000 | normuon_cosine_lr_high | 1337 | 0.747000 |
+
+## Trial Rows
+
+| Run | Machine | GPU | Case | Family | Seed | Best val acc | Train steps | Checkpoint |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| gc5_optimizer_wsd_validation_20260704_a1e311f_wave0 | ai | 0 | official_muon_cosine_lr_low | official_muon_cosine_lr_low | 1337 | 0.893800 | 4218 | outputs/scheduler_finetune_hpo/gc5_optimizer_wsd_validation_20260704_a1e311f_wave0/ai/0/trials/trial_000000_official_muon_cosine_lr_low/student_best.pt |
+| gc5_optimizer_wsd_validation_20260704_a1e311f_wave0 | ai | 1 | official_muon_cosine_lr_base | official_muon_cosine_lr_base | 1337 | 0.914800 | 4218 | outputs/scheduler_finetune_hpo/gc5_optimizer_wsd_validation_20260704_a1e311f_wave0/ai/1/trials/trial_000001_official_muon_cosine_lr_base/student_best.pt |
+| gc5_optimizer_wsd_validation_20260704_a1e311f_wave1_foureyes_offsets6_9 | foureyes | 0 | pace_muon_cosine_lr_low | pace_muon_cosine_lr_low | 1337 | 0.892000 | 4218 | outputs/scheduler_finetune_hpo/gc5_optimizer_wsd_validation_20260704_a1e311f_wave1/foureyes/0/trials/trial_000006_pace_muon_cosine_lr_low/student_best.pt |
+| gc5_optimizer_wsd_validation_20260704_a1e311f_wave1_foureyes_offsets6_9 | foureyes | 1 | pace_muon_cosine_lr_base | pace_muon_cosine_lr_base | 1337 | 0.913600 | 4218 | outputs/scheduler_finetune_hpo/gc5_optimizer_wsd_validation_20260704_a1e311f_wave1/foureyes/1/trials/trial_000007_pace_muon_cosine_lr_base/student_best.pt |
+| gc5_optimizer_wsd_validation_20260704_a1e311f_wave1_foureyes_offsets6_9 | foureyes | 2 | pace_muon_cosine_lr_high | pace_muon_cosine_lr_high | 1337 | 0.906600 | 4218 | outputs/scheduler_finetune_hpo/gc5_optimizer_wsd_validation_20260704_a1e311f_wave1/foureyes/2/trials/trial_000008_pace_muon_cosine_lr_high/student_best.pt |
+| gc5_optimizer_wsd_validation_20260704_a1e311f_wave1_foureyes_offsets6_9 | foureyes | 3 | normuon_cosine_lr_low | normuon_cosine_lr_low | 1337 | 0.912200 | 4218 | outputs/scheduler_finetune_hpo/gc5_optimizer_wsd_validation_20260704_a1e311f_wave1/foureyes/3/trials/trial_000009_normuon_cosine_lr_low/student_best.pt |
+| gc5_optimizer_wsd_validation_20260704_a32f93f_offset14 | foureyes | 0 | pace_normuon_cosine_lr_high | pace_normuon_cosine_lr_high | 1337 | 0.802800 | 4218 | outputs/scheduler_finetune_hpo/gc5_optimizer_wsd_validation_20260704_a32f93f_offset14/foureyes/0/trials/trial_000014_pace_normuon_cosine_lr_high/student_best.pt |
+| gc5_optimizer_wsd_validation_20260704_c6d011b_offsets12_13 | ai | 0 | pace_normuon_cosine_lr_low | pace_normuon_cosine_lr_low | 1337 | 0.912200 | 4218 | outputs/scheduler_finetune_hpo/gc5_optimizer_wsd_validation_20260704_c6d011b_offsets12_13/ai/0/trials/trial_000012_pace_normuon_cosine_lr_low/student_best.pt |
+| gc5_optimizer_wsd_validation_20260704_c6d011b_offsets12_13 | ai | 1 | pace_normuon_cosine_lr_base | pace_normuon_cosine_lr_base | 1337 | 0.898200 | 4218 | outputs/scheduler_finetune_hpo/gc5_optimizer_wsd_validation_20260704_c6d011b_offsets12_13/ai/1/trials/trial_000013_pace_normuon_cosine_lr_base/student_best.pt |
+| gc5_optimizer_wsd_validation_20260704_d27e50c_wave2_offsets2_5 | ripper | 0 | official_muon_wsd_lr_base | official_muon_wsd_lr_base | 1337 | 0.907600 | 4218 | outputs/scheduler_finetune_hpo/gc5_optimizer_wsd_validation_20260704_d27e50c_wave2_offsets2_5/ripper/0/trials/trial_000004_official_muon_wsd_lr_base/student_best.pt |
+| gc5_optimizer_wsd_validation_20260704_d27e50c_wave2_offsets2_5 | ripper | 1 | official_muon_wsd_lr_high | official_muon_wsd_lr_high | 1337 | 0.876000 | 4218 | outputs/scheduler_finetune_hpo/gc5_optimizer_wsd_validation_20260704_d27e50c_wave2_offsets2_5/ripper/1/trials/trial_000005_official_muon_wsd_lr_high/student_best.pt |
+| gc5_optimizer_wsd_validation_20260704_d27e50c_wave2_offsets2_5 | work | 0 | official_muon_cosine_lr_high | official_muon_cosine_lr_high | 1337 | 0.887800 | 4218 | outputs/scheduler_finetune_hpo/gc5_optimizer_wsd_validation_20260704_d27e50c_wave2_offsets2_5/work/0/trials/trial_000002_official_muon_cosine_lr_high/student_best.pt |
+| gc5_optimizer_wsd_validation_20260704_d27e50c_wave2_offsets2_5 | work | 1 | official_muon_wsd_lr_low | official_muon_wsd_lr_low | 1337 | 0.897200 | 4218 | outputs/scheduler_finetune_hpo/gc5_optimizer_wsd_validation_20260704_d27e50c_wave2_offsets2_5/work/1/trials/trial_000003_official_muon_wsd_lr_low/student_best.pt |
+| gc5_optimizer_wsd_validation_20260704_d27e50c_wave3_offsets10_11 | ripper | 2 | normuon_cosine_lr_base | normuon_cosine_lr_base | 1337 | 0.892000 | 4218 | outputs/scheduler_finetune_hpo/gc5_optimizer_wsd_validation_20260704_d27e50c_wave3_offsets10_11/ripper/2/trials/trial_000010_normuon_cosine_lr_base/student_best.pt |
+| gc5_optimizer_wsd_validation_20260704_d27e50c_wave3_offsets10_11 | ripper | 3 | normuon_cosine_lr_high | normuon_cosine_lr_high | 1337 | 0.747000 | 4218 | outputs/scheduler_finetune_hpo/gc5_optimizer_wsd_validation_20260704_d27e50c_wave3_offsets10_11/ripper/3/trials/trial_000011_normuon_cosine_lr_high/student_best.pt |

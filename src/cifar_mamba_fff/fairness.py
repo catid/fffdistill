@@ -39,6 +39,26 @@ EXPECTED_ROW_COUNTS = {
 EXPECTED_FAIRNESS_ROWS = 30
 EXPECTED_TEST_ACCESS_ROWS = 3
 GC5_FAMILY_SUMMARY = "fff_gc5_optimizer_wsd_validation_families.csv"
+EXPECTED_GC5_FAMILY_ROWS = 15
+EXPECTED_GC5_SEED = "1337"
+EXPECTED_GC5_TRAIN_STEPS = "4218"
+EXPECTED_GC5_FAMILIES = {
+    "official_muon_cosine_lr_low",
+    "official_muon_cosine_lr_base",
+    "official_muon_cosine_lr_high",
+    "official_muon_wsd_lr_low",
+    "official_muon_wsd_lr_base",
+    "official_muon_wsd_lr_high",
+    "pace_muon_cosine_lr_low",
+    "pace_muon_cosine_lr_base",
+    "pace_muon_cosine_lr_high",
+    "normuon_cosine_lr_low",
+    "normuon_cosine_lr_base",
+    "normuon_cosine_lr_high",
+    "pace_normuon_cosine_lr_low",
+    "pace_normuon_cosine_lr_base",
+    "pace_normuon_cosine_lr_high",
+}
 FFF_BANK_OPTIMIZER_CAVEAT = (
     "Current Muon grouping sends only hidden 2D matrix parameters to Muon; "
     "assembled FFF replacement banks such as route_weight, route_output, "
@@ -135,7 +155,7 @@ def expected_fairness_rows(docs_dir: Path = Path("docs")) -> int:
     expected = EXPECTED_FAIRNESS_ROWS
     gc5_path = docs_dir / GC5_FAMILY_SUMMARY
     if gc5_path.exists():
-        expected += len(_read_csv(gc5_path))
+        expected += len(_read_csv(gc5_path, expected_rows=EXPECTED_GC5_FAMILY_ROWS))
     return expected
 
 
@@ -417,12 +437,29 @@ def _gc5_rows(docs_dir: Path) -> list[dict[str, object]]:
     family_path = docs_dir / GC5_FAMILY_SUMMARY
     if not family_path.exists():
         return []
-    rows = _read_csv(family_path)
+    rows = _read_csv(family_path, expected_rows=EXPECTED_GC5_FAMILY_ROWS)
     if not rows:
         raise ValueError(f"{family_path} exists but has no optimizer validation rows")
+    family_names = {row.get("family", "") for row in rows}
+    if family_names != EXPECTED_GC5_FAMILIES:
+        raise ValueError(f"{family_path} has unexpected GC5 families: {sorted(family_names)}")
     out: list[dict[str, object]] = []
     for family in rows:
         family_name = family.get("family", "")
+        if _parse_bool(family.get("test_accessed"), field=f"{family_path} test_accessed"):
+            raise ValueError(f"{family_path} GC5 validation row {family_name} accessed CIFAR-10 test")
+        if _int_text(family.get("trials")) != "1" or _int_text(family.get("seed_count")) != "1":
+            raise ValueError(f"{family_path} GC5 row {family_name} must have exactly one trial and one seed")
+        if (
+            str(family.get("seeds", "")) != EXPECTED_GC5_SEED
+            or _int_text(family.get("best_seed")) != EXPECTED_GC5_SEED
+        ):
+            raise ValueError(f"{family_path} GC5 row {family_name} must use seed {EXPECTED_GC5_SEED}")
+        if _int_text(family.get("mean_train_steps")) != EXPECTED_GC5_TRAIN_STEPS:
+            raise ValueError(
+                f"{family_path} GC5 row {family_name} must use the matched "
+                f"{EXPECTED_GC5_TRAIN_STEPS}-step budget"
+            )
         out.append(
             _row(
                 method=f"gc5_{family_name}",
