@@ -241,6 +241,24 @@ Stage F: full layerwise distillation HPO.
 
 Stage G: end-to-end KD fine-tuning.
 
+- T14 now has an implemented validation-only BF16 CUDA KD fine-tuning path for
+  assembled Stage F FFF students. It strictly loads all 64 FFF replacement states,
+  keeps CIFAR-10 test disabled, writes assembly manifests/metrics, and supports the
+  optimizer/schedule families added in T19.
+- Real Stage G FFF fine-tuning is currently blocked, not successful. Batch-32
+  assembled-student KD smoke reaches loss/backward and then fails inside the
+  official Mamba-3 TileLang MIMO backward kernel with
+  `Failed to set the allowed dynamic shared memory size to 143808`. Dense teacher
+  backward with the exact selected official Mamba-3 checkpoint config succeeds, and
+  disabling balance hooks, freezing non-FFF Mamba parameters, and returning
+  contiguous FFF outputs do not remove the failure.
+- No substitute architecture, optimizer, CPU path, smaller model, or fake Mamba path
+  should be used to claim Stage G success. The next valid step is a deeper official
+  Mamba-3/TileLang backward patch or an upstream-supported Mamba-3 backward path that
+  keeps the optimized CUDA implementation for the target GPUs.
+- See `docs/t14_finetune_summary.md` for the smoke artifacts and exact blocker
+  evidence. T17/T18 must report this as an unmet final fine-tuning target.
+
 Stage H: final repeated runs with at least three seeds for top validation-selected recipes.
 
 ## Required Quality Gates

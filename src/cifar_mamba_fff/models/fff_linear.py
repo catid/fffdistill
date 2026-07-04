@@ -492,7 +492,7 @@ class FFFLinear(nn.Module):
 
         if self.bias is not None:
             out = out + self.bias
-        return out.reshape(*leading_shape, self.out_features)
+        return out.reshape(*leading_shape, self.out_features).contiguous()
 
     def forward_naive(self, x: Tensor) -> Tensor:
         flat, leading_shape = self._flatten_input(x)
@@ -535,7 +535,7 @@ class FFFLinear(nn.Module):
             outputs.append(out)
 
         out_flat = torch.stack(outputs, dim=0) if outputs else flat.new_empty(0, self.out_features)
-        return out_flat.reshape(*leading_shape, self.out_features)
+        return out_flat.reshape(*leading_shape, self.out_features).contiguous()
 
     def route(self, x: Tensor, *, hard: bool | None = None) -> FFFRouteInfo:
         flat, leading_shape = self._flatten_input(x)
@@ -788,6 +788,15 @@ class FFFLinear(nn.Module):
     def _regular_leaf_output_grouped(self, flat: Tensor, route_info: _FlatRouteInfo) -> Tensor:
         if self._can_use_selected_leaf_grouped_path():
             return self._selected_leaf_output_grouped(flat, route_info)
+        if (
+            self.config.hard_routing
+            and self.config.region_leak > 0.0
+            and not self.config.fallback_leaf
+        ):
+            selected = self._selected_leaf_raw_output_grouped(flat, route_info)
+            uniform = self._uniform_regular_leaf_output_grouped(flat)
+            leak = float(self.config.region_leak)
+            return selected.mul(1.0 - leak).add(uniform, alpha=leak)
 
         leaf_values = self._activation(
             torch.einsum("ni,lri->nlr", flat, self.leaf_weight[: self.leaves])
@@ -818,6 +827,32 @@ class FFFLinear(nn.Module):
         )
         outputs = torch.bmm(values.unsqueeze(1), selected_output).squeeze(1)
         return outputs * weights.unsqueeze(-1)
+
+    def _selected_leaf_raw_output_grouped(self, flat: Tensor, route_info: _FlatRouteInfo) -> Tensor:
+        if flat.shape[0] == 0:
+            return flat.new_empty(0, self.out_features)
+        selected_weight = self.leaf_weight[route_info.leaf_ids]
+        selected_bias = self.leaf_bias[route_info.leaf_ids]
+        selected_output = self.leaf_output[route_info.leaf_ids]
+        values = self._activation(
+            torch.bmm(selected_weight, flat.unsqueeze(-1)).squeeze(-1) + selected_bias
+        )
+        return torch.bmm(values.unsqueeze(1), selected_output).squeeze(1)
+
+    def _uniform_regular_leaf_output_grouped(self, flat: Tensor) -> Tensor:
+        if flat.shape[0] == 0:
+            return flat.new_empty(0, self.out_features)
+        out = flat.new_zeros(flat.shape[0], self.out_features)
+        # Keep the leak path memory bounded: avoid materializing [N, leaves, out].
+        leaf_chunk = 4
+        for start in range(0, self.leaves, leaf_chunk):
+            stop = min(start + leaf_chunk, self.leaves)
+            values = self._activation(
+                torch.einsum("ni,lri->nlr", flat, self.leaf_weight[start:stop])
+                + self.leaf_bias[start:stop]
+            )
+            out = out + torch.einsum("nlr,lro->no", values, self.leaf_output[start:stop])
+        return out / float(self.leaves)
 
     def _extra_leaf_output_grouped(self, flat: Tensor, *, fallback_weight: float) -> Tensor:
         out = flat.new_zeros(flat.shape[0], self.out_features)

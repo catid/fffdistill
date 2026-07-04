@@ -4,6 +4,7 @@ direction: maximize
 max_trials: 120
 search_space:
   fine_tune_epochs: [25, 50, 100, 150]
+  batch_size_per_gpu: [8, 16, 32, 64]
   lr_muon: [0.0001, 0.0003, 0.001, 0.003]
   lr_adamw: [0.00001, 0.00003, 0.0001, 0.0003]
   kd_temperature: [2, 4, 8]

@@ -1,0 +1,5 @@
+run,purpose,status,error,test_accessed
+outputs/t14_finetune_smoke_20260704,initial full FFF KD smoke batch 512,failed,CUDA OOM in grouped FFF leak path,false
+outputs/t14_finetune_smoke_20260704_b32,batch 32 after FFF memory fix,failed,official Mamba3 TileLang backward dynamic shared memory 143808,false
+outputs/t14_finetune_smoke_20260704_b32_nobalance,batch 32 balance disabled,failed,official Mamba3 TileLang backward dynamic shared memory 143808,false
+outputs/t14_finetune_smoke_20260704_b32_nobalance_contig,batch 32 balance disabled FFF contiguous output,failed,official Mamba3 TileLang backward dynamic shared memory 143808,false

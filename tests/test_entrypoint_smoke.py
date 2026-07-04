@@ -37,6 +37,17 @@ def test_metadata_entrypoints_quick_smoke(tmp_path) -> None:
             "--output-dir",
             str(tmp_path / "finetune"),
         ],
+        [
+            sys.executable,
+            "-m",
+            "cifar_mamba_fff.hpo.finetune_hpo",
+            "--quick-smoke",
+            "true",
+            "--plan-only",
+            "true",
+            "--output-dir",
+            str(tmp_path / "finetune_hpo"),
+        ],
     ]
     env = os.environ.copy()
     src_path = str(Path(__file__).resolve().parents[1] / "src")
