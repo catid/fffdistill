@@ -14,6 +14,8 @@ def test_metadata_entrypoints_quick_smoke(tmp_path) -> None:
             "cifar_mamba_fff.train_teacher",
             "--quick-smoke",
             "true",
+            "--smoke-mode",
+            "metadata",
             "--output-dir",
             str(tmp_path / "teacher"),
         ],
