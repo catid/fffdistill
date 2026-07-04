@@ -101,8 +101,8 @@ concrete row gates. Stage F selected the working short-budget recipe:
 - Mean dead leaves: legacy validation-capture `16.48`; corrected train-eval `8.44`.
 
 This is not a final claim that vanilla STE is best. Utility/EM/expert-choice methods
-are implemented and smoke-tested, but the full fair multi-seed router comparison
-remains incomplete.
+are implemented and now have an equal-budget train-eval hard-layer validation
+comparison, but the full-student final-test router comparison remains incomplete.
 
 Stage C compared seven router recipes on one representative layer with a fixed
 architecture and no test access:
@@ -118,6 +118,22 @@ architecture and no test access:
 | `expert_choice_imitation` | 0.282055 | 0.887177 | 25572.1 | 23 |
 
 Stage C details: `docs/t13_stage_c_router_summary.md`.
+
+Equal-budget hard-layer router comparison:
+
+- Run roots: `l7k_router_equal_budget_20260704_a1e311f_wave0`,
+  `wave1_ripper_alt`, `wave2`, and `wave3`.
+- Scope: seven router families, three comparison seeds per family, six hard
+  middle/late `out_proj` layer records per seed.
+- Validation-only: all 126 layer records use `sample_split=train_eval` and
+  did not access CIFAR-10 test data.
+- Best mean held-out NMSE: `expert_choice_imitation`, `0.684392`.
+- Fastest mean throughput: `st_gumbel`, `30330.800526` tokens/s.
+- Lowest mean dead leaves: `expert_choice_imitation`, `0.277778`.
+- Detailed artifacts: `docs/l7k_router_equal_budget_summary.md`,
+  `docs/l7k_router_equal_budget_results.csv`,
+  `docs/l7k_router_equal_budget_family_summary.md`, and
+  `docs/l7k_router_equal_budget_families.csv`.
 
 ## Architecture Sweep
 
@@ -255,9 +271,10 @@ T15 generated fairness tables from committed evidence only:
 
 The table contains 29 rows and enforces that `test_accessed=true` appears only on
 `final_test` or `partial_final_test` rows. Exactly 2 fairness rows have
-`test_accessed=true`. It includes explicit `not_run` rows for
-dense-copy student, shared-only rows baseline, matched low-rank Linear, and matched
-smaller dense Linear. These are limitations, not hidden successes.
+`test_accessed=true`. Dense-copy, matched low-rank Linear, and matched smaller
+dense Linear baselines now have three-seed validation-only rows in
+`docs/t15_missing_baseline_validation_summary.md`; the shared-only rows baseline
+remains an explicit `not_run` limitation.
 The final-report validator also checks the committed fairness CSV row count,
 test-access row count, and key prose metrics against their source CSV/Markdown
 artifacts, then regenerates fairness rows from source evidence and rejects a stale CSV.
@@ -328,8 +345,8 @@ Within the evidence that exists:
 
 - Full FFF-replaced student final CIFAR-10 accuracy is not established; only a one-batch partial selected-checkpoint test artifact exists.
 - Legacy Stage F layerwise FFF artifacts used validation-split activation capture and are leakage-limited for layerwise validation metrics. Corrected train-eval Stage F layerwise evidence is now committed, but no full-student Stage H quality claim has been rerun from those artifacts.
-- Several required baselines are not run: dense teacher-copied student, shared-only rows baseline, matched low-rank Linear, matched smaller dense Linear.
-- Utility-targeted, hard-EM, expert-choice, and ST-Gumbel router recipes are implemented but not fully compared under equal final budgets.
+- The shared-only rows baseline is still not run as a matched full-student baseline. Dense teacher-copied, matched low-rank Linear, and matched smaller dense Linear now have validation-only three-seed evidence, but no baseline final-test metrics are claimed.
+- Utility-targeted, hard-EM, expert-choice, and ST-Gumbel router recipes have equal-budget hard-layer validation evidence, but not full-student final-test comparisons.
 - Grouped FFF is much faster than naive but still far slower than dense Linear in current PyTorch implementation.
 - FFF-bank optimizer policy is currently AdamW fallback for 3D replacement banks;
   optimizer conclusions for assembled FFF students must remain labeled accordingly

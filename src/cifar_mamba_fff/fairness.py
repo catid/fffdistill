@@ -33,6 +33,7 @@ EXPECTED_ROW_COUNTS = {
     "t20_route_row_output_ablation_results.csv": 7,
     "t19_optimizer_ablation_summary.csv": 6,
     "t14_finetune_summary.csv": 8,
+    "t15_missing_baseline_validation_families.csv": 3,
 }
 EXPECTED_FAIRNESS_ROWS = 29
 EXPECTED_TEST_ACCESS_ROWS = 2
@@ -296,9 +297,9 @@ def _t14_rows(docs_dir: Path) -> list[dict[str, object]]:
     return out
 
 
-def _baseline_placeholder_rows(docs_dir: Path) -> list[dict[str, object]]:
+def _baseline_rows(docs_dir: Path) -> list[dict[str, object]]:
     evidence = "tests/test_official_fastfeedforward_baseline.py"
-    return [
+    rows = [
         _row(
             method="official_fastfeedforward_fff",
             evidence=evidence,
@@ -312,15 +313,6 @@ def _baseline_placeholder_rows(docs_dir: Path) -> list[dict[str, object]]:
             ),
         ),
         _row(
-            method="dense_teacher_copied_student",
-            evidence=str(docs_dir / "t14_finetune_summary.md"),
-            split="not_run",
-            status="not_run",
-            test_accessed="false",
-            budget="Not executed as a separate T15 baseline.",
-            fairness_note="Required sanity baseline remains an explicit limitation for final claims.",
-        ),
-        _row(
             method="shared_only_rows_baseline",
             evidence=str(docs_dir / "t13_stage_f_layerwise_summary.csv"),
             split="not_run",
@@ -329,25 +321,52 @@ def _baseline_placeholder_rows(docs_dir: Path) -> list[dict[str, object]]:
             budget="Not executed as a matched full-layer baseline.",
             fairness_note="FFF HPO includes shared rows, but a shared-only full baseline is not available.",
         ),
-        _row(
-            method="matched_low_rank_linear",
-            evidence=str(docs_dir / "t15_fairness_summary.md"),
-            split="not_run",
-            status="not_run",
-            test_accessed="false",
-            budget="Not executed.",
-            fairness_note="Marked as optional/easy baseline in the project plan; no metric claimed.",
-        ),
-        _row(
-            method="matched_smaller_dense_linear",
-            evidence=str(docs_dir / "t15_fairness_summary.md"),
-            split="not_run",
-            status="not_run",
-            test_accessed="false",
-            budget="Not executed.",
-            fairness_note="Marked as optional/easy baseline in the project plan; no metric claimed.",
-        ),
     ]
+    family_path = docs_dir / "t15_missing_baseline_validation_families.csv"
+    baseline_methods = {
+        "dense_copy": (
+            "dense_teacher_copied_student",
+            "Dense teacher-copied student sanity baseline; validation-only, no CIFAR-10 test access.",
+        ),
+        "low_rank": (
+            "matched_low_rank_linear",
+            "Matched low-rank Linear baseline using the same three-epoch validation budget.",
+        ),
+        "smaller_dense": (
+            "matched_smaller_dense_linear",
+            "Matched smaller-dense Linear baseline using the same three-epoch validation budget.",
+        ),
+    }
+    for family in _read_csv(
+        family_path,
+        expected_rows=EXPECTED_ROW_COUNTS[family_path.name],
+    ):
+        family_name = family.get("family", "")
+        if family_name not in baseline_methods:
+            raise ValueError(f"unexpected baseline family in {family_path}: {family_name!r}")
+        method, note_prefix = baseline_methods[family_name]
+        rows.append(
+            _row(
+                method=method,
+                evidence=str(family_path),
+                split="validation",
+                status="completed",
+                test_accessed=_bool_text(family.get("test_accessed")),
+                validation_accuracy=_float_text(family.get("mean_best_val_accuracy")),
+                train_steps=_int_text(family.get("mean_train_steps")),
+                seeds=family.get("seeds", ""),
+                budget=(
+                    "Three seeds, three fine-tune epochs, 4218 train steps each, "
+                    "same teacher checkpoint and validation-only selection protocol."
+                ),
+                fairness_note=(
+                    f"{note_prefix} Best case {family.get('best_case', '')} "
+                    f"seed {family.get('best_seed', '')} reached validation accuracy "
+                    f"{_float_text(family.get('best_val_accuracy'))}."
+                ),
+            )
+        )
+    return rows
 
 
 def build_fairness_rows(docs_dir: Path = Path("docs")) -> list[dict[str, object]]:
@@ -355,7 +374,7 @@ def build_fairness_rows(docs_dir: Path = Path("docs")) -> list[dict[str, object]
     rows.extend(_t20_rows(docs_dir))
     rows.extend(_t19_rows(docs_dir))
     rows.extend(_t14_rows(docs_dir))
-    rows.extend(_baseline_placeholder_rows(docs_dir))
+    rows.extend(_baseline_rows(docs_dir))
     validate_fairness_rows(rows)
     return rows
 
@@ -424,7 +443,8 @@ def write_fairness_markdown(path: Path, rows: Sequence[Mapping[str, object]]) ->
             "not clean held-out validation metrics and not final accuracy.",
             "- Stage F train-eval rows use CIFAR-10 train images with eval/no-augmentation transforms "
             "and held-out token metrics; they are clean layerwise distillation evidence, not final accuracy.",
-            "- Required baselines without committed metrics are explicitly marked `not_run`.",
+            "- Required baselines without committed metrics are explicitly marked `not_run`; "
+            "completed baseline rows are validation-only unless separately marked final-test.",
             "",
         ]
     )

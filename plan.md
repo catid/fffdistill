@@ -276,6 +276,14 @@ Stage F: full layerwise distillation HPO.
   corrected full Stage F pass or final student result. See
   `docs/hard_outproj_router_balance_train_eval_summary.md` and
   `docs/hard_outproj_router_balance_train_eval_results.csv`.
+- Equal-budget router-family validation is now summarized in
+  `docs/l7k_router_equal_budget_summary.md`, `docs/l7k_router_equal_budget_results.csv`,
+  `docs/l7k_router_equal_budget_family_summary.md`, and
+  `docs/l7k_router_equal_budget_families.csv`. The collected waves cover seven router
+  families, three comparison seeds per family, and six hard `out_proj` layer records per
+  seed. All 126 layer records are validation-only train-eval activation-capture results
+  with `test_accessed=false`. They support router recipe selection but do not replace
+  full-student final-test comparisons.
 - Fairness limitation to handle in T15/T18: Stage F trial configs retain the base
   distillation seed even though scheduler status metadata records per-slot launch seeds.
   Future multi-seed comparisons must explicitly vary and report training seeds.
@@ -327,10 +335,11 @@ Fairness and baselines:
   corrected train-eval layerwise FFF held-out token metrics, legacy validation-capture
   Stage F provenance, T20 route-output single-layer ablations, T19 optimizer/schedule
   smoke ablations, T14 KD/final-eval artifacts, official `fastfeedforward.FFF` shape
-  smoke, and explicit `not_run` rows for required baselines without metrics.
+  smoke, three-seed validation-only dense-copy/low-rank/smaller-dense baseline
+  evidence, and explicit `not_run` rows for required baselines without metrics.
 - Fairness validation enforces that CIFAR-10 test access is reported only on
-  `final_test` or `partial_final_test` rows. Missing baselines remain limitations, not
-  hidden successes.
+  `final_test` or `partial_final_test` rows. The shared-only rows full-student
+  baseline remains a limitation, not a hidden success.
 - T18 hardened fairness/report provenance checks: required source CSVs and teacher
   summary files must exist with expected row counts, the fairness table must contain
   exactly 29 rows, exactly two rows may report test access unless the expected

@@ -153,6 +153,19 @@ T18 adversarial-review findings and closure evidence are recorded at the end of 
 - Focused checks after these fixes: `pytest -q tests/test_student_final_eval.py tests/test_fairness_summary.py tests/test_make_report.py` passed with 15 tests; focused ruff passed; `python -m cifar_mamba_fff.fairness` and `python -m cifar_mamba_fff.make_report --quick-smoke true` passed. Full `bash scripts/run_tests.sh` passed with environment verification, ruff, and 343 pytest tests; the only warnings were the known upstream TVM/TileLang duplicate-field warnings.
 - Residual risks: the one-step FFF student partial CIFAR-10 test artifact already exists and remains documented as plumbing/failure-analysis evidence only; full multi-seed FFF student final accuracy and several matched baselines remain unrun limitations. Report validation checks row counts and test-access provenance but does not yet cross-check every prose metric against every source CSV cell.
 
+### 2026-07-04 Baseline Evidence Update
+
+- T15 fairness now consumes `docs/t15_missing_baseline_validation_families.csv`.
+  Dense-copy, matched low-rank Linear, and matched smaller-dense Linear baselines
+  each have three validation-only seeds, 4218 train steps per seed, and
+  `test_accessed=false`.
+- The shared-only rows full-student baseline is still not runnable in the current
+  fine-tuning config path and remains the explicit `not_run` baseline limitation.
+- Focused checks for this update: `pytest -q tests/test_fairness_summary.py
+  tests/test_summarize_finetune_hpo.py tests/test_summarize_distill_hpo.py
+  tests/test_make_report.py`, scoped `ruff`, `cifar_mamba_fff.fairness`, and
+  `cifar_mamba_fff.make_report --quick-smoke true`.
+
 ## Post-T18 Claude/Fable Findings
 
 - Fixed `fff-0om` code path for future layerwise distillation: `distill_linears.py`,

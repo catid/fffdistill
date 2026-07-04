@@ -31,10 +31,10 @@ final-test, and full final-test rows are deliberately separated.
 | t14_t14_finetune_smoke_autocast_fix_train_balance_globalcap | validation_smoke | succeeded | false |  |  |  |  | batch 32 assembled FFF KD one global train step with balance |
 | t14_t14_student_final_partial_autocast_fix_nobalance_qfalse_v2 | partial_final_test | succeeded partial_test_accuracy=0.3125 | true |  | 0.312500 |  |  | selected one-step HPO checkpoint partial CIFAR-10 test max_test_steps=1 |
 | official_fastfeedforward_fff | shape_smoke | shape_compatible_forward_tested | false |  |  |  |  | CPU API/shape smoke only. |
-| dense_teacher_copied_student | not_run | not_run | false |  |  |  |  | Not executed as a separate T15 baseline. |
 | shared_only_rows_baseline | not_run | not_run | false |  |  |  |  | Not executed as a matched full-layer baseline. |
-| matched_low_rank_linear | not_run | not_run | false |  |  |  |  | Not executed. |
-| matched_smaller_dense_linear | not_run | not_run | false |  |  |  |  | Not executed. |
+| matched_smaller_dense_linear | validation | completed | false | 0.931933 |  |  |  | Three seeds, three fine-tune epochs, 4218 train steps each, same teacher checkpoint and validation-only selection protocol. |
+| dense_teacher_copied_student | validation | completed | false | 0.931667 |  |  |  | Three seeds, three fine-tune epochs, 4218 train steps each, same teacher checkpoint and validation-only selection protocol. |
+| matched_low_rank_linear | validation | completed | false | 0.926400 |  |  |  | Three seeds, three fine-tune epochs, 4218 train steps each, same teacher checkpoint and validation-only selection protocol. |
 
 ## Fairness Checks
 
@@ -44,4 +44,4 @@ final-test, and full final-test rows are deliberately separated.
 - Route-output ablations use one representative layer with reported active/stored row budgets.
 - Stage F layerwise rows are legacy validation-capture MSE/cosine/throughput evidence, not clean held-out validation metrics and not final accuracy.
 - Stage F train-eval rows use CIFAR-10 train images with eval/no-augmentation transforms and held-out token metrics; they are clean layerwise distillation evidence, not final accuracy.
-- Required baselines without committed metrics are explicitly marked `not_run`.
+- Required baselines without committed metrics are explicitly marked `not_run`; completed baseline rows are validation-only unless separately marked final-test.

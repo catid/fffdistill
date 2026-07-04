@@ -51,14 +51,22 @@ def test_validate_fairness_rows_allows_test_only_on_final_splits() -> None:
         )
 
 
-def test_build_fairness_rows_from_committed_docs_contains_required_placeholders() -> None:
+def test_build_fairness_rows_from_committed_docs_contains_required_baseline_evidence() -> None:
     rows = build_fairness_rows(Path("docs"))
     by_method = {str(row["method"]): row for row in rows}
 
     assert len(rows) == EXPECTED_FAIRNESS_ROWS == 29
     assert by_method["dense_mamba3_teacher"]["split"] == "final_test"
     assert by_method["official_fastfeedforward_fff"]["status"] == "shape_compatible_forward_tested"
-    assert by_method["dense_teacher_copied_student"]["status"] == "not_run"
+    assert by_method["dense_teacher_copied_student"]["status"] == "completed"
+    assert by_method["dense_teacher_copied_student"]["split"] == "validation"
+    assert by_method["dense_teacher_copied_student"]["test_accessed"] == "false"
+    assert by_method["dense_teacher_copied_student"]["validation_accuracy"] == "0.931667"
+    assert by_method["matched_low_rank_linear"]["status"] == "completed"
+    assert by_method["matched_low_rank_linear"]["validation_accuracy"] == "0.926400"
+    assert by_method["matched_smaller_dense_linear"]["status"] == "completed"
+    assert by_method["matched_smaller_dense_linear"]["validation_accuracy"] == "0.931933"
+    assert by_method["shared_only_rows_baseline"]["status"] == "not_run"
     assert (
         by_method["assembled_fff_stage_f_validation_capture_legacy"]["split"]
         == "legacy_validation_capture_layerwise"
