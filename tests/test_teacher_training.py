@@ -195,6 +195,24 @@ def test_hpo_resolve_train_overrides_rebuilds_data_config() -> None:
     assert run_config.data.use_test is False
 
 
+def test_teacher_hpo_smoke_config_uses_known_kernel_safe_default() -> None:
+    base_run = load_teacher_run_config("configs/teacher_default.yaml", quick_smoke=True)
+    hpo_config = teacher_hpo.load_yaml("configs/teacher_hpo_smoke.yaml")
+    search_space = hpo_config["search_space"]
+    overrides = {key: values[0] for key, values in search_space.items()}
+
+    run_config = resolve_hpo_run_config(base_run, overrides, seed=2026, quick_smoke=True)
+
+    assert run_config.model.d_model == 256
+    assert run_config.model.depth == 20
+    assert run_config.model.patch_size == 4
+    assert run_config.model.d_state == 64
+    assert run_config.model.headdim == 64
+    assert run_config.model.mimo_rank == 2
+    assert run_config.model.bidirectional is False
+    assert run_config.train.batch_size_per_gpu == 512
+
+
 def test_hpo_valid_resampling_does_not_count_rejected_candidates(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

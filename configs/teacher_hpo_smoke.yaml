@@ -1,0 +1,24 @@
+study_name: teacher_hpo_smoke
+objective: val_accuracy
+direction: maximize
+max_trials: 1
+prune_on: val_accuracy
+search_space:
+  d_model: [256]
+  depth: [20]
+  patch_size: [4]
+  d_state: [64]
+  headdim: [64]
+  is_mimo: [true]
+  mimo_rank: [2]
+  bidirectional: [false]
+  drop_path: [0.1]
+  label_smoothing: [0.1]
+  mixup: [0.2]
+  cutmix: [1.0]
+  lr_muon: [0.02]
+  lr_adamw: [0.001]
+  weight_decay_muon: [0.03]
+  weight_decay_adamw: [0.03]
+  batch_size_per_gpu: [512]
+  schedule: [cosine]
