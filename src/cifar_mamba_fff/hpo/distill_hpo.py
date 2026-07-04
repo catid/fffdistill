@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import argparse
 import copy
+import itertools
 import math
 import random
 import subprocess
 import sys
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -18,6 +19,7 @@ from cifar_mamba_fff.utils import bool_arg, load_yaml, write_json
 
 RouteRowRole = Literal["routing_only", "shared_routing_and_output", "split_routing_output"]
 RouteRowsOutputCount = int | Literal["all"] | None
+DistillHpoSampler = Literal["random", "grid"]
 
 ROUTE_ROW_ROLES: tuple[RouteRowRole, ...] = (
     "routing_only",
@@ -119,6 +121,12 @@ def _choice(values: object, *, key: str, rng: random.Random) -> object:
     return rng.choice(list(values))
 
 
+def _choice_values(values: object, *, key: str) -> list[object]:
+    if not isinstance(values, Sequence) or isinstance(values, (str, bytes)) or not values:
+        raise ValueError(f"search_space.{key} must be a non-empty sequence")
+    return list(values)
+
+
 def _sample_mapping(search_space: Mapping[str, object], *, rng: random.Random) -> dict[str, object]:
     overrides: dict[str, object] = {}
     for key, values in search_space.items():
@@ -210,6 +218,46 @@ def _sample_output_controls(
     }
 
 
+def _grid_output_controls(
+    search_space: Mapping[str, object],
+    *,
+    role: RouteRowRole,
+    max_rows: int,
+) -> list[dict[str, object]]:
+    if role == "routing_only":
+        return [
+            {
+                "route_rows_output_count": 0,
+                "route_rows_output_fraction": None,
+            }
+        ]
+
+    counts = list(_sequence_or_default(search_space.get("route_rows_output_count"), [None]))
+    fractions = list(_sequence_or_default(search_space.get("route_rows_output_fraction"), [None]))
+    controls: list[dict[str, object]] = []
+    for count in counts:
+        if count is not None and count != "all" and (
+            isinstance(count, bool) or not isinstance(count, int) or count < 0
+        ):
+            raise ValueError("route_rows_output_count choices must be non-negative ints, 'all', or null")
+        for fraction in fractions:
+            selected_rows = _selected_rows_for_pair(
+                max_rows=max_rows,
+                count=count,  # type: ignore[arg-type]
+                fraction=fraction,
+            )
+            if selected_rows > 0:
+                controls.append(
+                    {
+                        "route_rows_output_count": count,
+                        "route_rows_output_fraction": fraction,
+                    }
+                )
+    if not controls:
+        raise ValueError(f"{role} requires at least one positive route output control choice")
+    return controls
+
+
 def _sequence_or_default(value: object, default: Sequence[object]) -> Sequence[object]:
     if value is None:
         return default
@@ -244,6 +292,30 @@ def _sample_role(search_space: Mapping[str, object], *, rng: random.Random) -> R
     if role not in ROUTE_ROW_ROLES:
         raise ValueError(f"unknown route_row_role: {role!r}")
     return role
+
+
+def _grid_roles(search_space: Mapping[str, object]) -> list[RouteRowRole]:
+    if "route_row_role" in search_space:
+        role_values = _choice_values(search_space["route_row_role"], key="route_row_role")
+        roles = [str(role) for role in role_values]
+    elif "route_rows_contribute" in search_space:
+        contributes_values = _choice_values(
+            search_space["route_rows_contribute"],
+            key="route_rows_contribute",
+        )
+        roles = [
+            "shared_routing_and_output" if contributes else "routing_only"
+            for contributes in contributes_values
+        ]
+    else:
+        roles = ["routing_only"]
+
+    normalized: list[RouteRowRole] = []
+    for role in roles:
+        if role not in ROUTE_ROW_ROLES:
+            raise ValueError(f"unknown route_row_role: {role!r}")
+        normalized.append(role)  # type: ignore[arg-type]
+    return normalized
 
 
 def _route_rows_from_overrides(overrides: Mapping[str, object]) -> int:
@@ -284,6 +356,52 @@ def _sample_role_controls(
         "route_result_rows": route_result_rows,
         **output_controls,
     }
+
+
+def _grid_role_controls(
+    search_space: Mapping[str, object],
+    *,
+    role: RouteRowRole,
+    route_rows: int,
+) -> list[dict[str, object]]:
+    if role == "routing_only":
+        return [
+            {
+                "route_rows_contribute": False,
+                "route_row_role": role,
+                "route_result_rows": 0,
+                "route_rows_output_count": 0,
+                "route_rows_output_fraction": None,
+            }
+        ]
+
+    if role == "split_routing_output":
+        route_result_rows_values = _positive_ints(
+            search_space.get("route_result_rows", [1]),
+            key="route_result_rows",
+        )
+        if not route_result_rows_values:
+            raise ValueError("split_routing_output requires a positive route_result_rows choice")
+    else:
+        route_result_rows_values = [0]
+
+    controls: list[dict[str, object]] = []
+    for route_result_rows in route_result_rows_values:
+        max_output_rows = route_result_rows if role == "split_routing_output" else route_rows
+        for output_controls in _grid_output_controls(
+            search_space,
+            role=role,
+            max_rows=max_output_rows,
+        ):
+            controls.append(
+                {
+                    "route_rows_contribute": True,
+                    "route_row_role": role,
+                    "route_result_rows": route_result_rows,
+                    **output_controls,
+                }
+            )
+    return controls
 
 
 def sample_distill_overrides(
@@ -328,6 +446,54 @@ def sample_distill_overrides(
         )
     )
     return canonicalize_distill_route_overrides(overrides)
+
+
+def _grid_mapping(search_space: Mapping[str, object]) -> Iterator[dict[str, object]]:
+    if not search_space:
+        yield {}
+        return
+    keys: list[str] = []
+    values_by_key: list[list[object]] = []
+    for key, values in search_space.items():
+        if key.endswith("_loguniform"):
+            raise ValueError(f"grid sampler does not support search_space.{key}")
+        keys.append(key)
+        values_by_key.append(_choice_values(values, key=key))
+    for values in itertools.product(*values_by_key):
+        yield dict(zip(keys, values, strict=True))
+
+
+def iter_grid_distill_overrides(search_space: Mapping[str, object]) -> Iterator[dict[str, object]]:
+    """Generate deterministic route-aware Cartesian distillation HPO overrides."""
+
+    conditional_route_space = _conditional_route_space(search_space)
+    generic_space = {
+        key: value
+        for key, value in search_space.items()
+        if key not in ROUTE_CONTROL_KEYS and key not in CONDITIONAL_ROUTE_CONTROL_KEYS
+    }
+
+    for generic_overrides in _grid_mapping(generic_space):
+        route_rows = _route_rows_from_overrides(generic_overrides)
+        for role in _grid_roles(search_space):
+            role_space: Mapping[str, object]
+            if conditional_route_space is None:
+                role_space = search_space
+            else:
+                value = conditional_route_space.get(role, {})
+                if value is None:
+                    value = {}
+                if not isinstance(value, Mapping):
+                    raise ValueError(f"route controls for {role} must be a mapping")
+                role_space = value
+            for role_controls in _grid_role_controls(
+                role_space,
+                role=role,
+                route_rows=route_rows,
+            ):
+                overrides = dict(generic_overrides)
+                overrides.update(role_controls)
+                yield canonicalize_distill_route_overrides(overrides)
 
 
 def canonicalize_distill_route_overrides(overrides: Mapping[str, object]) -> dict[str, object]:
@@ -385,6 +551,25 @@ def canonicalize_distill_route_overrides(overrides: Mapping[str, object]) -> dic
     return normalized
 
 
+def _freeze_for_identity(value: object) -> object:
+    if isinstance(value, Mapping):
+        return tuple((key, _freeze_for_identity(nested)) for key, nested in sorted(value.items()))
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return tuple(_freeze_for_identity(nested) for nested in value)
+    return value
+
+
+def _overrides_identity(overrides: Mapping[str, object]) -> tuple[tuple[str, object], ...]:
+    return tuple((key, _freeze_for_identity(value)) for key, value in sorted(overrides.items()))
+
+
+def distill_hpo_sampler(hpo_config: Mapping[str, object]) -> DistillHpoSampler:
+    sampler = hpo_config.get("sampler", hpo_config.get("sampling", "random"))
+    if sampler not in ("random", "grid"):
+        raise ValueError("distill HPO sampler must be 'random' or 'grid'")
+    return sampler  # type: ignore[return-value]
+
+
 def _validate_output_controls_present(
     overrides: Mapping[str, object],
     *,
@@ -407,6 +592,7 @@ def sample_valid_distill_hpo_candidates(
     max_trials: int,
     max_attempts: int,
     rng: random.Random,
+    sampler: DistillHpoSampler = "random",
     validate_fn: Callable[[Mapping[str, object]], bool] | None = None,
 ) -> list[DistillHpoCandidate]:
     if max_trials <= 0:
@@ -414,10 +600,32 @@ def sample_valid_distill_hpo_candidates(
     if max_attempts < max_trials:
         raise ValueError("max_attempts must be >= max_trials")
     candidates: list[DistillHpoCandidate] = []
-    for attempt_index in range(max_attempts):
-        if len(candidates) >= max_trials:
+    if sampler == "random":
+        for attempt_index in range(max_attempts):
+            if len(candidates) >= max_trials:
+                break
+            overrides = sample_distill_overrides(search_space, rng=rng)
+            if validate_fn is not None and not validate_fn(overrides):
+                continue
+            candidates.append(
+                DistillHpoCandidate(
+                    trial_index=len(candidates),
+                    attempt_index=attempt_index,
+                    overrides=overrides,
+                )
+            )
+        return candidates
+    if sampler != "grid":
+        raise ValueError("distill HPO sampler must be 'random' or 'grid'")
+
+    seen: set[tuple[tuple[str, object], ...]] = set()
+    for attempt_index, overrides in enumerate(iter_grid_distill_overrides(search_space)):
+        if attempt_index >= max_attempts or len(candidates) >= max_trials:
             break
-        overrides = sample_distill_overrides(search_space, rng=rng)
+        identity = _overrides_identity(overrides)
+        if identity in seen:
+            continue
+        seen.add(identity)
         if validate_fn is not None and not validate_fn(overrides):
             continue
         candidates.append(
@@ -552,11 +760,13 @@ def write_distill_hpo_trial_plan(
     search_space = hpo_config.get("search_space")
     if not isinstance(search_space, Mapping):
         raise ValueError("distill HPO config must contain a search_space mapping")
+    sampler = distill_hpo_sampler(hpo_config)
     candidates = sample_valid_distill_hpo_candidates(
         search_space,
         max_trials=max_trials,
         max_attempts=max_attempts,
         rng=random.Random(seed),
+        sampler=sampler,
     )
     if not candidates:
         raise RuntimeError("distill HPO produced zero valid candidates")
@@ -585,6 +795,7 @@ def write_distill_hpo_trial_plan(
         "requested_trials": max_trials,
         "accepted_trials": len(candidates),
         "max_attempts": max_attempts,
+        "sampler": sampler,
         "seed": seed,
         "teacher_checkpoint": teacher_checkpoint,
         "test_accessed": False,

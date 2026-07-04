@@ -141,6 +141,20 @@ def _write_teacher_checkpoint(path: Path, *, parameter_count: int = 1234) -> Non
     torch.save(_teacher_checkpoint_payload(parameter_count), path)
 
 
+def _assert_distill_quality_and_timing_fields(record: dict[str, object]) -> None:
+    for key in (
+        "final_cosine_similarity",
+        "final_cosine_loss",
+        "train_seconds",
+        "tokens_per_second",
+    ):
+        assert key in record
+        value = record[key]
+        assert isinstance(value, int | float)
+        assert torch.isfinite(torch.tensor(float(value)))
+    assert float(record["tokens_per_second"]) > 0.0
+
+
 def test_linear_distill_config_defaults_do_not_require_all_keys() -> None:
     config = LinearDistillConfig.from_mapping({"steps": 3, "max_capture_bytes_per_layer": None})
 
@@ -369,6 +383,7 @@ def test_distill_cli_loads_checkpoint_and_uses_train_val_batches_only(
     assert summary["sample_split"] == "val"
     assert summary["sample_batches"] == 1
     assert summary["layers"][0]["name"] == "linear"
+    _assert_distill_quality_and_timing_fields(summary["layers"][0])
     run_context = json.loads((output_dir / "run_context.json").read_text(encoding="utf-8"))
     assert run_context["progressive_step"] == 1
     assert run_context["progressive_step_size"] == 1
@@ -397,6 +412,9 @@ def test_layerwise_distillation_decreases_mse_and_writes_artifacts(tmp_path) -> 
 
     summary = json.loads((tmp_path / "layer_summary.json").read_text(encoding="utf-8"))
     assert summary[0]["final_normalized_mse"] == pytest.approx(result.final_normalized_mse)
+    assert summary[0]["final_cosine_similarity"] == pytest.approx(result.final_cosine_similarity)
+    assert summary[0]["final_cosine_loss"] == pytest.approx(result.final_cosine_loss)
+    _assert_distill_quality_and_timing_fields(summary[0])
 
     records = [
         json.loads(line)
@@ -410,6 +428,10 @@ def test_layerwise_distillation_decreases_mse_and_writes_artifacts(tmp_path) -> 
     assert records[-1]["router"]["loss"] >= 0.0
     assert "entropy_mean" in records[-1]["router"]
     assert "dead_leaves" in records[-1]["router"]
+    assert records[-1]["final_cosine_similarity"] == pytest.approx(result.final_cosine_similarity)
+    assert records[-1]["final_cosine_loss"] == pytest.approx(result.final_cosine_loss)
+    _assert_distill_quality_and_timing_fields(records[-1])
+    _assert_distill_quality_and_timing_fields(result.log_record())
 
 
 def test_distill_linear_from_bfloat16_tensors_uses_fp32_losses(tmp_path) -> None:
@@ -449,6 +471,7 @@ def test_distill_linear_from_bfloat16_tensors_uses_fp32_losses(tmp_path) -> None
         for line in (tmp_path / "layer_metrics.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     assert all(isinstance(record["loss"], float) for record in metrics)
+    _assert_distill_quality_and_timing_fields(metrics[-1])
 
 
 def test_distill_linear_applies_balance_config_and_writes_metrics(tmp_path) -> None:

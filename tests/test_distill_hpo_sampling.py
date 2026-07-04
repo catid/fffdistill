@@ -22,6 +22,16 @@ from cifar_mamba_fff.hpo.distill_hpo import (
 from cifar_mamba_fff.models.fff_linear import FFFLinear, FFFLinearConfig
 from cifar_mamba_fff.utils import load_yaml
 
+STAGE_C_ROUTER_RECIPES = [
+    "vanilla_ste",
+    "clipped_ste",
+    "sigmoid_surrogate_ste",
+    "st_gumbel",
+    "utility_targeted_ste",
+    "hard_em_utility_ste",
+    "expert_choice_imitation",
+]
+
 
 def _fff_kwargs(overrides: Mapping[str, object]) -> dict[str, object]:
     fields = set(FFFLinearConfig.__dataclass_fields__)
@@ -36,6 +46,24 @@ def _build_layer(overrides: Mapping[str, object]) -> FFFLinear:
         bias=False,
         **_fff_kwargs(overrides),
     )
+
+
+def _stage_c_router_search_space() -> dict[str, object]:
+    return {
+        "shared_unrouted_frac": [0.10],
+        "route_rows": [1],
+        "leaf_rows": [2],
+        "depth": [5],
+        "route_row_role": ["routing_only"],
+        "activation": ["silu"],
+        "region_leak": [0.0],
+        "master_leaf": [False],
+        "balance_recipe": ["split_minleaf"],
+        "balance_coeff": [0.001],
+        "min_leaf_tokens": [64],
+        "router_recipe": STAGE_C_ROUTER_RECIPES,
+        "locoprop_refit": ["off"],
+    }
 
 
 def test_distill_hpo_config_samples_only_valid_route_role_combinations() -> None:
@@ -196,6 +224,130 @@ def test_valid_distill_hpo_candidates_do_not_count_rejected_attempts(
 
     assert [candidate.trial_index for candidate in candidates] == [0, 1]
     assert [candidate.attempt_index for candidate in candidates] == [1, 2]
+
+
+def test_default_distill_hpo_sampler_still_uses_random_sampling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sampled = iter(
+        [
+            {"route_row_role": "routing_only"},
+            {"route_row_role": "shared_routing_and_output"},
+        ]
+    )
+    calls = 0
+
+    def fake_sample(_search_space: Mapping[str, object], *, rng: random.Random) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        assert isinstance(rng, random.Random)
+        return next(sampled)
+
+    monkeypatch.setattr(distill_hpo, "sample_distill_overrides", fake_sample)
+
+    candidates = sample_valid_distill_hpo_candidates(
+        {},
+        max_trials=2,
+        max_attempts=2,
+        rng=random.Random(123),
+    )
+
+    assert calls == 2
+    assert [candidate.overrides["route_row_role"] for candidate in candidates] == [
+        "routing_only",
+        "shared_routing_and_output",
+    ]
+
+
+def test_grid_sampler_writes_unique_stage_c_router_trials(tmp_path) -> None:
+    summary = write_distill_hpo_trial_plan(
+        base_config=load_yaml("configs/fff_distill_default.yaml"),
+        hpo_config={"sampler": "grid", "search_space": _stage_c_router_search_space()},
+        output_dir=tmp_path,
+        max_trials=7,
+        max_attempts=7,
+        seed=123,
+    )
+
+    recipes = [trial["overrides"]["router_recipe"] for trial in summary["trials"]]
+    assert summary["sampler"] == "grid"
+    assert summary["accepted_trials"] == 7
+    assert recipes == STAGE_C_ROUTER_RECIPES
+    assert len(set(recipes)) == len(STAGE_C_ROUTER_RECIPES)
+    for trial in summary["trials"]:
+        assert trial["attempt_index"] == trial["trial_index"]
+        assert trial["overrides"]["route_row_role"] == "routing_only"
+        assert trial["overrides"]["route_rows_contribute"] is False
+        assert trial["overrides"]["route_result_rows"] == 0
+
+
+def test_grid_sampler_respects_max_trials_truncation() -> None:
+    candidates = sample_valid_distill_hpo_candidates(
+        _stage_c_router_search_space(),
+        max_trials=3,
+        max_attempts=7,
+        rng=random.Random(123),
+        sampler="grid",
+    )
+
+    assert [candidate.trial_index for candidate in candidates] == [0, 1, 2]
+    assert [candidate.attempt_index for candidate in candidates] == [0, 1, 2]
+    assert [candidate.overrides["router_recipe"] for candidate in candidates] == STAGE_C_ROUTER_RECIPES[:3]
+
+
+def test_grid_sampler_route_role_control_combinations_are_valid() -> None:
+    candidates = sample_valid_distill_hpo_candidates(
+        {
+            "route_rows": [1, 2],
+            "route_row_role": [
+                "routing_only",
+                "shared_routing_and_output",
+                "split_routing_output",
+            ],
+            "route_output_controls": {
+                "routing_only": {},
+                "shared_routing_and_output": {
+                    "route_rows_output_count": [0, 1, "all"],
+                    "route_rows_output_fraction": [None],
+                },
+                "split_routing_output": {
+                    "route_result_rows": [0, 1, 2],
+                    "route_rows_output_count": [0, 1, "all"],
+                    "route_rows_output_fraction": [None, 0.5],
+                },
+            },
+        },
+        max_trials=22,
+        max_attempts=64,
+        rng=random.Random(123),
+        sampler="grid",
+    )
+    roles_seen: set[str] = set()
+
+    for candidate in candidates:
+        diagnostics = _build_layer(candidate.overrides).diagnostics()
+        role = str(diagnostics["route_row_role"])
+        roles_seen.add(role)
+        if role == "routing_only":
+            assert diagnostics["route_rows_contribute"] is False
+            assert diagnostics["route_result_rows"] == 0
+            assert diagnostics["route_output_rows_per_node"] == 0
+        elif role == "shared_routing_and_output":
+            assert diagnostics["route_rows_contribute"] is True
+            assert diagnostics["route_result_rows"] == 0
+            assert diagnostics["route_output_rows_per_node"] > 0
+        elif role == "split_routing_output":
+            assert diagnostics["route_rows_contribute"] is True
+            assert diagnostics["route_result_rows"] > 0
+            assert diagnostics["route_output_rows_per_node"] > 0
+        else:
+            raise AssertionError(f"unexpected role {role!r}")
+
+    assert roles_seen == {
+        "routing_only",
+        "shared_routing_and_output",
+        "split_routing_output",
+    }
 
 
 def test_distill_hpo_overrides_map_to_concrete_config_sections() -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import math
 import sys
+import time
 from contextlib import nullcontext
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -330,6 +331,10 @@ class LayerDistillResult:
     final_loss: float
     initial_normalized_mse: float
     final_normalized_mse: float
+    final_cosine_similarity: float
+    final_cosine_loss: float
+    train_seconds: float
+    tokens_per_second: float
     captured_tokens: int
     observed_tokens: int
     dropped_tokens: int
@@ -1071,6 +1076,22 @@ def _batch_indices(total: int, batch_size: int, *, device: torch.device) -> torc
     return torch.randperm(total, device=device)[: min(batch_size, total)]
 
 
+def _synchronize_if_cuda(device: torch.device) -> None:
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+
+
+def _cosine_alignment_metrics(pred: torch.Tensor, target: torch.Tensor) -> dict[str, float]:
+    pred_f = pred.detach().float().flatten(0, -2)
+    target_f = target.detach().float().flatten(0, -2)
+    similarity = F.cosine_similarity(pred_f, target_f, dim=-1, eps=1.0e-8).mean()
+    cosine_loss = 1.0 - similarity
+    return {
+        "final_cosine_similarity": float(similarity.item()),
+        "final_cosine_loss": float(cosine_loss.item()),
+    }
+
+
 def _capture_autocast_context(distill_config: LinearDistillConfig):
     device = torch.device(distill_config.device)
     if distill_config.capture_autocast_bf16 and device.type == "cuda":
@@ -1166,6 +1187,9 @@ def distill_linear_from_tensors(
         },
     )
 
+    train_tokens = distill_config.steps * min(distill_config.batch_size, x_train.shape[0])
+    _synchronize_if_cuda(device)
+    train_start = time.perf_counter()
     for step in range(distill_config.steps):
         indices = _batch_indices(x_train.shape[0], distill_config.batch_size, device=device)
         batch_x = x_train[indices]
@@ -1176,6 +1200,9 @@ def distill_linear_from_tensors(
             raise FloatingPointError(f"non-finite distillation loss for {name} at step {step}")
         loss.backward()
         optimizer.step()
+    _synchronize_if_cuda(device)
+    train_seconds = max(time.perf_counter() - train_start, sys.float_info.epsilon)
+    tokens_per_second = float(train_tokens) / train_seconds
 
     locoprop_record: dict[str, object] = {
         "enabled": locoprop_config.enabled,
@@ -1215,6 +1242,7 @@ def distill_linear_from_tensors(
             cosine_weight=0.0,
             variance_weight=0.0,
         )
+        final_alignment = _cosine_alignment_metrics(replacement(x_train), y_train)
     layer_dir = output_dir / "layers" / name.replace(".", "__")
     layer_dir.mkdir(parents=True, exist_ok=True)
     state_path = layer_dir / "fff_state.pt"
@@ -1225,6 +1253,10 @@ def distill_linear_from_tensors(
         final_loss=float(final_loss_tensor.item()),
         initial_normalized_mse=float(initial_mse.item()),
         final_normalized_mse=float(final_mse.item()),
+        final_cosine_similarity=final_alignment["final_cosine_similarity"],
+        final_cosine_loss=final_alignment["final_cosine_loss"],
+        train_seconds=float(train_seconds),
+        tokens_per_second=float(tokens_per_second),
         captured_tokens=int(x_train.shape[0]),
         observed_tokens=int(x_train.shape[0]),
         dropped_tokens=0,
@@ -1237,6 +1269,10 @@ def distill_linear_from_tensors(
             "phase": "final",
             "loss": result.final_loss,
             "normalized_mse": result.final_normalized_mse,
+            "final_cosine_similarity": result.final_cosine_similarity,
+            "final_cosine_loss": result.final_cosine_loss,
+            "train_seconds": result.train_seconds,
+            "tokens_per_second": result.tokens_per_second,
             "tokens": result.captured_tokens,
             "diagnostics": _diagnostics_record(replacement, x_train[: distill_config.batch_size]),
             "router": _router_auxiliary_loss(
@@ -1323,6 +1359,10 @@ def run_layerwise_distillation(
                 final_loss=result.final_loss,
                 initial_normalized_mse=result.initial_normalized_mse,
                 final_normalized_mse=result.final_normalized_mse,
+                final_cosine_similarity=result.final_cosine_similarity,
+                final_cosine_loss=result.final_cosine_loss,
+                train_seconds=result.train_seconds,
+                tokens_per_second=result.tokens_per_second,
                 captured_tokens=capture.captured_tokens,
                 observed_tokens=capture.observed_tokens,
                 dropped_tokens=capture.dropped_tokens,

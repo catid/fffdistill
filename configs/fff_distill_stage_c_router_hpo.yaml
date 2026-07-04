@@ -1,0 +1,26 @@
+study_name: fff_distill_stage_c_router_smoke
+sampler: grid
+objective: validation_normalized_mse
+direction: minimize
+max_trials: 7
+search_space:
+  router_recipe:
+    - vanilla_ste
+    - clipped_ste
+    - sigmoid_surrogate_ste
+    - st_gumbel
+    - utility_targeted_ste
+    - hard_em_utility_ste
+    - expert_choice_imitation
+  shared_unrouted_frac: [0.10]
+  route_rows: [1]
+  leaf_rows: [2]
+  depth: [5]
+  route_row_role: [routing_only]
+  activation: [silu]
+  region_leak: [0.0]
+  master_leaf: [false]
+  balance_recipe: [split_minleaf]
+  balance_coeff: [0.001]
+  min_leaf_tokens: [64]
+  locoprop_refit: [off]
