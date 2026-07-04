@@ -22,10 +22,13 @@ from .losses.balance import min_leaf_occupancy_loss, split_balance_loss, uniform
 from .metrics import accuracy, normalized_mse
 from .models.baseline_linears import (
     LowRankLinear,
+    SharedOnlyLinear,
     SmallerDenseLinear,
     initialize_low_rank_from_linear_,
+    initialize_shared_only_from_linear_,
     initialize_smaller_dense_from_linear_,
     make_matched_low_rank_linear,
+    make_matched_shared_only_linear,
     make_matched_smaller_dense_linear,
 )
 from .models.fff_linear import FFFLinear
@@ -139,6 +142,7 @@ class StudentAssemblyConfig:
             "student_checkpoint",
             "dense_copy",
             "matched_low_rank",
+            "matched_shared_only",
             "matched_smaller_dense",
         }
         if self.source not in valid_sources:
@@ -159,7 +163,10 @@ class StudentAssemblyConfig:
             raise ValueError("student.student_checkpoint is required for student_checkpoint")
         if self.source == "dense_copy" and not self.allow_dense_copy:
             raise ValueError("student.allow_dense_copy must be true to run dense-copy sanity fine-tuning")
-        if self.source in {"matched_low_rank", "matched_smaller_dense"} and not self.allow_matched_linear_baseline:
+        if (
+            self.source in {"matched_low_rank", "matched_shared_only", "matched_smaller_dense"}
+            and not self.allow_matched_linear_baseline
+        ):
             raise ValueError(
                 "student.allow_matched_linear_baseline must be true to run matched Linear baselines"
             )
@@ -645,7 +652,7 @@ def load_student_checkpoint(model: nn.Module, checkpoint_path: Path) -> StudentA
         replacement_count=sum(
             1
             for module in model.modules()
-            if isinstance(module, (FFFLinear, LowRankLinear, SmallerDenseLinear))
+            if isinstance(module, (FFFLinear, LowRankLinear, SharedOnlyLinear, SmallerDenseLinear))
         ),
         eligible_count=sum(1 for report in discover_linear_layers(model) if report.included),
         manifest=manifest,
@@ -676,6 +683,12 @@ def _matched_baseline_parameter_budget(
     raise ValueError("baseline budget source must be dense_fraction or fff_config")
 
 
+def _matched_shared_only_activation(fff_config: Mapping[str, object] | None) -> str:
+    if fff_config is None:
+        return "silu"
+    return str(fff_config.get("activation", "silu"))
+
+
 def assemble_matched_linear_baseline_student(
     model: nn.Module,
     *,
@@ -686,8 +699,8 @@ def assemble_matched_linear_baseline_student(
     budget_source: str,
     distill_config_path: Path,
 ) -> StudentAssemblyResult:
-    if source not in {"matched_low_rank", "matched_smaller_dense"}:
-        raise ValueError("source must be matched_low_rank or matched_smaller_dense")
+    if source not in {"matched_low_rank", "matched_shared_only", "matched_smaller_dense"}:
+        raise ValueError("source must be matched_low_rank, matched_shared_only, or matched_smaller_dense")
     fff_config = _load_fff_budget_config(distill_config_path) if budget_source == "fff_config" else None
     reports = discover_linear_layers(
         model,
@@ -709,6 +722,13 @@ def assemble_matched_linear_baseline_student(
         if source == "matched_low_rank":
             replacement = make_matched_low_rank_linear(original, parameter_budget=parameter_budget)
             initialize_low_rank_from_linear_(replacement, original)
+        elif source == "matched_shared_only":
+            replacement = make_matched_shared_only_linear(
+                original,
+                parameter_budget=parameter_budget,
+                activation=_matched_shared_only_activation(fff_config),
+            )
+            initialize_shared_only_from_linear_(replacement, original)
         else:
             replacement = make_matched_smaller_dense_linear(original, parameter_budget=parameter_budget)
             initialize_smaller_dense_from_linear_(replacement, original)
@@ -763,7 +783,7 @@ def build_student_model(
         if config.student.student_checkpoint is None:
             raise RuntimeError("student checkpoint source selected without a checkpoint path")
         return load_student_checkpoint(student, config.student.student_checkpoint)
-    if config.student.source in {"matched_low_rank", "matched_smaller_dense"}:
+    if config.student.source in {"matched_low_rank", "matched_shared_only", "matched_smaller_dense"}:
         return assemble_matched_linear_baseline_student(
             student,
             source=config.student.source,

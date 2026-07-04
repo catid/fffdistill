@@ -22,7 +22,11 @@ from cifar_mamba_fff.hpo.finetune_hpo import (
     run_finetune_trial_command,
     write_finetune_hpo_trial_plan,
 )
-from cifar_mamba_fff.models.baseline_linears import LowRankLinear, SmallerDenseLinear
+from cifar_mamba_fff.models.baseline_linears import (
+    LowRankLinear,
+    SharedOnlyLinear,
+    SmallerDenseLinear,
+)
 from cifar_mamba_fff.models.replacement import make_fff_replacement
 
 
@@ -107,6 +111,7 @@ def test_dense_copy_baseline_config_parses_validation_only_no_balance() -> None:
     ("path", "source"),
     [
         ("configs/finetune_low_rank_baseline.yaml", "matched_low_rank"),
+        ("configs/finetune_shared_only_baseline.yaml", "matched_shared_only"),
         ("configs/finetune_smaller_dense_baseline.yaml", "matched_smaller_dense"),
     ],
 )
@@ -137,6 +142,11 @@ def test_matched_linear_baseline_yaml_parses_validation_only_no_balance(path: st
             "configs/finetune_low_rank_baseline.yaml",
             "configs/finetune_low_rank_baseline_hpo.yaml",
             "low_rank",
+        ),
+        (
+            "configs/finetune_shared_only_baseline.yaml",
+            "configs/finetune_shared_only_baseline_hpo.yaml",
+            "shared_only",
         ),
         (
             "configs/finetune_smaller_dense_baseline.yaml",
@@ -192,7 +202,7 @@ def test_dense_copy_build_path_copies_teacher_without_replacements() -> None:
         assert torch.equal(result.model.state_dict()[name], value)
 
 
-@pytest.mark.parametrize("source", ["matched_low_rank", "matched_smaller_dense"])
+@pytest.mark.parametrize("source", ["matched_low_rank", "matched_shared_only", "matched_smaller_dense"])
 def test_matched_linear_baseline_configs_parse(tmp_path: Path, source: str) -> None:
     raw = _minimal_config(tmp_path)
     raw["student"] = {
@@ -251,6 +261,34 @@ def test_matched_low_rank_build_path_replaces_eligible_linears() -> None:
     assert torch.isfinite(result.model(x)).all()
 
 
+def test_matched_shared_only_build_path_replaces_eligible_linears() -> None:
+    raw = _minimal_config(Path("/tmp"))
+    raw["student"] = {
+        "source": "matched_shared_only",
+        "min_in_features": 1,
+        "min_out_features": 1,
+        "allow_matched_linear_baseline": True,
+        "baseline_parameter_budget_fraction": 0.75,
+    }
+    config = parse_finetune_run_config(raw, quick_smoke=True)
+    teacher = TinyConfigModel({"width": 8})
+
+    result = build_student_model(
+        loaded_teacher_model=teacher,
+        config=config,
+        device=torch.device("cpu"),
+    )
+
+    assert result.source == "matched_shared_only"
+    assert result.replacement_count == 1
+    assert result.eligible_count == 1
+    assert isinstance(result.model.proj, SharedOnlyLinear)
+    assert result.manifest[0].parameters <= 8 * 8 + 8
+    assert result.manifest[0].replacement_path.startswith("generated:matched_shared_only")
+    x = torch.randn(3, 8)
+    assert torch.isfinite(result.model(x)).all()
+
+
 def test_matched_linear_fff_config_budget_uses_reference_fff_parameter_count(tmp_path: Path) -> None:
     distill_config = tmp_path / "fff_budget.yaml"
     distill_config.write_text(
@@ -303,6 +341,68 @@ def test_matched_linear_fff_config_budget_uses_reference_fff_parameter_count(tmp
 
     assert result.source == "matched_smaller_dense"
     assert result.replacement_count == 1
+    assert result.manifest[0].parameters <= expected_budget
+    assert f"budget={expected_budget}" in result.manifest[0].replacement_path
+
+
+def test_matched_shared_only_fff_config_budget_uses_reference_fff_parameter_count(
+    tmp_path: Path,
+) -> None:
+    distill_config = tmp_path / "fff_budget.yaml"
+    distill_config.write_text(
+        "\n".join(
+            [
+                "fff:",
+                "  depth: 1",
+                "  shared_rows: 2",
+                "  route_rows: 1",
+                "  leaf_rows: 1",
+                "  route_rows_contribute: false",
+                "  activation: gelu",
+                "  bias: true",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    raw = _minimal_config(tmp_path)
+    raw["student"] = {
+        "source": "matched_shared_only",
+        "distill_config": str(distill_config),
+        "min_in_features": 1,
+        "min_out_features": 1,
+        "allow_matched_linear_baseline": True,
+        "baseline_budget_source": "fff_config",
+        "baseline_parameter_budget_fraction": 1.0,
+    }
+    config = parse_finetune_run_config(raw, quick_smoke=True)
+    teacher = TinyConfigModel({"width": 8})
+    expected_budget = sum(
+        parameter.numel()
+        for parameter in make_fff_replacement(
+            teacher.proj,
+            config={
+                "depth": 1,
+                "shared_rows": 2,
+                "route_rows": 1,
+                "leaf_rows": 1,
+                "route_rows_contribute": False,
+                "activation": "gelu",
+                "bias": True,
+            },
+        ).parameters()
+    )
+
+    result = build_student_model(
+        loaded_teacher_model=teacher,
+        config=config,
+        device=torch.device("cpu"),
+    )
+
+    assert result.source == "matched_shared_only"
+    assert result.replacement_count == 1
+    assert isinstance(result.model.proj, SharedOnlyLinear)
+    assert result.model.proj.activation == "gelu"
     assert result.manifest[0].parameters <= expected_budget
     assert f"budget={expected_budget}" in result.manifest[0].replacement_path
 
