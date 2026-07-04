@@ -1,0 +1,50 @@
+study_name: dense_copy_baseline_validation
+objective: val_accuracy
+direction: maximize
+max_trials: 3
+cases:
+  - name: dense_copy_seed21001
+    seed: 21001
+    fine_tune_epochs: 3
+    batch_size_per_gpu: 32
+    num_workers: 4
+    optimizer_family: muon_adamw
+    schedule: cosine
+    lr_muon: 0.001
+    lr_adamw: 0.0001
+    kd_temperature: 4
+    lambda_kd: 0.7
+    lambda_ce: 0.3
+    lambda_hidden: 0.05
+    lambda_balance: 0.0
+    balance_recipe: none
+  - name: dense_copy_seed21002
+    seed: 21002
+    fine_tune_epochs: 3
+    batch_size_per_gpu: 32
+    num_workers: 4
+    optimizer_family: muon_adamw
+    schedule: cosine
+    lr_muon: 0.001
+    lr_adamw: 0.0001
+    kd_temperature: 4
+    lambda_kd: 0.7
+    lambda_ce: 0.3
+    lambda_hidden: 0.05
+    lambda_balance: 0.0
+    balance_recipe: none
+  - name: dense_copy_seed21003
+    seed: 21003
+    fine_tune_epochs: 3
+    batch_size_per_gpu: 32
+    num_workers: 4
+    optimizer_family: muon_adamw
+    schedule: cosine
+    lr_muon: 0.001
+    lr_adamw: 0.0001
+    kd_temperature: 4
+    lambda_kd: 0.7
+    lambda_ce: 0.3
+    lambda_hidden: 0.05
+    lambda_balance: 0.0
+    balance_recipe: none

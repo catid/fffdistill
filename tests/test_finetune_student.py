@@ -125,6 +125,54 @@ def test_matched_linear_baseline_yaml_parses_validation_only_no_balance(path: st
     assert config.losses.balance_recipe == "none"
 
 
+@pytest.mark.parametrize(
+    ("base_path", "hpo_path", "case_prefix"),
+    [
+        (
+            "configs/finetune_dense_copy_baseline.yaml",
+            "configs/finetune_dense_copy_baseline_hpo.yaml",
+            "dense_copy",
+        ),
+        (
+            "configs/finetune_low_rank_baseline.yaml",
+            "configs/finetune_low_rank_baseline_hpo.yaml",
+            "low_rank",
+        ),
+        (
+            "configs/finetune_smaller_dense_baseline.yaml",
+            "configs/finetune_smaller_dense_baseline_hpo.yaml",
+            "smaller_dense",
+        ),
+    ],
+)
+def test_baseline_hpo_configs_plan_three_validation_seeds(
+    tmp_path: Path,
+    base_path: str,
+    hpo_path: str,
+    case_prefix: str,
+) -> None:
+    summary = write_finetune_hpo_trial_plan(
+        base_config=yaml.safe_load(Path(base_path).read_text(encoding="utf-8")),
+        hpo_config=yaml.safe_load(Path(hpo_path).read_text(encoding="utf-8")),
+        output_dir=tmp_path / case_prefix,
+        max_trials=3,
+    )
+
+    assert summary["test_accessed"] is False
+    assert summary["accepted_trials"] == 3
+    assert [trial["case"] for trial in summary["trials"]] == [
+        f"{case_prefix}_seed21001",
+        f"{case_prefix}_seed21002",
+        f"{case_prefix}_seed21003",
+    ]
+    for seed, trial in zip([21001, 21002, 21003], summary["trials"], strict=True):
+        trial_config = yaml.safe_load(Path(str(trial["config_path"])).read_text(encoding="utf-8"))
+        assert trial_config["seed"] == seed
+        assert trial_config["dataset"].get("use_test") is None
+        assert trial_config["losses"]["lambda_balance"] == 0.0
+        assert trial_config["losses"]["balance_recipe"] == "none"
+
+
 def test_dense_copy_build_path_copies_teacher_without_replacements() -> None:
     config = load_finetune_run_config("configs/finetune_dense_copy_baseline.yaml", quick_smoke=True)
     teacher = TinyConfigModel({"width": 64})
