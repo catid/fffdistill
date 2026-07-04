@@ -5,13 +5,18 @@ max_trials: 300
 search_space:
   shared_unrouted_frac: [0.0, 0.05, 0.10, 0.20]
   route_rows: [1, 2]
-  route_result_rows: [0, 1, 2]
   leaf_rows: [1, 2, 4]
   depth: [2, 3, 4, 5, 6, 7, 8]
-  route_rows_contribute: [false, true]
   route_row_role: [routing_only, shared_routing_and_output, split_routing_output]
-  route_rows_output_count: [0, 1, all]
-  route_rows_output_fraction: [0.0, 0.5, 1.0]
+  route_output_controls:
+    routing_only: {}
+    shared_routing_and_output:
+      route_rows_output_count: [1, all]
+      route_rows_output_fraction: [null, 0.5, 1.0]
+    split_routing_output:
+      route_result_rows: [1, 2]
+      route_rows_output_count: [1, all]
+      route_rows_output_fraction: [null, 0.5, 1.0]
   activation: [silu, gelu]
   region_leak: [0.0, 0.01, 0.05]
   master_leaf: [false, true]
