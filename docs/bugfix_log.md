@@ -234,3 +234,19 @@ T18 adversarial-review findings and closure evidence are recorded at the end of 
 - This addresses the `fff-0om` corrected layerwise-evidence gap. It does not establish
   full Stage H FFF-student final CIFAR-10 accuracy; Stage H must still assemble from the
   corrected artifacts, select by validation metrics, and only then access CIFAR-10 test.
+
+## LocoProp-S Interval Semantics
+
+- Fixed `fff-72`: `locoprop.interval_steps` now controls periodic layerwise LocoProp-S
+  refits during `distill_linears.py` training. Enabled refits run after optimizer steps
+  divisible by `interval_steps`, and a final catch-up refit runs at the last step when the
+  final step was not already an interval step.
+- `layer_metrics.jsonl` `locoprop_refit` records now include `step`, `trigger`,
+  `interval_steps`, and `refit_index`, so future `every_100`/`every_250`/`every_500`
+  configs are distinguishable from a single post-loop refit.
+- Existing historical Stage F/T20/L7K summaries remain historical evidence from their
+  recorded commits. Where they already state "one post-loop refit", that wording remains
+  accurate for those artifacts; future reruns after this fix should use the new telemetry.
+- Focused verification: `PYTHONPATH=src .venv/bin/python -m pytest -q
+  tests/test_distill_linears_core.py tests/test_locoprop_refit_decreases_mse.py` passed
+  47 tests, scoped `ruff` passed, and `git diff --check` passed.

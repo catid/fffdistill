@@ -804,6 +804,64 @@ def test_distill_linear_locoprop_refit_logs_and_reduces_mse(tmp_path) -> None:
     assert result.final_normalized_mse <= result.initial_normalized_mse
 
 
+def test_distill_linear_locoprop_interval_runs_periodic_and_final_refits(tmp_path) -> None:
+    torch.manual_seed(23)
+    linear = nn.Linear(6, 4)
+    x = torch.randn(96, 6)
+    y = linear(x).detach()
+
+    distill_linear_from_tensors(
+        "layer",
+        linear,
+        x,
+        y,
+        fff_config={
+            "shared_rows": 4,
+            "depth": 1,
+            "route_rows": 1,
+            "leaf_rows": 2,
+            "activation": "silu",
+            "hard_routing": True,
+            "route_row_role": "routing_only",
+            "route_rows_output_count": 0,
+        },
+        distill_config=LinearDistillConfig.from_mapping(
+            {
+                "steps": 3,
+                "lr": 0.001,
+                "batch_size": 16,
+                "max_capture_bytes_per_layer": None,
+            }
+        ),
+        router_config=RouterDistillConfig(recipe="vanilla_ste", loss_coeff=0.0),
+        balance_config=BalanceDistillConfig(recipe="none", coeff=0.0),
+        locoprop_config=LocoPropDistillConfig(
+            enabled=True,
+            interval_steps=2,
+            ridge_lambda=1.0e-4,
+            blend_alpha=1.0,
+        ),
+        output_dir=tmp_path,
+    )
+
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "layer_metrics.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    refits = [record for record in records if record["phase"] == "locoprop_refit"]
+
+    assert [(record["step"], record["trigger"]) for record in refits] == [
+        (2, "interval"),
+        (3, "final"),
+    ]
+    assert [record["locoprop"]["refit_index"] for record in refits] == [1, 2]
+    assert all(record["locoprop"]["interval_steps"] == 2 for record in refits)
+    assert all(record["locoprop"]["status"] == "succeeded" for record in refits)
+    assert records[-1]["locoprop"]["step"] == 3
+    assert records[-1]["locoprop"]["trigger"] == "final"
+    assert records[-1]["locoprop"]["refit_index"] == 2
+
+
 def test_hard_routing_without_route_output_or_router_loss_is_rejected(tmp_path) -> None:
     linear = nn.Linear(6, 4)
     x = torch.randn(32, 6)

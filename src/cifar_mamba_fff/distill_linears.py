@@ -1495,27 +1495,17 @@ def distill_linear_from_tensors(
     )
 
     train_tokens = distill_config.steps * min(distill_config.batch_size, x_train.shape[0])
-    _synchronize_if_cuda(device)
-    train_start = time.perf_counter()
-    for step in range(distill_config.steps):
-        indices = _batch_indices(x_train.shape[0], distill_config.batch_size, device=device)
-        batch_x = x_train[indices]
-        batch_y = y_train[indices]
-        optimizer.zero_grad(set_to_none=True)
-        loss = compute_loss(batch_x, batch_y)
-        if not bool(torch.isfinite(loss.detach()).all().item()):
-            raise FloatingPointError(f"non-finite distillation loss for {name} at step {step}")
-        loss.backward()
-        optimizer.step()
-    _synchronize_if_cuda(device)
-    train_seconds = max(time.perf_counter() - train_start, sys.float_info.epsilon)
-    tokens_per_second = float(train_tokens) / train_seconds
-
     locoprop_record: dict[str, object] = {
         "enabled": locoprop_config.enabled,
         "status": "skipped",
     }
-    if locoprop_config.enabled:
+    locoprop_refit_count = 0
+    last_locoprop_refit_step = 0
+
+    def run_locoprop_refit(*, step_number: int, trigger: str) -> None:
+        nonlocal locoprop_record, locoprop_refit_count, last_locoprop_refit_step
+        if not locoprop_config.enabled:
+            return
         try:
             locoprop_record = _apply_locoprop_refit(
                 replacement,
@@ -1530,11 +1520,22 @@ def distill_linear_from_tensors(
                 "status": "failed",
                 "reason": f"{type(exc).__name__}: {exc}",
             }
+        locoprop_refit_count += 1
+        last_locoprop_refit_step = int(step_number)
+        locoprop_record = {
+            **locoprop_record,
+            "step": int(step_number),
+            "trigger": trigger,
+            "interval_steps": int(locoprop_config.interval_steps),
+            "refit_index": int(locoprop_refit_count),
+        }
         append_jsonl(
             metrics_path,
             {
                 "layer": name,
                 "phase": "locoprop_refit",
+                "step": int(step_number),
+                "trigger": trigger,
                 "tokens": int(x_train.shape[0]),
                 "fit_tokens": int(x_train.shape[0]),
                 "metric_tokens": int(x_metric.shape[0]),
@@ -1542,6 +1543,28 @@ def distill_linear_from_tensors(
                 "locoprop": locoprop_record,
             },
         )
+
+    _synchronize_if_cuda(device)
+    train_start = time.perf_counter()
+    for step in range(distill_config.steps):
+        indices = _batch_indices(x_train.shape[0], distill_config.batch_size, device=device)
+        batch_x = x_train[indices]
+        batch_y = y_train[indices]
+        optimizer.zero_grad(set_to_none=True)
+        loss = compute_loss(batch_x, batch_y)
+        if not bool(torch.isfinite(loss.detach()).all().item()):
+            raise FloatingPointError(f"non-finite distillation loss for {name} at step {step}")
+        loss.backward()
+        optimizer.step()
+        step_number = step + 1
+        if locoprop_config.enabled and step_number % locoprop_config.interval_steps == 0:
+            run_locoprop_refit(step_number=step_number, trigger="interval")
+    _synchronize_if_cuda(device)
+    train_seconds = max(time.perf_counter() - train_start, sys.float_info.epsilon)
+    tokens_per_second = float(train_tokens) / train_seconds
+
+    if locoprop_config.enabled and last_locoprop_refit_step != distill_config.steps:
+        run_locoprop_refit(step_number=distill_config.steps, trigger="final")
 
     final_report = _evaluate_replacement_report(
         replacement,
