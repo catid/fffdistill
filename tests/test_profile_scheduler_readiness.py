@@ -15,6 +15,7 @@ from cifar_mamba_fff.cluster import MachineSpec
 from cifar_mamba_fff.gpu_scheduler import (
     GpuJob,
     JobStatus,
+    build_distill_hpo_command,
     build_dry_run_jobs,
     build_teacher_hpo_command,
     build_train_teacher_command,
@@ -188,6 +189,64 @@ def test_scheduler_hpo_jobs_bind_gpu_seed_and_unique_output_dir() -> None:
     assert len({job.seed for job in jobs}) == len(jobs)
 
 
+def test_scheduler_distill_hpo_jobs_bind_gpu_seed_checkpoint_config_and_samples() -> None:
+    machines = [
+        MachineSpec(
+            name="work",
+            host="localhost",
+            gpus=2,
+            role="local",
+            workdir="/tmp/repo",
+        )
+    ]
+
+    jobs = build_dry_run_jobs(
+        machines,
+        quick_smoke=True,
+        dry_run=True,
+        job_kind="distill_hpo",
+        run_id="distill-smoke-001",
+        hpo_trials_per_job=2,
+        hpo_max_attempts_per_job=8,
+        distill_teacher_checkpoint="checkpoints/teacher best.pt",
+        distill_base_config="configs/distill base.yaml",
+        distill_hpo_config="configs/distill hpo.yaml",
+        distill_sample_split="val",
+        distill_max_sample_batches=3,
+        seed_base=7000,
+    )
+
+    assert len(jobs) == 2
+    for gpu_id, job in enumerate(jobs):
+        expected_output_dir = Path("outputs/scheduler_distill_hpo/distill-smoke-001/work") / str(
+            gpu_id
+        )
+        assert job.output_dir == expected_output_dir
+        assert job.command.startswith("PYTHONPATH=src CUDA_DEVICE_ORDER=PCI_BUS_ID ")
+        assert f"CUDA_VISIBLE_DEVICES={gpu_id}" in job.command
+        assert ".venv/bin/python -m cifar_mamba_fff.hpo.distill_hpo" in job.command
+        assert "--execute-trials true" in job.command
+        assert "--max-trials 2" in job.command
+        assert "--max-attempts 8" in job.command
+        assert "--teacher-checkpoint 'checkpoints/teacher best.pt'" in job.command
+        assert "--base-config 'configs/distill base.yaml'" in job.command
+        assert "--hpo-config 'configs/distill hpo.yaml'" in job.command
+        assert "--sample-split val" in job.command
+        assert "--max-sample-batches 3" in job.command
+        assert f"--seed {7000 + gpu_id}" in job.command
+        assert f"--output-dir {expected_output_dir}" in job.command
+        assert job.seed == 7000 + gpu_id
+        assert job.metadata["job_kind"] == "distill_hpo"
+        assert job.metadata["seed_base"] == 7000
+        assert job.metadata["distill_teacher_checkpoint"] == "checkpoints/teacher best.pt"
+        assert job.metadata["distill_base_config"] == "configs/distill base.yaml"
+        assert job.metadata["distill_hpo_config"] == "configs/distill hpo.yaml"
+        assert job.metadata["distill_sample_split"] == "val"
+        assert job.metadata["distill_max_sample_batches"] == 3
+    assert len({job.output_dir for job in jobs}) == len(jobs)
+    assert len({job.seed for job in jobs}) == len(jobs)
+
+
 def test_scheduler_custom_seed_base_changes_hpo_job_seeds() -> None:
     machines = [
         MachineSpec(
@@ -266,6 +325,37 @@ def test_scheduler_hpo_command_quotes_and_uses_cuda_visible_device() -> None:
     assert "--max-train-steps 1" in command
     assert "--max-val-steps 1" in command
     assert "--prune-min-value 0.2" in command
+
+
+def test_scheduler_distill_hpo_command_quotes_and_uses_cuda_visible_device() -> None:
+    command = build_distill_hpo_command(
+        gpu_id=2,
+        output_dir=Path("outputs/scheduler distill hpo/work gpu2"),
+        python_bin=".venv with spaces/bin/python",
+        seed=2026,
+        quick_smoke=False,
+        teacher_checkpoint="checkpoints/teacher best.pt",
+        base_config="configs/distill base.yaml",
+        hpo_config="configs/distill hpo.yaml",
+        sample_split="val",
+        max_sample_batches=3,
+        max_trials=4,
+        max_attempts=9,
+    )
+
+    assert command.startswith("PYTHONPATH=src CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=2 ")
+    assert "'.venv with spaces/bin/python'" in command
+    assert "-m cifar_mamba_fff.hpo.distill_hpo" in command
+    assert "--output-dir 'outputs/scheduler distill hpo/work gpu2'" in command
+    assert "--teacher-checkpoint 'checkpoints/teacher best.pt'" in command
+    assert "--base-config 'configs/distill base.yaml'" in command
+    assert "--hpo-config 'configs/distill hpo.yaml'" in command
+    assert "--quick-smoke false" in command
+    assert "--sample-split val" in command
+    assert "--max-sample-batches 3" in command
+    assert "--max-trials 4" in command
+    assert "--max-attempts 9" in command
+    assert "--seed 2026" in command
 
 
 def test_scheduler_main_threads_hpo_args_and_requires_cifar_preflight(
@@ -350,6 +440,150 @@ def test_scheduler_main_threads_hpo_args_and_requires_cifar_preflight(
     assert "--max-train-steps 1" in queue_records[0]["command"]
     assert "--max-val-steps 1" in queue_records[0]["command"]
     assert "recorded 1 GPU slots" in capsys.readouterr().out
+
+
+def test_scheduler_main_threads_distill_hpo_args_and_requires_cifar_preflight(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    machines_path = tmp_path / "machines.yaml"
+    machines_path.write_text(
+        "\n".join(
+            [
+                "machines:",
+                "  work:",
+                "    host: localhost",
+                "    gpus: 1",
+                "    role: local",
+                f"    workdir: {tmp_path}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    preflight_requirements: list[bool] = []
+
+    def fake_preflight_machine(*args, **kwargs):
+        preflight_requirements.append(bool(kwargs["require_cifar10_train"]))
+        return gpu_scheduler.PreflightResult(
+            machine="work",
+            ok=False,
+            returncode=1,
+            commit="commit",
+            stdout="",
+            stderr="synthetic distill preflight stop",
+        )
+
+    def fake_launch_detached_jobs(*args, **kwargs):
+        assert args[1] == []
+        return []
+
+    monkeypatch.setattr(gpu_scheduler, "preflight_machine", fake_preflight_machine)
+    monkeypatch.setattr(gpu_scheduler, "launch_detached_jobs", fake_launch_detached_jobs)
+    monkeypatch.setattr(gpu_scheduler, "git_commit", lambda: "commit")
+
+    rc = gpu_scheduler.main(
+        [
+            "--machines",
+            str(machines_path),
+            "--queue-out",
+            str(tmp_path / "queue.jsonl"),
+            "--launch-results-out",
+            str(tmp_path / "launch.jsonl"),
+            "--dry-run",
+            "false",
+            "--quick-smoke",
+            "true",
+            "--smoke-mode",
+            "metadata",
+            "--job-kind",
+            "distill_hpo",
+            "--run-id",
+            "distill-smoke",
+            "--distill-teacher-checkpoint",
+            "checkpoints/teacher best.pt",
+            "--distill-base-config",
+            "configs/distill base.yaml",
+            "--distill-hpo-config",
+            "configs/distill hpo.yaml",
+            "--distill-sample-split",
+            "val",
+            "--distill-max-sample-batches",
+            "4",
+            "--hpo-trials-per-job",
+            "2",
+            "--hpo-max-attempts-per-job",
+            "7",
+            "--seed-base",
+            "8123",
+            "--wait",
+            "false",
+        ]
+    )
+
+    assert rc == 0
+    assert preflight_requirements == [True]
+    queue_records = [
+        json.loads(line)
+        for line in (tmp_path / "queue.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert queue_records[0]["output_dir"] == "outputs/scheduler_distill_hpo/distill-smoke/work/0"
+    assert "--seed 8123" in queue_records[0]["command"]
+    assert queue_records[0]["seed"] == 8123
+    assert queue_records[0]["metadata"]["job_kind"] == "distill_hpo"
+    assert queue_records[0]["metadata"]["seed_base"] == 8123
+    assert queue_records[0]["metadata"]["distill_teacher_checkpoint"] == "checkpoints/teacher best.pt"
+    assert queue_records[0]["metadata"]["distill_base_config"] == "configs/distill base.yaml"
+    assert queue_records[0]["metadata"]["distill_hpo_config"] == "configs/distill hpo.yaml"
+    assert queue_records[0]["metadata"]["distill_sample_split"] == "val"
+    assert queue_records[0]["metadata"]["distill_max_sample_batches"] == 4
+    assert "--teacher-checkpoint 'checkpoints/teacher best.pt'" in queue_records[0]["command"]
+    assert "--base-config 'configs/distill base.yaml'" in queue_records[0]["command"]
+    assert "--hpo-config 'configs/distill hpo.yaml'" in queue_records[0]["command"]
+    assert "--sample-split val" in queue_records[0]["command"]
+    assert "--max-sample-batches 4" in queue_records[0]["command"]
+    assert "--max-trials 2" in queue_records[0]["command"]
+    assert "--max-attempts 7" in queue_records[0]["command"]
+    assert "recorded 1 GPU slots" in capsys.readouterr().out
+
+
+def test_scheduler_main_rejects_non_smoke_distill_hpo_without_checkpoint(tmp_path) -> None:
+    with pytest.raises(
+        RuntimeError,
+        match="--distill-teacher-checkpoint is required for non-smoke distill_hpo",
+    ):
+        gpu_scheduler.main(
+            [
+                "--machines",
+                str(tmp_path / "missing-machines.yaml"),
+                "--queue-out",
+                str(tmp_path / "queue.jsonl"),
+                "--dry-run",
+                "true",
+                "--quick-smoke",
+                "false",
+                "--job-kind",
+                "distill_hpo",
+            ]
+        )
+
+
+def test_scheduler_main_rejects_zero_distill_max_sample_batches(tmp_path) -> None:
+    with pytest.raises(ValueError, match="--distill-max-sample-batches must be positive"):
+        gpu_scheduler.main(
+            [
+                "--machines",
+                str(tmp_path / "missing-machines.yaml"),
+                "--queue-out",
+                str(tmp_path / "queue.jsonl"),
+                "--dry-run",
+                "true",
+                "--job-kind",
+                "distill_hpo",
+                "--distill-max-sample-batches",
+                "0",
+            ]
+        )
 
 
 def test_scheduler_default_collect_root_is_run_scoped() -> None:

@@ -32,6 +32,12 @@ COLLECTED_ARTIFACT_NAMES = (
     "trials/trial_000000/run_context.json",
     "trials/trial_000000/metrics_summary.json",
     "trials/trial_000000/metrics.jsonl",
+    "distill_hpo_summary.json",
+    "trials/trial_000000/distill_config.yaml",
+    "trials/trial_000000/trial_result.json",
+    "trials/trial_000000/distill_summary.json",
+    "trials/trial_000000/layer_summary.json",
+    "trials/trial_000000/layer_metrics.jsonl",
 )
 
 
@@ -216,6 +222,44 @@ def build_teacher_hpo_command(
     return command
 
 
+def build_distill_hpo_command(
+    *,
+    gpu_id: int,
+    output_dir: Path,
+    seed: int,
+    python_bin: str = DEFAULT_PYTHON_BIN,
+    quick_smoke: bool = True,
+    teacher_checkpoint: str | None = None,
+    base_config: str = "configs/fff_distill_default.yaml",
+    hpo_config: str = "configs/fff_distill_hpo.yaml",
+    sample_split: str = "train",
+    max_sample_batches: int = 1,
+    max_trials: int = 1,
+    max_attempts: int = 32,
+) -> str:
+    if sample_split not in {"train", "val"}:
+        raise ValueError("sample_split must be train or val")
+    if max_sample_batches <= 0:
+        raise ValueError("max_sample_batches must be positive")
+    command = (
+        f"PYTHONPATH=src CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES={gpu_id} "
+        f"{quote(python_bin)} -m cifar_mamba_fff.hpo.distill_hpo "
+        f"--base-config {quote(base_config)} "
+        f"--hpo-config {quote(hpo_config)} "
+        f"--output-dir {quote(str(output_dir))} "
+        f"--quick-smoke {str(quick_smoke).lower()} "
+        "--execute-trials true "
+        f"--sample-split {quote(sample_split)} "
+        f"--max-sample-batches {int(max_sample_batches)} "
+        f"--max-trials {int(max_trials)} "
+        f"--max-attempts {int(max_attempts)} "
+        f"--seed {int(seed)}"
+    )
+    if teacher_checkpoint is not None:
+        command += f" --teacher-checkpoint {quote(teacher_checkpoint)}"
+    return command
+
+
 def build_dry_run_jobs(
     machines: list[MachineSpec],
     *,
@@ -226,6 +270,11 @@ def build_dry_run_jobs(
     job_kind: str = DEFAULT_JOB_KIND,
     teacher_base_config: str = "configs/teacher_default.yaml",
     teacher_hpo_config: str = "configs/teacher_hpo.yaml",
+    distill_base_config: str = "configs/fff_distill_default.yaml",
+    distill_hpo_config: str = "configs/fff_distill_hpo.yaml",
+    distill_teacher_checkpoint: str | None = None,
+    distill_sample_split: str = "train",
+    distill_max_sample_batches: int = 1,
     hpo_trials_per_job: int = 1,
     hpo_max_attempts_per_job: int = 32,
     max_train_steps: int | None = None,
@@ -237,10 +286,12 @@ def build_dry_run_jobs(
     max_jobs: int | None = None,
     seed_base: int = 1337,
 ) -> list[GpuJob]:
-    if job_kind not in {"teacher_train", "teacher_hpo"}:
-        raise ValueError("job_kind must be teacher_train or teacher_hpo")
+    if job_kind not in {"teacher_train", "teacher_hpo", "distill_hpo"}:
+        raise ValueError("job_kind must be teacher_train, teacher_hpo, or distill_hpo")
     if seed_base < 0:
         raise ValueError("seed_base must be non-negative")
+    if distill_max_sample_batches <= 0:
+        raise ValueError("distill_max_sample_batches must be positive")
     unavailable_slots = unavailable_slots or set()
     jobs: list[GpuJob] = []
     for idx, (machine, gpu_id) in enumerate(enumerate_slots(machines)):
@@ -249,7 +300,13 @@ def build_dry_run_jobs(
         if max_jobs is not None and len(jobs) >= max_jobs:
             break
         seed = seed_base + idx
-        default_root = Path("outputs/scheduler_hpo" if job_kind == "teacher_hpo" else "outputs/scheduler_smoke")
+        default_root = Path(
+            "outputs/scheduler_hpo"
+            if job_kind == "teacher_hpo"
+            else "outputs/scheduler_distill_hpo"
+            if job_kind == "distill_hpo"
+            else "outputs/scheduler_smoke"
+        )
         resolved_output_root = output_root or default_root
         if run_id is not None:
             resolved_output_root = resolved_output_root / run_id
@@ -268,6 +325,21 @@ def build_dry_run_jobs(
                 max_train_steps=max_train_steps,
                 max_val_steps=max_val_steps,
                 prune_min_value=prune_min_value,
+            )
+        elif job_kind == "distill_hpo":
+            command = build_distill_hpo_command(
+                gpu_id=gpu_id,
+                output_dir=output_dir,
+                seed=seed,
+                python_bin=python_bin,
+                quick_smoke=quick_smoke,
+                teacher_checkpoint=distill_teacher_checkpoint,
+                base_config=distill_base_config,
+                hpo_config=distill_hpo_config,
+                sample_split=distill_sample_split,
+                max_sample_batches=distill_max_sample_batches,
+                max_trials=hpo_trials_per_job,
+                max_attempts=hpo_max_attempts_per_job,
             )
         else:
             command = build_train_teacher_command(
@@ -295,6 +367,21 @@ def build_dry_run_jobs(
                     "python_bin": python_bin,
                     "output_dir": str(output_dir),
                     "seed_base": seed_base,
+                    "distill_base_config": distill_base_config
+                    if job_kind == "distill_hpo"
+                    else None,
+                    "distill_hpo_config": distill_hpo_config
+                    if job_kind == "distill_hpo"
+                    else None,
+                    "distill_teacher_checkpoint": distill_teacher_checkpoint
+                    if job_kind == "distill_hpo"
+                    else None,
+                    "distill_sample_split": distill_sample_split
+                    if job_kind == "distill_hpo"
+                    else None,
+                    "distill_max_sample_batches": distill_max_sample_batches
+                    if job_kind == "distill_hpo"
+                    else None,
                 },
             )
         )
@@ -724,12 +811,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--python-bin", default=DEFAULT_PYTHON_BIN)
     parser.add_argument(
         "--job-kind",
-        choices=("teacher_train", "teacher_hpo"),
+        choices=("teacher_train", "teacher_hpo", "distill_hpo"),
         default=DEFAULT_JOB_KIND,
-        help="Launch teacher train/smoke commands or one-GPU teacher HPO jobs.",
+        help="Launch teacher train/smoke, one-GPU teacher HPO, or one-GPU distill HPO jobs.",
     )
     parser.add_argument("--teacher-base-config", default="configs/teacher_default.yaml")
     parser.add_argument("--teacher-hpo-config", default="configs/teacher_hpo.yaml")
+    parser.add_argument("--distill-teacher-checkpoint", default=None)
+    parser.add_argument("--distill-base-config", default="configs/fff_distill_default.yaml")
+    parser.add_argument("--distill-hpo-config", default="configs/fff_distill_hpo.yaml")
+    parser.add_argument(
+        "--distill-sample-split",
+        choices=("train", "val"),
+        default="train",
+        help="CIFAR split used to sample teacher Linear activations for distillation HPO.",
+    )
+    parser.add_argument("--distill-max-sample-batches", type=int, default=1)
     parser.add_argument("--hpo-trials-per-job", type=int, default=1)
     parser.add_argument("--hpo-max-attempts-per-job", type=int, default=32)
     parser.add_argument(
@@ -801,6 +898,10 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("--hpo-trials-per-job must be positive")
     if args.hpo_max_attempts_per_job < args.hpo_trials_per_job:
         raise ValueError("--hpo-max-attempts-per-job must be >= --hpo-trials-per-job")
+    if args.distill_max_sample_batches <= 0:
+        raise ValueError("--distill-max-sample-batches must be positive")
+    if args.job_kind == "distill_hpo" and not args.quick_smoke and args.distill_teacher_checkpoint is None:
+        raise RuntimeError("--distill-teacher-checkpoint is required for non-smoke distill_hpo")
     if not args.dry_run and not args.quick_smoke and not args.allow_long_jobs:
         raise RuntimeError("refusing non-smoke scheduler launch without --allow-long-jobs true")
     collect_root = resolve_collect_root(args.collect_root, run_id=args.run_id)
@@ -816,6 +917,11 @@ def main(argv: list[str] | None = None) -> int:
         job_kind=args.job_kind,
         teacher_base_config=args.teacher_base_config,
         teacher_hpo_config=args.teacher_hpo_config,
+        distill_base_config=args.distill_base_config,
+        distill_hpo_config=args.distill_hpo_config,
+        distill_teacher_checkpoint=args.distill_teacher_checkpoint,
+        distill_sample_split=args.distill_sample_split,
+        distill_max_sample_batches=args.distill_max_sample_batches,
         hpo_trials_per_job=args.hpo_trials_per_job,
         hpo_max_attempts_per_job=args.hpo_max_attempts_per_job,
         max_train_steps=args.max_train_steps,
@@ -843,7 +949,7 @@ def main(argv: list[str] | None = None) -> int:
                     if args.expected_commit == "any"
                     else str(args.expected_commit),
                     require_cifar10_train=args.smoke_mode == "train"
-                    or args.job_kind == "teacher_hpo",
+                    or args.job_kind in {"teacher_hpo", "distill_hpo"},
                     timeout_s=args.launch_timeout_s,
                 )
                 for machine_name in machines_with_jobs

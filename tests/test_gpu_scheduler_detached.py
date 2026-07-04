@@ -71,6 +71,15 @@ def test_collected_artifact_names_include_hpo_trial_config() -> None:
     assert "trials/trial_000000/trial_summary.json" in gpu_scheduler.COLLECTED_ARTIFACT_NAMES
 
 
+def test_collected_artifact_names_include_distill_hpo_summaries() -> None:
+    assert "distill_hpo_summary.json" in gpu_scheduler.COLLECTED_ARTIFACT_NAMES
+    assert "trials/trial_000000/distill_config.yaml" in gpu_scheduler.COLLECTED_ARTIFACT_NAMES
+    assert "trials/trial_000000/trial_result.json" in gpu_scheduler.COLLECTED_ARTIFACT_NAMES
+    assert "trials/trial_000000/distill_summary.json" in gpu_scheduler.COLLECTED_ARTIFACT_NAMES
+    assert "trials/trial_000000/layer_summary.json" in gpu_scheduler.COLLECTED_ARTIFACT_NAMES
+    assert "trials/trial_000000/layer_metrics.jsonl" in gpu_scheduler.COLLECTED_ARTIFACT_NAMES
+
+
 @pytest.mark.parametrize(
     ("payload_status", "returncode"),
     [(JobStatus.SUCCEEDED, 0), (JobStatus.FAILED_LOGIC, 2)],
