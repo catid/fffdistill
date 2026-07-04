@@ -1,0 +1,4 @@
+grid_offset,machine,gpu,seed,include_indices,layer,status,trial_status,test_accessed,initial_nmse,final_nmse,nmse_delta,final_cosine_similarity,tokens_per_second,dead_leaves,leaf_tokens_p50,leaf_tokens_p90,active_rows_per_token,stored_rows
+0,work,0,1337,[0],blocks.0.forward_block.mixer.mixer.in_proj,completed,succeeded,False,1.0251344442367554,0.004614205099642277,1.020520239137113,0.9978811740875244,35418.449816639964,17,0.0,29.799991607666016,345.0,433
+1,work,1,1338,[32],blocks.8.forward_block.mixer.mixer.in_proj,completed,succeeded,False,1.016241192817688,0.07206565886735916,0.9441755339503288,0.9645171761512756,38259.15283140556,10,1.5,8.899999618530273,345.0,433
+2,ripper,0,1339,[60],blocks.15.forward_block.mixer.mixer.in_proj,completed,succeeded,False,1.0107719898223877,0.04125906899571419,0.9695129208266735,0.9776440858840942,43985.87952648879,21,0.0,1.8999992609024048,345.0,433
