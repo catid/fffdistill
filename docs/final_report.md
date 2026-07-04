@@ -167,6 +167,26 @@ Stage F distilled all 64 eligible Linear layers once each across 10 one-GPU jobs
 Detailed layer table: `docs/t13_stage_f_layerwise_summary.md` and
 `docs/t13_stage_f_layerwise_summary.csv`.
 
+Corrected hard-layer train-eval follow-up:
+
+- Run `hard_outproj_router_balance_train_eval_20260704_819c2c6` covered the six hardest
+  middle/late `out_proj` indices `[35, 39, 41, 43, 45, 47]` across all 12 GPUs at commit
+  `819c2c6f05c199821aedf8003617eb55ef4935db`.
+- Data split: `train_eval` activation capture with held-out token metrics; CIFAR-10 test
+  access remained false for all 72 layer records.
+- All 12 router/balance/depth cases succeeded after the `hpo_overrides` strict-config
+  provenance fix.
+- Best mean NMSE in the short hard-layer sweep: `vanilla_depth_6`, `0.681258`.
+- Lowest mean dead leaves: `st_gumbel_split_minleaf`, `0.333333`, with mean NMSE
+  `0.697482`.
+- Fastest case: `baseline_vanilla_none`, `44,108.7` tokens/s, with mean NMSE `0.688740`.
+
+This sweep mitigates the hard-layer recipe-selection gap and documents the quality,
+dead-leaf, and throughput tradeoff. It is not a corrected full 64-layer Stage F rerun and
+not a final student accuracy claim. Detailed artifacts:
+`docs/hard_outproj_router_balance_train_eval_summary.md` and
+`docs/hard_outproj_router_balance_train_eval_results.csv`.
+
 ## End-To-End KD
 
 T14 implemented the assembled FFF student fine-tuning path:

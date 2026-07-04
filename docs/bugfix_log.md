@@ -184,3 +184,22 @@ T18 adversarial-review findings and closure evidence are recorded at the end of 
   scheduler/cluster focused tests passed with 41 tests; optimizer/fairness focused tests
   passed with 9 tests; FFF grouped/routes/shapes focused tests passed with 87 tests;
   changed-file ruff and compileall passed.
+
+## Hard Out-Projection Sweep Relaunch
+
+- The first all-GPU hard `out_proj` router/balance train-eval sweep failed before training
+  because HPO-generated distill configs preserve sampled knobs in top-level
+  `hpo_overrides`, while `distill_linears.reject_unknown_distill_config_keys()` rejected
+  that provenance key as unknown. This was a strict-config integration bug, not an
+  infrastructure failure.
+- `hpo_overrides` is now an allowed runtime-ignored metadata key. Regression tests prove
+  HPO-generated configs pass the strict validator while real stale top-level keys still
+  fail.
+- Verification before relaunch: focused pytest passed; `bash scripts/run_tests.sh` passed
+  environment verification, ruff, and 378 pytest tests.
+- Relaunch `hard_outproj_router_balance_train_eval_20260704_819c2c6` used all 12 GPUs
+  across `work`, `ripper`, `foureyes`, and `ai` at commit
+  `819c2c6f05c199821aedf8003617eb55ef4935db`. All 12 one-GPU jobs succeeded with
+  `sample_split=train_eval` and `test_accessed=false`; 72 layer records were summarized in
+  `docs/hard_outproj_router_balance_train_eval_summary.md` and
+  `docs/hard_outproj_router_balance_train_eval_results.csv`.

@@ -251,6 +251,19 @@ Stage F: full layerwise distillation HPO.
   eval/no-augmentation transforms, and `LinearDistillConfig` records deterministic held-out
   token metrics. Rerun Stage F with train-eval capture before Stage H full-student FFF
   quality claims.
+- Hard `out_proj` train-eval recipe sweep
+  `hard_outproj_router_balance_train_eval_20260704_819c2c6` ran 12 one-GPU cases across
+  all 12 GPUs at commit `819c2c6f05c199821aedf8003617eb55ef4935db`, with
+  `sample_split=train_eval`, held-out token metrics, and `test_accessed=false` throughout.
+  The run covered eligible indices `[35, 39, 41, 43, 45, 47]` for vanilla, clipped,
+  sigmoid, ST-Gumbel, utility, hard-EM, expert-choice, balance, route-row, and depth
+  variants. All 12 jobs succeeded after the `hpo_overrides` strict-config provenance
+  bugfix. Best mean NMSE was `vanilla_depth_6` at `0.681258`; lowest mean dead leaves was
+  `st_gumbel_split_minleaf` at `0.333333`; the fastest case was the unbalanced vanilla
+  baseline at `44108.7` tokens/s. This is hard-layer recipe-selection evidence, not a
+  corrected full Stage F pass or final student result. See
+  `docs/hard_outproj_router_balance_train_eval_summary.md` and
+  `docs/hard_outproj_router_balance_train_eval_results.csv`.
 - Fairness limitation to handle in T15/T18: Stage F trial configs retain the base
   distillation seed even though scheduler status metadata records per-slot launch seeds.
   Future multi-seed comparisons must explicitly vary and report training seeds.
