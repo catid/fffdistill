@@ -107,6 +107,22 @@ def test_final_eval_checkpoint_config_enables_test_only_for_selected_eval() -> N
     assert run_config.train.adamw_betas == (0.9, 0.95)
 
 
+def test_checkpoint_config_can_stay_train_val_only_for_distillation() -> None:
+    run_config = run_config_from_checkpoint(
+        _checkpoint_config(),
+        quick_smoke=False,
+        batch_size=64,
+        num_workers=0,
+        use_test=False,
+    )
+
+    assert run_config.data.use_test is False
+    assert run_config.data.quick_smoke is False
+    assert run_config.data.batch_size == 64
+    assert run_config.data.num_workers == 0
+    run_config.validate()
+
+
 def test_final_eval_checkpoint_config_rejects_unknown_keys() -> None:
     checkpoint = _checkpoint_config()
     data = dict(checkpoint["config"]["data"])  # type: ignore[index]

@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 import torch
 from torch import nn
 
+import cifar_mamba_fff.distill_linears as distill_linears
 from cifar_mamba_fff.distill_linears import (
     LinearDistillConfig,
     RouterDistillConfig,
     _router_auxiliary_loss,
     distill_linear_from_tensors,
+    load_teacher_for_distillation,
     run_layerwise_distillation,
 )
 from cifar_mamba_fff.models.fff_linear import FFFLinear
@@ -45,12 +48,236 @@ def _small_distill_config() -> dict[str, object]:
     }
 
 
+class _TinyTeacher(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.linear = nn.Linear(6, 4)
+        self.loaded_state: dict[str, object] | None = None
+
+    def forward(self, image: torch.Tensor) -> torch.Tensor:
+        return self.linear(image.reshape(image.shape[0], -1))
+
+    def load_state_dict(self, state_dict, strict: bool = True, assign: bool = False):  # type: ignore[override]
+        self.loaded_state = dict(state_dict)
+        return None
+
+
+def _teacher_checkpoint_payload(parameter_count: int = 1234) -> dict[str, object]:
+    return {
+        "config": {
+            "seed": 2037,
+            "dataset_name": "cifar10",
+            "data": {
+                "data_dir": "data/cifar10",
+                "batch_size": 8,
+                "num_workers": 0,
+                "seed": 2037,
+                "split_seed": 1337,
+                "train_size": 45000,
+                "val_size": 5000,
+                "download": False,
+                "quick_smoke": False,
+                "smoke_train_size": 1024,
+                "smoke_val_size": 256,
+                "smoke_test_size": 256,
+                "randaugment": False,
+                "label_smoothing": 0.0,
+                "mixup": 0.0,
+                "cutmix": 0.0,
+                "use_test": False,
+            },
+            "model": {
+                "d_model": 256,
+                "depth": 20,
+                "patch_size": 4,
+                "d_state": 64,
+                "expand": 2,
+                "headdim": 64,
+                "is_mimo": True,
+                "mimo_rank": 2,
+                "chunk_size": 16,
+                "bidirectional": False,
+                "drop_path": 0.1,
+                "norm_epsilon": 1e-5,
+                "residual_in_fp32": True,
+                "num_classes": 10,
+                "target_min_params": 9_000_000,
+                "target_max_params": 11_000_000,
+            },
+            "train": {
+                "epochs": 200,
+                "batch_size_per_gpu": 8,
+                "num_workers": 0,
+                "precision": "bf16",
+                "optimizer": "muon_adamw",
+                "schedule": "cosine",
+                "warmup_epochs": 10,
+                "lr_muon": 0.01,
+                "lr_adamw": 0.001,
+                "weight_decay_muon": 0.03,
+                "weight_decay_adamw": 0.03,
+                "label_smoothing": 0.0,
+                "mixup": 0.0,
+                "cutmix": 0.0,
+                "adamw_betas": [0.9, 0.95],
+                "adamw_eps": 1e-10,
+                "muon_momentum": 0.95,
+                "wsd_stable_fraction": 0.8,
+                "grad_clip_norm": None,
+            },
+        },
+        "metrics": {"val_accuracy": 0.9234, "epoch": 118},
+        "parameter_count": parameter_count,
+        "model": {"fake": torch.ones(1)},
+    }
+
+
+def _write_teacher_checkpoint(path: Path, *, parameter_count: int = 1234) -> None:
+    torch.save(_teacher_checkpoint_payload(parameter_count), path)
+
+
 def test_linear_distill_config_defaults_do_not_require_all_keys() -> None:
     config = LinearDistillConfig.from_mapping({"steps": 3, "max_capture_bytes_per_layer": None})
 
     assert config.steps == 3
     assert config.max_capture_tokens_per_layer is not None
     assert config.max_capture_bytes_per_layer is None
+
+
+def test_load_teacher_for_distillation_keeps_checkpoint_train_val_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    checkpoint_path = tmp_path / "teacher_best.pt"
+    _write_teacher_checkpoint(checkpoint_path, parameter_count=1234)
+
+    def fake_build_teacher_model(_model_config, *, device):
+        return _TinyTeacher().to(device), 1234
+
+    monkeypatch.setattr(distill_linears, "build_teacher_model", fake_build_teacher_model)
+
+    loaded = load_teacher_for_distillation(
+        checkpoint_path=checkpoint_path,
+        quick_smoke=True,
+        device=torch.device("cpu"),
+        batch_size=4,
+        num_workers=0,
+    )
+
+    assert loaded.selected_val_accuracy == pytest.approx(0.9234)
+    assert loaded.parameter_count == 1234
+    assert loaded.run_config.data.use_test is False
+    assert loaded.run_config.data.quick_smoke is True
+    assert loaded.run_config.data.batch_size == 4
+    assert isinstance(loaded.model, _TinyTeacher)
+    assert loaded.model.loaded_state is not None
+    assert torch.equal(loaded.model.loaded_state["fake"], torch.ones(1))
+
+
+def test_load_teacher_for_distillation_rejects_parameter_mismatch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    checkpoint_path = tmp_path / "teacher_best.pt"
+    _write_teacher_checkpoint(checkpoint_path, parameter_count=1234)
+
+    def fake_build_teacher_model(_model_config, *, device):
+        return _TinyTeacher().to(device), 999
+
+    monkeypatch.setattr(distill_linears, "build_teacher_model", fake_build_teacher_model)
+
+    with pytest.raises(ValueError, match="parameter_count"):
+        load_teacher_for_distillation(
+            checkpoint_path=checkpoint_path,
+            quick_smoke=False,
+            device=torch.device("cpu"),
+        )
+
+
+def test_distill_cli_loads_checkpoint_and_uses_train_val_batches_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    checkpoint_path = tmp_path / "teacher_best.pt"
+    config_path = tmp_path / "distill.yaml"
+    output_dir = tmp_path / "out"
+    _write_teacher_checkpoint(checkpoint_path, parameter_count=4321)
+    config_path.write_text(
+        "\n".join(
+            [
+                f"teacher_checkpoint: {checkpoint_path}",
+                "seed: 2037",
+                "eligible_linear:",
+                "  min_in_features: 6",
+                "  min_out_features: 4",
+                "distill:",
+                "  steps: 2",
+                "  lr: 0.01",
+                "  batch_size: 4",
+                "  max_layers: 1",
+                "  max_capture_tokens_per_layer: 8",
+                "  max_capture_bytes_per_layer: null",
+                "  device: cpu",
+                "fff:",
+                "  shared_rows: 4",
+                "  depth: 1",
+                "  route_rows: 1",
+                "  leaf_rows: 1",
+                "  hard_routing: true",
+                "  route_row_role: routing_only",
+                "  route_rows_output_count: 0",
+                "router:",
+                "  recipe: vanilla_ste",
+                "  loss_coeff: 0.0001",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    seen_data_configs: list[object] = []
+
+    def fake_build_teacher_model(_model_config, *, device):
+        return _TinyTeacher().to(device), 4321
+
+    def fake_build_cifar10_loaders(data_config):
+        seen_data_configs.append(data_config)
+        images = torch.randn(10, 1, 2, 3)
+        labels = torch.zeros(10, dtype=torch.long)
+        return [(images, labels)], [(images + 1.0, labels)]
+
+    monkeypatch.setattr(distill_linears, "build_teacher_model", fake_build_teacher_model)
+    monkeypatch.setattr(distill_linears, "build_cifar10_loaders", fake_build_cifar10_loaders)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "distill_linears",
+            "--config",
+            str(config_path),
+            "--output-dir",
+            str(output_dir),
+            "--sample-split",
+            "val",
+            "--max-sample-batches",
+            "1",
+            "--progressive-step",
+            "1",
+            "--progressive-step-size",
+            "1",
+        ],
+    )
+
+    assert distill_linears.main() == 0
+
+    assert seen_data_configs
+    assert all(not data_config.use_test for data_config in seen_data_configs)
+    summary = json.loads((output_dir / "distill_summary.json").read_text(encoding="utf-8"))
+    assert summary["teacher_checkpoint"] == str(checkpoint_path)
+    assert summary["selected_val_accuracy"] == pytest.approx(0.9234)
+    assert summary["test_accessed"] is False
+    assert summary["sample_split"] == "val"
+    assert summary["sample_batches"] == 1
+    assert summary["layers"][0]["name"] == "linear"
+    run_context = json.loads((output_dir / "run_context.json").read_text(encoding="utf-8"))
+    assert run_context["progressive_step"] == 1
+    assert run_context["progressive_step_size"] == 1
 
 
 def test_layerwise_distillation_decreases_mse_and_writes_artifacts(tmp_path) -> None:

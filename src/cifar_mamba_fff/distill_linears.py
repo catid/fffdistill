@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import math
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -10,6 +11,8 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
+from .data import build_cifar10_loaders
+from .evaluate_teacher import run_config_from_checkpoint, selected_val_accuracy
 from .losses.balance import split_balance_loss
 from .losses.distill import distillation_loss
 from .losses.router_ste import (
@@ -36,6 +39,7 @@ from .models.replacement import (
     make_fff_replacement,
     select_progressive_reports,
 )
+from .train_teacher import TeacherRunConfig, build_teacher_model
 from .utils import RunContext, append_jsonl, bool_arg, load_yaml, write_json
 
 RouterRecipe = Literal[
@@ -206,6 +210,89 @@ class LayerDistillResult:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class LoadedTeacher:
+    model: nn.Module
+    run_config: TeacherRunConfig
+    checkpoint_path: Path
+    selected_val_accuracy: float
+    parameter_count: int
+
+
+def _load_checkpoint_mapping(checkpoint_path: Path) -> dict[str, object]:
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"teacher checkpoint not found: {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    if not isinstance(checkpoint, dict):
+        raise ValueError("teacher checkpoint must be a mapping")
+    return checkpoint
+
+
+def load_teacher_for_distillation(
+    *,
+    checkpoint_path: Path,
+    quick_smoke: bool,
+    device: torch.device,
+    batch_size: int | None = None,
+    num_workers: int | None = None,
+) -> LoadedTeacher:
+    checkpoint = _load_checkpoint_mapping(checkpoint_path)
+    selected_val = selected_val_accuracy(checkpoint)
+    run_config = run_config_from_checkpoint(
+        checkpoint,
+        quick_smoke=quick_smoke,
+        batch_size=batch_size,
+        num_workers=num_workers,
+        use_test=False,
+    )
+    if run_config.data.use_test:
+        raise RuntimeError("distillation must not access CIFAR-10 test data")
+    model, parameter_count = build_teacher_model(run_config.model, device=device)
+    expected_count = int(checkpoint.get("parameter_count", parameter_count))
+    if parameter_count != expected_count:
+        raise ValueError(
+            f"checkpoint parameter_count={expected_count} does not match rebuilt model "
+            f"parameter_count={parameter_count}"
+        )
+    state_dict = checkpoint.get("model")
+    if not isinstance(state_dict, dict):
+        raise ValueError("teacher checkpoint is missing model state_dict")
+    model.load_state_dict(state_dict)
+    return LoadedTeacher(
+        model=model,
+        run_config=run_config,
+        checkpoint_path=checkpoint_path,
+        selected_val_accuracy=selected_val,
+        parameter_count=parameter_count,
+    )
+
+
+def _sample_batches_from_run_config(
+    run_config: TeacherRunConfig,
+    *,
+    split: Literal["train", "val"],
+    max_batches: int,
+    device: torch.device,
+) -> list[torch.Tensor]:
+    if max_batches <= 0:
+        raise ValueError("max_sample_batches must be positive")
+    if run_config.data.use_test:
+        raise RuntimeError("distillation sample batches must not use CIFAR-10 test data")
+    train_loader, val_loader = build_cifar10_loaders(run_config.data)
+    loader = train_loader if split == "train" else val_loader
+    batches: list[torch.Tensor] = []
+    for batch_idx, batch in enumerate(loader):
+        if batch_idx >= max_batches:
+            break
+        images = batch[0] if isinstance(batch, list | tuple) else batch
+        if not isinstance(images, torch.Tensor):
+            raise TypeError("CIFAR loader must return image tensors")
+        batches.append(images.to(device=device, non_blocking=device.type == "cuda"))
+    if not batches:
+        raise RuntimeError(f"{split} loader produced no sample batches")
+    return batches
+
+
 def linear_replacement_plan(
     model: nn.Module,
     config: dict[str, Any],
@@ -239,7 +326,13 @@ def linear_replacement_plan(
     }
 
 
-def _selected_reports(model: nn.Module, config: dict[str, Any]) -> list[LinearReport]:
+def _selected_reports(
+    model: nn.Module,
+    config: dict[str, Any],
+    *,
+    progressive_step: int | None = None,
+    progressive_step_size: int = 1,
+) -> list[LinearReport]:
     eligible_config = config.get("eligible_linear", {})
     if not isinstance(eligible_config, dict):
         raise ValueError("eligible_linear config must be a mapping")
@@ -250,7 +343,8 @@ def _selected_reports(model: nn.Module, config: dict[str, Any]) -> list[LinearRe
     )
     return select_progressive_reports(
         reports,
-        step=None,
+        step=progressive_step,
+        step_size=progressive_step_size,
         max_replacements=LinearDistillConfig.from_mapping(config.get("distill")).max_layers,
     )
 
@@ -593,6 +687,8 @@ def run_layerwise_distillation(
     config: dict[str, Any],
     *,
     output_dir: Path,
+    progressive_step: int | None = None,
+    progressive_step_size: int = 1,
 ) -> list[LayerDistillResult]:
     distill_config = LinearDistillConfig.from_mapping(config.get("distill"))
     router_config = RouterDistillConfig.from_mapping(config.get("router"))
@@ -602,7 +698,12 @@ def run_layerwise_distillation(
     fff_config = dict(raw_fff_config)
     if not sample_batches:
         raise ValueError("sample_batches must not be empty")
-    selected = _selected_reports(model, config)
+    selected = _selected_reports(
+        model,
+        config,
+        progressive_step=progressive_step,
+        progressive_step_size=progressive_step_size,
+    )
     if not selected:
         raise ValueError("no eligible Linear layers selected for distillation")
 
@@ -653,10 +754,19 @@ def run_layerwise_distillation(
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/fff_distill_default.yaml")
+    parser.add_argument(
+        "--checkpoint",
+        default=None,
+        help="Override config.teacher_checkpoint for validation-selected teacher distillation.",
+    )
     parser.add_argument("--output-dir", default="outputs/distill")
     parser.add_argument("--quick-smoke", type=bool_arg, default=False)
     parser.add_argument("--progressive-step", type=int, default=None)
     parser.add_argument("--progressive-step-size", type=int, default=1)
+    parser.add_argument("--sample-split", choices=("train", "val"), default="train")
+    parser.add_argument("--max-sample-batches", type=int, default=1)
+    parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument("--num-workers", type=int, default=None)
     args = parser.parse_args()
     select_progressive_reports(
         [],
@@ -675,17 +785,60 @@ def main() -> int:
         context.metadata()
         | {
             "config": config,
+            "argv": sys.argv,
             "progressive_step": args.progressive_step,
             "progressive_step_size": args.progressive_step_size,
             "progressive_args_validated": True,
+            "sample_split": args.sample_split,
+            "max_sample_batches": args.max_sample_batches,
         },
     )
     if args.quick_smoke:
         print("distillation quick smoke metadata written")
         return 0
-    if config.get("teacher_checkpoint") is None:
+
+    raw_checkpoint = args.checkpoint or config.get("teacher_checkpoint")
+    if raw_checkpoint is None:
         raise RuntimeError("teacher_checkpoint is required for non-smoke layerwise distillation")
-    raise RuntimeError("checkpoint loading for layerwise distillation is not wired yet")
+    distill_config = LinearDistillConfig.from_mapping(config.get("distill"))
+    device = torch.device(distill_config.device)
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA device requested for layerwise distillation, but CUDA is unavailable")
+    loaded = load_teacher_for_distillation(
+        checkpoint_path=Path(str(raw_checkpoint)),
+        quick_smoke=args.quick_smoke,
+        device=device,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+    )
+    sample_batches = _sample_batches_from_run_config(
+        loaded.run_config,
+        split=args.sample_split,
+        max_batches=args.max_sample_batches,
+        device=device,
+    )
+    results = run_layerwise_distillation(
+        loaded.model,
+        sample_batches,
+        config,
+        output_dir=context.output_dir,
+        progressive_step=args.progressive_step,
+        progressive_step_size=args.progressive_step_size,
+    )
+    write_json(
+        context.output_dir / "distill_summary.json",
+        {
+            "teacher_checkpoint": str(loaded.checkpoint_path),
+            "selected_val_accuracy": loaded.selected_val_accuracy,
+            "parameter_count": loaded.parameter_count,
+            "sample_split": args.sample_split,
+            "sample_batches": len(sample_batches),
+            "test_accessed": False,
+            "layers": [result.log_record() for result in results],
+        },
+    )
+    print(f"layerwise distillation complete: {len(results)} layers")
+    return 0
 
 
 if __name__ == "__main__":

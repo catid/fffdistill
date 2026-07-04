@@ -55,6 +55,7 @@ def run_config_from_checkpoint(
     quick_smoke: bool,
     batch_size: int | None = None,
     num_workers: int | None = None,
+    use_test: bool = True,
 ) -> TeacherRunConfig:
     raw_config = checkpoint.get("config")
     if not isinstance(raw_config, Mapping):
@@ -84,8 +85,8 @@ def run_config_from_checkpoint(
         data_config = replace(data_config, batch_size=batch_size)
     if num_workers is not None:
         data_config = replace(data_config, num_workers=num_workers)
-    data_config = replace(data_config, use_test=True, quick_smoke=quick_smoke)
-    data_config.validate(allow_test=True)
+    data_config = replace(data_config, use_test=use_test, quick_smoke=quick_smoke)
+    data_config.validate(allow_test=use_test)
 
     model_config = Mamba3CifarConfig(
         **_dataclass_kwargs(Mamba3CifarConfig, model_raw, section="config.model")

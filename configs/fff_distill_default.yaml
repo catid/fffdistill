@@ -4,6 +4,17 @@ mode: isolated_teacher_forced
 eligible_linear:
   min_in_features: 64
   min_out_features: 64
+distill:
+  steps: 100
+  lr: 0.001
+  batch_size: 256
+  normalized_mse_weight: 1.0
+  cosine_weight: 0.0
+  variance_weight: 0.0
+  max_layers: null
+  max_capture_tokens_per_layer: 262144
+  max_capture_bytes_per_layer: 268435456
+  device: cuda
 fff:
   shared_unrouted_frac: 0.10
   route_rows: 1
