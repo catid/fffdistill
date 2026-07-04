@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 import torch
+import yaml
 from torch import nn
 
 from cifar_mamba_fff.finetune_student import (
@@ -230,6 +231,35 @@ def test_finetune_hpo_plan_and_execute_with_fake_runner(tmp_path: Path) -> None:
     )
     assert summary["succeeded"] == 1
     assert summary["test_accessed"] is False
+
+
+def test_finetune_hpo_seed_override_is_written_to_trial_config(tmp_path: Path) -> None:
+    base = _minimal_config(tmp_path)
+    hpo = {"cases": [{"name": "seeded", "fine_tune_epochs": 1}]}
+
+    seen_config_paths: list[Path] = []
+
+    def fake_runner(**kwargs: object) -> dict[str, object]:
+        seen_config_paths.append(Path(str(kwargs["config_path"])))
+        return {
+            "status": "succeeded",
+            "summary": {"best_val_accuracy": 0.25, "train_steps_total": 1},
+            "test_accessed": False,
+        }
+
+    summary = run_finetune_hpo_trials(
+        base_config=base,
+        hpo_config=hpo,
+        output_dir=tmp_path / "execute",
+        max_trials=1,
+        seed=9001,
+        trial_runner=fake_runner,
+    )
+
+    assert summary["seed"] == 9001
+    assert seen_config_paths
+    trial_config = yaml.safe_load(seen_config_paths[0].read_text(encoding="utf-8"))
+    assert trial_config["seed"] == 9001
 
 
 def test_finetune_hpo_rejects_test_accessed_trial(tmp_path: Path) -> None:

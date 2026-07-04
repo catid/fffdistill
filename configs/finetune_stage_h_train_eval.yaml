@@ -1,0 +1,37 @@
+seed: 1337
+teacher_checkpoint: checkpoints/teacher/ripper0_val9418_test9399_teacher_best.pt
+student:
+  source: distill_artifacts
+  distill_artifact_root: outputs/scheduler_distill_hpo/distill_stage_f_train_eval_shards_20260704_abd09d5
+  distill_config: configs/fff_distill_stage_f.yaml
+  min_in_features: 64
+  min_out_features: 64
+  require_full_replacement: true
+  allow_dense_copy: false
+dataset:
+  name: cifar10
+  data_dir: data/cifar10
+  train_size: 45000
+  val_size: 5000
+train:
+  epochs: 50
+  batch_size_per_gpu: 32
+  num_workers: 8
+  precision: bf16
+  optimizer: muon_adamw
+  schedule: cosine
+  warmup_epochs: 2
+  lr_muon: 0.001
+  lr_adamw: 0.0001
+  weight_decay_muon: 0.03
+  weight_decay_adamw: 0.03
+  label_smoothing: 0.0
+  wsd_stable_fraction: 0.8
+losses:
+  kd_temperature: 4
+  lambda_kd: 0.7
+  lambda_ce: 0.3
+  lambda_hidden: 0.05
+  lambda_balance: 0.001
+  balance_recipe: split_minleaf
+  min_leaf_tokens: 64

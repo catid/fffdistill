@@ -18,6 +18,7 @@ from cifar_mamba_fff.gpu_scheduler import (
     JobStatus,
     build_distill_hpo_command,
     build_dry_run_jobs,
+    build_finetune_hpo_command,
     build_teacher_hpo_command,
     build_train_teacher_command,
     launch_detached_job,
@@ -373,6 +374,59 @@ def test_scheduler_distill_hpo_jobs_bind_gpu_seed_checkpoint_config_and_samples(
     assert len({job.seed for job in jobs}) == len(jobs)
 
 
+def test_scheduler_finetune_hpo_jobs_bind_gpu_seed_config_and_offsets() -> None:
+    machines = [
+        MachineSpec(
+            name="work",
+            host="localhost",
+            gpus=2,
+            role="local",
+            workdir="/tmp/repo",
+        )
+    ]
+
+    jobs = build_dry_run_jobs(
+        machines,
+        quick_smoke=True,
+        dry_run=True,
+        job_kind="finetune_hpo",
+        run_id="finetune-smoke-001",
+        hpo_trials_per_job=2,
+        finetune_base_config="configs/finetune base.yaml",
+        finetune_hpo_config="configs/finetune hpo.yaml",
+        finetune_grid_offset_base=5,
+        max_train_steps=3,
+        max_val_steps=1,
+        seed_base=8000,
+    )
+
+    assert len(jobs) == 2
+    for gpu_id, job in enumerate(jobs):
+        expected_output_dir = Path("outputs/scheduler_finetune_hpo/finetune-smoke-001/work") / str(
+            gpu_id
+        )
+        assert job.output_dir == expected_output_dir
+        assert job.command.startswith("PYTHONPATH=src CUDA_DEVICE_ORDER=PCI_BUS_ID ")
+        assert f"CUDA_VISIBLE_DEVICES={gpu_id}" in job.command
+        assert ".venv/bin/python -m cifar_mamba_fff.hpo.finetune_hpo" in job.command
+        assert "--max-trials 2" in job.command
+        assert "--base-config 'configs/finetune base.yaml'" in job.command
+        assert "--hpo-config 'configs/finetune hpo.yaml'" in job.command
+        assert f"--seed {8000 + gpu_id}" in job.command
+        assert f"--grid-offset {5 + gpu_id}" in job.command
+        assert "--max-train-steps 3" in job.command
+        assert "--max-val-steps 1" in job.command
+        assert f"--output-dir {expected_output_dir}" in job.command
+        assert job.seed == 8000 + gpu_id
+        assert job.metadata["job_kind"] == "finetune_hpo"
+        assert job.metadata["seed_base"] == 8000
+        assert job.metadata["finetune_base_config"] == "configs/finetune base.yaml"
+        assert job.metadata["finetune_hpo_config"] == "configs/finetune hpo.yaml"
+        assert job.metadata["finetune_grid_offset"] == 5 + gpu_id
+    assert len({job.output_dir for job in jobs}) == len(jobs)
+    assert len({job.seed for job in jobs}) == len(jobs)
+
+
 def test_scheduler_custom_seed_base_changes_hpo_job_seeds() -> None:
     machines = [
         MachineSpec(
@@ -482,6 +536,35 @@ def test_scheduler_distill_hpo_command_quotes_and_uses_cuda_visible_device() -> 
     assert "--max-trials 4" in command
     assert "--max-attempts 9" in command
     assert "--grid-offset 0" in command
+    assert "--seed 2026" in command
+
+
+def test_scheduler_finetune_hpo_command_quotes_and_uses_cuda_visible_device() -> None:
+    command = build_finetune_hpo_command(
+        gpu_id=2,
+        output_dir=Path("outputs/scheduler finetune hpo/work gpu2"),
+        python_bin=".venv with spaces/bin/python",
+        seed=2026,
+        quick_smoke=False,
+        base_config="configs/finetune base.yaml",
+        hpo_config="configs/finetune hpo.yaml",
+        max_trials=4,
+        grid_offset=9,
+        max_train_steps=5,
+        max_val_steps=2,
+    )
+
+    assert command.startswith("PYTHONPATH=src CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=2 ")
+    assert "'.venv with spaces/bin/python'" in command
+    assert "-m cifar_mamba_fff.hpo.finetune_hpo" in command
+    assert "--output-dir 'outputs/scheduler finetune hpo/work gpu2'" in command
+    assert "--base-config 'configs/finetune base.yaml'" in command
+    assert "--hpo-config 'configs/finetune hpo.yaml'" in command
+    assert "--quick-smoke false" in command
+    assert "--max-trials 4" in command
+    assert "--grid-offset 9" in command
+    assert "--max-train-steps 5" in command
+    assert "--max-val-steps 2" in command
     assert "--seed 2026" in command
 
 
@@ -675,6 +758,107 @@ def test_scheduler_main_threads_distill_hpo_args_and_requires_cifar_preflight(
     assert "--max-attempts 7" in queue_records[0]["command"]
     assert "--grid-offset 0" in queue_records[0]["command"]
     assert queue_records[0]["metadata"]["distill_grid_offset"] == 0
+    assert "recorded 1 GPU slots" in capsys.readouterr().out
+
+
+def test_scheduler_main_threads_finetune_hpo_args_and_requires_cifar_preflight(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    machines_path = tmp_path / "machines.yaml"
+    machines_path.write_text(
+        "\n".join(
+            [
+                "machines:",
+                "  work:",
+                "    host: localhost",
+                "    gpus: 1",
+                "    role: local",
+                f"    workdir: {tmp_path}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    preflight_requirements: list[bool] = []
+
+    def fake_preflight_machine(*args, **kwargs):
+        preflight_requirements.append(bool(kwargs["require_cifar10_train"]))
+        return gpu_scheduler.PreflightResult(
+            machine="work",
+            ok=False,
+            returncode=1,
+            commit="commit",
+            stdout="",
+            stderr="synthetic finetune preflight stop",
+        )
+
+    def fake_launch_detached_jobs(*args, **kwargs):
+        assert args[1] == []
+        return []
+
+    monkeypatch.setattr(gpu_scheduler, "preflight_machine", fake_preflight_machine)
+    monkeypatch.setattr(gpu_scheduler, "launch_detached_jobs", fake_launch_detached_jobs)
+    monkeypatch.setattr(gpu_scheduler, "git_commit", lambda: "commit")
+    monkeypatch.setattr(gpu_scheduler, "_git_worktree_clean", lambda: True)
+
+    rc = gpu_scheduler.main(
+        [
+            "--machines",
+            str(machines_path),
+            "--queue-out",
+            str(tmp_path / "queue.jsonl"),
+            "--launch-results-out",
+            str(tmp_path / "launch.jsonl"),
+            "--dry-run",
+            "false",
+            "--quick-smoke",
+            "true",
+            "--smoke-mode",
+            "metadata",
+            "--job-kind",
+            "finetune_hpo",
+            "--run-id",
+            "finetune-smoke",
+            "--finetune-base-config",
+            "configs/finetune base.yaml",
+            "--finetune-hpo-config",
+            "configs/finetune hpo.yaml",
+            "--finetune-grid-offset-base",
+            "4",
+            "--hpo-trials-per-job",
+            "2",
+            "--seed-base",
+            "8123",
+            "--max-train-steps",
+            "3",
+            "--max-val-steps",
+            "1",
+            "--wait",
+            "false",
+        ]
+    )
+
+    assert rc == 0
+    assert preflight_requirements == [True]
+    queue_records = [
+        json.loads(line)
+        for line in (tmp_path / "queue.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert queue_records[0]["output_dir"] == "outputs/scheduler_finetune_hpo/finetune-smoke/work/0"
+    assert "--seed 8123" in queue_records[0]["command"]
+    assert queue_records[0]["seed"] == 8123
+    assert queue_records[0]["metadata"]["job_kind"] == "finetune_hpo"
+    assert queue_records[0]["metadata"]["seed_base"] == 8123
+    assert queue_records[0]["metadata"]["finetune_base_config"] == "configs/finetune base.yaml"
+    assert queue_records[0]["metadata"]["finetune_hpo_config"] == "configs/finetune hpo.yaml"
+    assert queue_records[0]["metadata"]["finetune_grid_offset"] == 4
+    assert "--base-config 'configs/finetune base.yaml'" in queue_records[0]["command"]
+    assert "--hpo-config 'configs/finetune hpo.yaml'" in queue_records[0]["command"]
+    assert "--max-trials 2" in queue_records[0]["command"]
+    assert "--grid-offset 4" in queue_records[0]["command"]
+    assert "--max-train-steps 3" in queue_records[0]["command"]
+    assert "--max-val-steps 1" in queue_records[0]["command"]
     assert "recorded 1 GPU slots" in capsys.readouterr().out
 
 

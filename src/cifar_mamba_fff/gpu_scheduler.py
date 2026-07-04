@@ -29,10 +29,13 @@ ROOT_COLLECTED_ARTIFACT_NAMES = (
     "teacher_hpo_summary.json",
     "teacher_hpo_events.jsonl",
     "distill_hpo_summary.json",
+    "finetune_hpo_summary.json",
+    "finetune_hpo_summary.csv",
 )
 TRIAL_COLLECTED_ARTIFACT_NAMES = (
     "trial_config.json",
     "trial_summary.json",
+    "finetune_config.yaml",
     "run_context.json",
     "metrics_summary.json",
     "metrics.jsonl",
@@ -307,6 +310,42 @@ def build_distill_hpo_command(
     return command
 
 
+def build_finetune_hpo_command(
+    *,
+    gpu_id: int,
+    output_dir: Path,
+    seed: int,
+    python_bin: str = DEFAULT_PYTHON_BIN,
+    quick_smoke: bool = True,
+    base_config: str = "configs/finetune_default.yaml",
+    hpo_config: str = "configs/finetune_hpo.yaml",
+    max_trials: int = 1,
+    grid_offset: int = 0,
+    max_train_steps: int | None = None,
+    max_val_steps: int | None = None,
+) -> str:
+    if max_trials <= 0:
+        raise ValueError("max_trials must be positive")
+    if grid_offset < 0:
+        raise ValueError("grid_offset must be non-negative")
+    command = (
+        f"PYTHONPATH=src CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES={gpu_id} "
+        f"{quote(python_bin)} -m cifar_mamba_fff.hpo.finetune_hpo "
+        f"--base-config {quote(base_config)} "
+        f"--hpo-config {quote(hpo_config)} "
+        f"--output-dir {quote(str(output_dir))} "
+        f"--quick-smoke {str(quick_smoke).lower()} "
+        f"--max-trials {int(max_trials)} "
+        f"--grid-offset {int(grid_offset)} "
+        f"--seed {int(seed)}"
+    )
+    if max_train_steps is not None:
+        command += f" --max-train-steps {int(max_train_steps)}"
+    if max_val_steps is not None:
+        command += f" --max-val-steps {int(max_val_steps)}"
+    return command
+
+
 def build_dry_run_jobs(
     machines: list[MachineSpec],
     *,
@@ -319,10 +358,13 @@ def build_dry_run_jobs(
     teacher_hpo_config: str = "configs/teacher_hpo.yaml",
     distill_base_config: str = "configs/fff_distill_default.yaml",
     distill_hpo_config: str = "configs/fff_distill_hpo.yaml",
+    finetune_base_config: str = "configs/finetune_default.yaml",
+    finetune_hpo_config: str = "configs/finetune_hpo.yaml",
     distill_teacher_checkpoint: str | None = None,
     distill_sample_split: str = "train_eval",
     distill_max_sample_batches: int = 1,
     distill_grid_offset_base: int = 0,
+    finetune_grid_offset_base: int = 0,
     hpo_trials_per_job: int = 1,
     hpo_max_attempts_per_job: int = 32,
     max_train_steps: int | None = None,
@@ -334,14 +376,16 @@ def build_dry_run_jobs(
     max_jobs: int | None = None,
     seed_base: int = 1337,
 ) -> list[GpuJob]:
-    if job_kind not in {"teacher_train", "teacher_hpo", "distill_hpo"}:
-        raise ValueError("job_kind must be teacher_train, teacher_hpo, or distill_hpo")
+    if job_kind not in {"teacher_train", "teacher_hpo", "distill_hpo", "finetune_hpo"}:
+        raise ValueError("job_kind must be teacher_train, teacher_hpo, distill_hpo, or finetune_hpo")
     if seed_base < 0:
         raise ValueError("seed_base must be non-negative")
     if distill_max_sample_batches <= 0:
         raise ValueError("distill_max_sample_batches must be positive")
     if distill_grid_offset_base < 0:
         raise ValueError("distill_grid_offset_base must be non-negative")
+    if finetune_grid_offset_base < 0:
+        raise ValueError("finetune_grid_offset_base must be non-negative")
     unavailable_slots = unavailable_slots or set()
     jobs: list[GpuJob] = []
     for idx, (machine, gpu_id) in enumerate(enumerate_slots(machines)):
@@ -356,6 +400,8 @@ def build_dry_run_jobs(
             if job_kind == "teacher_hpo"
             else "outputs/scheduler_distill_hpo"
             if job_kind == "distill_hpo"
+            else "outputs/scheduler_finetune_hpo"
+            if job_kind == "finetune_hpo"
             else "outputs/scheduler_smoke"
         )
         resolved_output_root = output_root or default_root
@@ -392,6 +438,20 @@ def build_dry_run_jobs(
                 max_trials=hpo_trials_per_job,
                 max_attempts=hpo_max_attempts_per_job,
                 grid_offset=distill_grid_offset_base + queued_job_index,
+            )
+        elif job_kind == "finetune_hpo":
+            command = build_finetune_hpo_command(
+                gpu_id=gpu_id,
+                output_dir=output_dir,
+                seed=seed,
+                python_bin=python_bin,
+                quick_smoke=quick_smoke,
+                base_config=finetune_base_config,
+                hpo_config=finetune_hpo_config,
+                max_trials=hpo_trials_per_job,
+                grid_offset=finetune_grid_offset_base + queued_job_index,
+                max_train_steps=max_train_steps,
+                max_val_steps=max_val_steps,
             )
         else:
             command = build_train_teacher_command(
@@ -436,6 +496,15 @@ def build_dry_run_jobs(
                     else None,
                     "distill_grid_offset": distill_grid_offset_base + queued_job_index
                     if job_kind == "distill_hpo"
+                    else None,
+                    "finetune_base_config": finetune_base_config
+                    if job_kind == "finetune_hpo"
+                    else None,
+                    "finetune_hpo_config": finetune_hpo_config
+                    if job_kind == "finetune_hpo"
+                    else None,
+                    "finetune_grid_offset": finetune_grid_offset_base + queued_job_index
+                    if job_kind == "finetune_hpo"
                     else None,
                 },
             )
@@ -944,7 +1013,11 @@ def _expected_trial_dirs_from_summary(payload: dict[str, Any]) -> list[str]:
 
 def _expected_trial_dirs_from_collected_summaries(files: dict[str, Any]) -> list[str]:
     expected: set[str] = set()
-    for artifact_name in ("teacher_hpo_summary.json", "distill_hpo_summary.json"):
+    for artifact_name in (
+        "teacher_hpo_summary.json",
+        "distill_hpo_summary.json",
+        "finetune_hpo_summary.json",
+    ):
         record = files.get(artifact_name)
         if not isinstance(record, dict) or not record.get("ok") or record.get("truncated"):
             continue
@@ -1152,15 +1225,20 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--python-bin", default=DEFAULT_PYTHON_BIN)
     parser.add_argument(
         "--job-kind",
-        choices=("teacher_train", "teacher_hpo", "distill_hpo"),
+        choices=("teacher_train", "teacher_hpo", "distill_hpo", "finetune_hpo"),
         default=DEFAULT_JOB_KIND,
-        help="Launch teacher train/smoke, one-GPU teacher HPO, or one-GPU distill HPO jobs.",
+        help=(
+            "Launch teacher train/smoke, one-GPU teacher HPO, one-GPU distill HPO, "
+            "or one-GPU fine-tune HPO jobs."
+        ),
     )
     parser.add_argument("--teacher-base-config", default="configs/teacher_default.yaml")
     parser.add_argument("--teacher-hpo-config", default="configs/teacher_hpo.yaml")
     parser.add_argument("--distill-teacher-checkpoint", default=None)
     parser.add_argument("--distill-base-config", default="configs/fff_distill_default.yaml")
     parser.add_argument("--distill-hpo-config", default="configs/fff_distill_hpo.yaml")
+    parser.add_argument("--finetune-base-config", default="configs/finetune_default.yaml")
+    parser.add_argument("--finetune-hpo-config", default="configs/finetune_hpo.yaml")
     parser.add_argument(
         "--distill-sample-split",
         choices=("train", "train_eval", "val"),
@@ -1175,6 +1253,15 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "Base grid offset for distill_hpo jobs. Each queued job adds its zero-based "
             "queued-job index so parallel grid sweeps cover distinct candidates."
+        ),
+    )
+    parser.add_argument(
+        "--finetune-grid-offset-base",
+        type=int,
+        default=0,
+        help=(
+            "Base grid offset for finetune_hpo jobs. Each queued job adds its zero-based "
+            "queued-job index so parallel fine-tune grids cover distinct candidates."
         ),
     )
     parser.add_argument("--hpo-trials-per-job", type=int, default=1)
@@ -1273,10 +1360,13 @@ def main(argv: list[str] | None = None) -> int:
         teacher_hpo_config=args.teacher_hpo_config,
         distill_base_config=args.distill_base_config,
         distill_hpo_config=args.distill_hpo_config,
+        finetune_base_config=args.finetune_base_config,
+        finetune_hpo_config=args.finetune_hpo_config,
         distill_teacher_checkpoint=args.distill_teacher_checkpoint,
         distill_sample_split=args.distill_sample_split,
         distill_max_sample_batches=args.distill_max_sample_batches,
         distill_grid_offset_base=args.distill_grid_offset_base,
+        finetune_grid_offset_base=args.finetune_grid_offset_base,
         hpo_trials_per_job=args.hpo_trials_per_job,
         hpo_max_attempts_per_job=args.hpo_max_attempts_per_job,
         max_train_steps=args.max_train_steps,
@@ -1304,7 +1394,7 @@ def main(argv: list[str] | None = None) -> int:
                     python_bin=args.python_bin,
                     expected_commit=expected_launch_commit,
                     require_cifar10_train=args.smoke_mode == "train"
-                    or args.job_kind in {"teacher_hpo", "distill_hpo"},
+                    or args.job_kind in {"teacher_hpo", "distill_hpo", "finetune_hpo"},
                     timeout_s=args.launch_timeout_s,
                 )
                 for machine_name in machines_with_jobs

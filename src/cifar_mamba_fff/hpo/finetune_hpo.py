@@ -39,7 +39,7 @@ LOSS_OVERRIDE_KEYS = {
     "min_leaf_tokens": "min_leaf_tokens",
 }
 IGNORED_RECORDED_KEYS = {"keep_locoprop_refits"}
-KNOWN_OVERRIDE_KEYS = set(TRAIN_OVERRIDE_KEYS) | set(LOSS_OVERRIDE_KEYS) | IGNORED_RECORDED_KEYS | {"case_name"}
+KNOWN_OVERRIDE_KEYS = set(TRAIN_OVERRIDE_KEYS) | set(LOSS_OVERRIDE_KEYS) | IGNORED_RECORDED_KEYS | {"case_name", "seed"}
 
 
 def _write_yaml(path: Path, payload: Mapping[str, object]) -> None:
@@ -63,7 +63,9 @@ def _apply_overrides(base_config: Mapping[str, object], overrides: Mapping[str, 
     losses = dict(_expect_mapping(config.get("losses", {}), "base.losses"))
     recorded: dict[str, object] = {}
     for key, value in overrides.items():
-        if key in TRAIN_OVERRIDE_KEYS:
+        if key == "seed":
+            config["seed"] = int(value)
+        elif key in TRAIN_OVERRIDE_KEYS:
             train[TRAIN_OVERRIDE_KEYS[key]] = value
         elif key in LOSS_OVERRIDE_KEYS:
             losses[LOSS_OVERRIDE_KEYS[key]] = value
@@ -227,8 +229,12 @@ def run_finetune_hpo_trials(
     quick_smoke: bool = False,
     max_train_steps: int | None = None,
     max_val_steps: int | None = None,
+    seed: int | None = None,
     trial_runner: FineTuneTrialRunner = run_finetune_trial_command,
 ) -> dict[str, object]:
+    if seed is not None:
+        base_config = dict(base_config)
+        base_config["seed"] = int(seed)
     plan = write_finetune_hpo_trial_plan(
         base_config=base_config,
         hpo_config=hpo_config,
@@ -284,6 +290,7 @@ def run_finetune_hpo_trials(
         "quick_smoke": quick_smoke,
         "max_train_steps": max_train_steps,
         "max_val_steps": max_val_steps,
+        "seed": seed,
         "test_accessed": any(bool(result["test_accessed"]) for result in trial_results),
         "summary_csv": str(output_dir / "finetune_hpo_summary.csv"),
         "trials": trial_results,
@@ -305,6 +312,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--quick-smoke", type=bool_arg, default=False)
     parser.add_argument("--max-train-steps", type=int, default=None)
     parser.add_argument("--max-val-steps", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--plan-only", type=bool_arg, default=False)
     args = parser.parse_args(argv)
 
@@ -328,6 +336,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             quick_smoke=args.quick_smoke,
             max_train_steps=args.max_train_steps,
             max_val_steps=args.max_val_steps,
+            seed=args.seed,
         )
     print(f"fine-tune HPO complete: {summary}")
     return 0
