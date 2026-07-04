@@ -53,6 +53,13 @@ SUMMARY_COLUMNS = [
     "leaf_tokens_p10",
     "leaf_tokens_p50",
     "leaf_tokens_p90",
+    "route_churn_available",
+    "route_churn_fraction",
+    "route_churn_changed_tokens",
+    "route_churn_tokens",
+    "route_churn_initial_unique_leaves",
+    "route_churn_final_unique_leaves",
+    "route_churn_reason",
     "active_rows_per_token",
     "stored_rows",
     "effective_stored_rows",
@@ -224,6 +231,34 @@ def collect_distill_hpo_rows(collected_root: Path) -> list[dict[str, Any]]:
                     "leaf_tokens_p10": router.get("leaf_tokens_p10"),
                     "leaf_tokens_p50": router.get("leaf_tokens_p50"),
                     "leaf_tokens_p90": router.get("leaf_tokens_p90"),
+                    "route_churn_available": router.get(
+                        "route_churn_available",
+                        layer.get("route_churn_available"),
+                    ),
+                    "route_churn_fraction": router.get(
+                        "route_churn_fraction",
+                        layer.get("route_churn_fraction"),
+                    ),
+                    "route_churn_changed_tokens": router.get(
+                        "route_churn_changed_tokens",
+                        layer.get("route_churn_changed_tokens"),
+                    ),
+                    "route_churn_tokens": router.get(
+                        "route_churn_tokens",
+                        layer.get("route_churn_tokens"),
+                    ),
+                    "route_churn_initial_unique_leaves": router.get(
+                        "route_churn_initial_unique_leaves",
+                        layer.get("route_churn_initial_unique_leaves"),
+                    ),
+                    "route_churn_final_unique_leaves": router.get(
+                        "route_churn_final_unique_leaves",
+                        layer.get("route_churn_final_unique_leaves"),
+                    ),
+                    "route_churn_reason": router.get(
+                        "route_churn_reason",
+                        layer.get("route_churn_reason"),
+                    ),
                     "active_rows_per_token": diagnostics.get("active_rows_per_token_mean"),
                     "stored_rows": diagnostics.get("stored_rows"),
                     "effective_stored_rows": diagnostics.get("effective_stored_rows"),

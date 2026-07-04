@@ -12,6 +12,7 @@ from torch import nn
 from cifar_mamba_fff.finetune_student import (
     _reached_train_step_limit,
     assemble_fff_student_from_artifacts,
+    build_student_model,
     kd_loss,
     load_finetune_run_config,
     parse_finetune_run_config,
@@ -28,6 +29,17 @@ class TinyLinearModel(nn.Module):
     def __init__(self) -> None:
         super().__init__()
         self.proj = nn.Linear(4, 4)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.proj(x)
+
+
+class TinyConfigModel(nn.Module):
+    def __init__(self, config: dict[str, int] | None = None) -> None:
+        super().__init__()
+        self.config = config or {"width": 64}
+        width = int(self.config["width"])
+        self.proj = nn.Linear(width, width)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.proj(x)
@@ -75,6 +87,38 @@ def test_finetune_default_config_parses_train_val_only() -> None:
     assert config.student.source == "distill_artifacts"
     assert config.train.optimizer == "muon_adamw"
     assert config.losses.kd_temperature == pytest.approx(4.0)
+
+
+def test_dense_copy_baseline_config_parses_validation_only_no_balance() -> None:
+    config = load_finetune_run_config("configs/finetune_dense_copy_baseline.yaml", quick_smoke=False)
+
+    assert config.teacher_checkpoint is not None
+    assert config.data.use_test is False
+    assert config.student.source == "dense_copy"
+    assert config.student.allow_dense_copy is True
+    assert config.student.require_full_replacement is False
+    assert config.student.distill_artifact_root is None
+    assert config.losses.lambda_balance == pytest.approx(0.0)
+    assert config.losses.balance_recipe == "none"
+
+
+def test_dense_copy_build_path_copies_teacher_without_replacements() -> None:
+    config = load_finetune_run_config("configs/finetune_dense_copy_baseline.yaml", quick_smoke=True)
+    teacher = TinyConfigModel({"width": 64})
+
+    result = build_student_model(
+        loaded_teacher_model=teacher,
+        config=config,
+        device=torch.device("cpu"),
+    )
+
+    assert result.source == "dense_copy"
+    assert result.replacement_count == 0
+    assert result.eligible_count == 1
+    assert result.manifest == []
+    assert result.model is not teacher
+    for name, value in teacher.state_dict().items():
+        assert torch.equal(result.model.state_dict()[name], value)
 
 
 def test_finetune_config_rejects_unknown_keys_and_test_access(tmp_path: Path) -> None:
@@ -260,6 +304,49 @@ def test_finetune_hpo_seed_override_is_written_to_trial_config(tmp_path: Path) -
     assert seen_config_paths
     trial_config = yaml.safe_load(seen_config_paths[0].read_text(encoding="utf-8"))
     assert trial_config["seed"] == 9001
+
+
+def test_gc5_optimizer_hpo_config_plans_matched_lr_budget(tmp_path: Path) -> None:
+    base = yaml.safe_load(Path("configs/finetune_stage_h_train_eval.yaml").read_text())
+    hpo = yaml.safe_load(Path("configs/finetune_optimizer_hpo_gc5.yaml").read_text())
+
+    plan = write_finetune_hpo_trial_plan(
+        base_config=base,
+        hpo_config=hpo,
+        output_dir=tmp_path / "gc5_plan",
+        max_trials=15,
+    )
+
+    assert plan["test_accessed"] is False
+    assert len(plan["trials"]) == 15
+    configs = [
+        yaml.safe_load(Path(str(trial["config_path"])).read_text(encoding="utf-8"))
+        for trial in plan["trials"]
+    ]
+    names = {str(trial["case"]) for trial in plan["trials"]}
+    assert names == {
+        f"{family}_lr_{tier}"
+        for family in {
+            "official_muon_cosine",
+            "official_muon_wsd",
+            "pace_muon_cosine",
+            "normuon_cosine",
+            "pace_normuon_cosine",
+        }
+        for tier in {"low", "base", "high"}
+    }
+    assert {config["dataset"].get("use_test", False) for config in configs} == {False}
+    assert {config["train"]["epochs"] for config in configs} == {3}
+    assert {config["train"]["batch_size_per_gpu"] for config in configs} == {32}
+    assert {config["train"]["num_workers"] for config in configs} == {4}
+    assert {config["losses"]["lambda_balance"] for config in configs} == {0.001}
+    assert {config["losses"]["balance_recipe"] for config in configs} == {"split_minleaf"}
+    assert {config["train"]["optimizer"] for config in configs} == {
+        "muon_adamw",
+        "pace_muon",
+        "normuon_adamw",
+        "pace_normuon",
+    }
 
 
 def test_finetune_hpo_rejects_test_accessed_trial(tmp_path: Path) -> None:

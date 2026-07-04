@@ -377,6 +377,13 @@ class LayerDistillResult:
     metric_tokens: int = 0
     metric_split: str = "train"
     metric_holdout_fraction: float = 0.0
+    route_churn_available: bool = False
+    route_churn_fraction: float | None = None
+    route_churn_changed_tokens: int | None = None
+    route_churn_tokens: int | None = None
+    route_churn_initial_unique_leaves: int | None = None
+    route_churn_final_unique_leaves: int | None = None
+    route_churn_reason: str | None = None
 
     def log_record(self) -> dict[str, object]:
         return asdict(self)
@@ -1300,6 +1307,97 @@ def _evaluate_replacement_report(
     }
 
 
+def _hard_route_leaf_ids(layer: Any, x: torch.Tensor) -> tuple[torch.Tensor | None, str | None]:
+    route = getattr(layer, "route", None)
+    if not callable(route):
+        return None, "route_method_unavailable"
+
+    previous_training = layer.training if isinstance(layer, nn.Module) else None
+    if isinstance(layer, nn.Module):
+        layer.eval()
+    try:
+        with torch.no_grad():
+            route_info = route(x, hard=True)
+        leaf_ids = getattr(route_info, "leaf_ids", None)
+        if not isinstance(leaf_ids, torch.Tensor):
+            return None, "leaf_ids_unavailable"
+        flat = leaf_ids.detach().reshape(-1).to(device="cpu", dtype=torch.long).clone()
+        if flat.numel() == 0:
+            return None, "empty_leaf_ids"
+        return flat, None
+    except Exception as exc:
+        return None, f"{type(exc).__name__}: {exc}"
+    finally:
+        if previous_training is not None:
+            layer.train(previous_training)
+
+
+def _route_churn_diagnostics(
+    initial_leaf_ids: torch.Tensor | None,
+    final_leaf_ids: torch.Tensor | None,
+    *,
+    initial_reason: str | None = None,
+    final_reason: str | None = None,
+) -> dict[str, object]:
+    record: dict[str, object] = {
+        "route_churn_available": False,
+        "route_churn_fraction": None,
+        "route_churn_changed_tokens": None,
+        "route_churn_tokens": None,
+        "route_churn_initial_unique_leaves": None,
+        "route_churn_final_unique_leaves": None,
+        "route_churn_reason": None,
+    }
+    if initial_leaf_ids is None:
+        record["route_churn_reason"] = initial_reason or "initial_leaf_ids_unavailable"
+        return record
+    if final_leaf_ids is None:
+        record["route_churn_reason"] = final_reason or "final_leaf_ids_unavailable"
+        return record
+
+    initial = initial_leaf_ids.detach().reshape(-1).to(device="cpu", dtype=torch.long)
+    final = final_leaf_ids.detach().reshape(-1).to(device="cpu", dtype=torch.long)
+    if initial.shape != final.shape:
+        record["route_churn_reason"] = (
+            f"leaf_id_shape_mismatch:{tuple(initial.shape)}!={tuple(final.shape)}"
+        )
+        return record
+    tokens = int(initial.numel())
+    if tokens == 0:
+        record["route_churn_reason"] = "empty_leaf_ids"
+        return record
+
+    changed = int((initial != final).sum().item())
+    fraction = float(changed) / float(tokens)
+    if not math.isfinite(fraction):
+        record["route_churn_reason"] = "non_finite_churn_fraction"
+        return record
+    record.update(
+        {
+            "route_churn_available": True,
+            "route_churn_fraction": fraction,
+            "route_churn_changed_tokens": changed,
+            "route_churn_tokens": tokens,
+            "route_churn_initial_unique_leaves": int(torch.unique(initial).numel()),
+            "route_churn_final_unique_leaves": int(torch.unique(final).numel()),
+        }
+    )
+    return record
+
+
+def _optional_float(value: object) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        return None
+    converted = float(value)
+    return converted if math.isfinite(converted) else None
+
+
+def _optional_int(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
 def distill_linear_from_tensors(
     name: str,
     linear: nn.Linear,
@@ -1373,6 +1471,7 @@ def distill_linear_from_tensors(
         router_config=router_config,
         balance_config=balance_config,
     )
+    initial_leaf_ids, initial_leaf_reason = _hard_route_leaf_ids(replacement, x_metric)
     append_jsonl(
         metrics_path,
         {
@@ -1452,6 +1551,15 @@ def distill_linear_from_tensors(
         router_config=router_config,
         balance_config=balance_config,
     )
+    final_leaf_ids, final_leaf_reason = _hard_route_leaf_ids(replacement, x_metric)
+    route_churn = _route_churn_diagnostics(
+        initial_leaf_ids,
+        final_leaf_ids,
+        initial_reason=initial_leaf_reason,
+        final_reason=final_leaf_reason,
+    )
+    if isinstance(final_report.get("router"), dict):
+        final_report["router"].update(route_churn)
     layer_dir = output_dir / "layers" / name.replace(".", "__")
     layer_dir.mkdir(parents=True, exist_ok=True)
     state_path = layer_dir / "fff_state.pt"
@@ -1474,6 +1582,21 @@ def distill_linear_from_tensors(
         metric_tokens=int(x_metric.shape[0]),
         metric_split=metric_split,
         metric_holdout_fraction=distill_config.metric_holdout_fraction,
+        route_churn_available=bool(route_churn["route_churn_available"]),
+        route_churn_fraction=_optional_float(route_churn["route_churn_fraction"]),
+        route_churn_changed_tokens=_optional_int(route_churn["route_churn_changed_tokens"]),
+        route_churn_tokens=_optional_int(route_churn["route_churn_tokens"]),
+        route_churn_initial_unique_leaves=_optional_int(
+            route_churn["route_churn_initial_unique_leaves"]
+        ),
+        route_churn_final_unique_leaves=_optional_int(
+            route_churn["route_churn_final_unique_leaves"]
+        ),
+        route_churn_reason=(
+            str(route_churn["route_churn_reason"])
+            if route_churn["route_churn_reason"] is not None
+            else None
+        ),
     )
     append_jsonl(
         metrics_path,
@@ -1500,6 +1623,7 @@ def distill_linear_from_tensors(
             "balance": final_report["balance"],
             "locoprop": locoprop_record,
             "replacement_path": result.replacement_path,
+            **route_churn,
         },
     )
     return result
@@ -1583,6 +1707,13 @@ def run_layerwise_distillation(
                 metric_tokens=result.metric_tokens,
                 metric_split=result.metric_split,
                 metric_holdout_fraction=result.metric_holdout_fraction,
+                route_churn_available=result.route_churn_available,
+                route_churn_fraction=result.route_churn_fraction,
+                route_churn_changed_tokens=result.route_churn_changed_tokens,
+                route_churn_tokens=result.route_churn_tokens,
+                route_churn_initial_unique_leaves=result.route_churn_initial_unique_leaves,
+                route_churn_final_unique_leaves=result.route_churn_final_unique_leaves,
+                route_churn_reason=result.route_churn_reason,
             )
         )
     write_json(output_dir / "layer_summary.json", [result.log_record() for result in results])
