@@ -1,0 +1,28 @@
+study_name: fff_distill_stage_e_layer_generalization
+sampler: grid
+objective: validation_normalized_mse
+direction: minimize
+max_trials: 3
+search_space:
+  include_indices:
+    - [0]
+    - [32]
+    - [60]
+  router_recipe: [vanilla_ste]
+  shared_unrouted_frac: [0.20]
+  route_rows: [1]
+  leaf_rows: [4]
+  depth: [5]
+  route_row_role: [split_routing_output]
+  route_output_controls:
+    split_routing_output:
+      route_result_rows: [2]
+      route_rows_output_count: [all]
+      route_rows_output_fraction: [0.5]
+  activation: [silu]
+  region_leak: [0.01]
+  master_leaf: [false]
+  balance_recipe: [none]
+  balance_coeff: [0.001]
+  min_leaf_tokens: [64]
+  locoprop_refit: [every_500]

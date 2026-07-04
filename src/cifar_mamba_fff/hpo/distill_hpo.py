@@ -80,11 +80,16 @@ LOCO_PROP_OVERRIDE_MAP = {
     "locoprop_blend_alpha": "blend_alpha",
     "damp_optimizer_state_after_refit": "damp_optimizer_state_after_refit",
 }
+ELIGIBLE_OVERRIDE_MAP = {
+    "include_indices": "include_indices",
+    "include_names": "include_names",
+}
 KNOWN_OVERRIDE_KEYS = (
     FFF_OVERRIDE_KEYS
     | set(BALANCE_OVERRIDE_MAP)
     | set(ROUTER_OVERRIDE_MAP)
     | set(LOCO_PROP_OVERRIDE_MAP)
+    | set(ELIGIBLE_OVERRIDE_MAP)
     | {"locoprop_refit"}
 )
 
@@ -712,8 +717,11 @@ def apply_distill_hpo_overrides(
     overrides: Mapping[str, object],
 ) -> dict[str, object]:
     _reject_unknown_override_keys(overrides)
+    if "include_indices" in overrides and "include_names" in overrides:
+        raise ValueError("eligible_linear include_indices and include_names are mutually exclusive")
     config: dict[str, object] = copy.deepcopy(dict(base_config))
     fff = _as_mapping(config.get("fff"), section="fff")
+    eligible = _as_mapping(config.get("eligible_linear"), section="eligible_linear")
     balance = _as_mapping(config.get("balance"), section="balance")
     router = _as_mapping(config.get("router"), section="router")
     locoprop = _as_mapping(config.get("locoprop"), section="locoprop")
@@ -731,6 +739,12 @@ def apply_distill_hpo_overrides(
         ROUTER_OVERRIDE_MAP,
         section_name="router",
     )
+    _apply_alias_overrides(
+        eligible,
+        overrides,
+        ELIGIBLE_OVERRIDE_MAP,
+        section_name="eligible_linear",
+    )
 
     if "locoprop_refit" in overrides:
         locoprop.update(_locoprop_refit_config(overrides["locoprop_refit"]))
@@ -742,6 +756,7 @@ def apply_distill_hpo_overrides(
     )
 
     config["fff"] = fff
+    config["eligible_linear"] = eligible
     config["balance"] = balance
     config["router"] = router
     config["locoprop"] = locoprop

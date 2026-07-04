@@ -423,6 +423,22 @@ def test_distill_hpo_overrides_map_to_concrete_config_sections() -> None:
     assert base == original_base
 
 
+def test_distill_hpo_overrides_can_select_eligible_layer_indices() -> None:
+    base = load_yaml("configs/fff_distill_default.yaml")
+
+    config = apply_distill_hpo_overrides(
+        base,
+        {
+            "include_indices": [0, 32, 60],
+            "router_recipe": "vanilla_ste",
+            "route_rows": 1,
+            "route_row_role": "routing_only",
+        },
+    )
+
+    assert config["eligible_linear"]["include_indices"] == [0, 32, 60]
+
+
 def test_distill_hpo_rejects_invalid_locoprop_refit() -> None:
     for invalid in ("sometimes", "every_0", "every_x", True):
         with pytest.raises(ValueError, match=r"locoprop_refit|interval"):
@@ -443,6 +459,12 @@ def test_distill_hpo_override_mapper_rejects_unknown_keys_and_duplicate_aliases(
         apply_distill_hpo_overrides(
             {},
             {"temperature": 1.0, "tau": 0.5},
+        )
+
+    with pytest.raises(ValueError, match="eligible_linear include_indices and include_names"):
+        apply_distill_hpo_overrides(
+            {},
+            {"include_indices": [0], "include_names": ["layer"]},
         )
 
 

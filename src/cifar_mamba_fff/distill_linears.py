@@ -438,15 +438,13 @@ def linear_replacement_plan(
     if not isinstance(eligible_config, dict):
         raise ValueError("eligible_linear config must be a mapping")
 
-    reports = discover_linear_layers(
-        model,
-        min_in_features=int(eligible_config.get("min_in_features", 64)),
-        min_out_features=int(eligible_config.get("min_out_features", 64)),
-    )
-    selected = select_progressive_reports(
+    reports = _linear_reports(model, eligible_config)
+    selected = _selected_reports_from_reports(
         reports,
-        step=progressive_step,
-        step_size=progressive_step_size,
+        eligible_config=eligible_config,
+        distill_config=LinearDistillConfig.from_mapping(config.get("distill")),
+        progressive_step=progressive_step,
+        progressive_step_size=progressive_step_size,
     )
     return {
         "linear_layers": linear_reports_as_log_records(reports),
@@ -460,6 +458,83 @@ def linear_replacement_plan(
     }
 
 
+def _linear_reports(model: nn.Module, eligible_config: dict[str, Any]) -> list[LinearReport]:
+    return discover_linear_layers(
+        model,
+        min_in_features=int(eligible_config.get("min_in_features", 64)),
+        min_out_features=int(eligible_config.get("min_out_features", 64)),
+    )
+
+
+def _as_name_list(value: object, *, key: str) -> list[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+        raise ValueError(f"eligible_linear.{key} must be a list of non-empty strings")
+    return value
+
+
+def _as_index_list(value: object, *, key: str) -> list[int] | None:
+    if value is None:
+        return None
+    if not isinstance(value, list) or not all(
+        isinstance(item, int) and not isinstance(item, bool) and item >= 0 for item in value
+    ):
+        raise ValueError(f"eligible_linear.{key} must be a list of non-negative integers")
+    return value
+
+
+def _apply_explicit_layer_selection(
+    eligible: list[LinearReport],
+    eligible_config: dict[str, Any],
+) -> list[LinearReport]:
+    include_names = _as_name_list(
+        eligible_config.get("include_names", eligible_config.get("names")),
+        key="include_names",
+    )
+    include_indices = _as_index_list(
+        eligible_config.get("include_indices", eligible_config.get("indices")),
+        key="include_indices",
+    )
+    if include_names is not None and include_indices is not None:
+        raise ValueError("eligible_linear include_names and include_indices are mutually exclusive")
+    if include_names is not None:
+        by_name = {report.name: report for report in eligible}
+        missing = [name for name in include_names if name not in by_name]
+        if missing:
+            raise ValueError("eligible_linear.include_names contains unknown eligible layers: " + ", ".join(missing))
+        return [by_name[name] for name in include_names]
+    if include_indices is not None:
+        out_of_range = [index for index in include_indices if index >= len(eligible)]
+        if out_of_range:
+            raise ValueError(
+                "eligible_linear.include_indices out of range for "
+                f"{len(eligible)} eligible layers: {out_of_range}"
+            )
+        return [eligible[index] for index in include_indices]
+    return eligible
+
+
+def _selected_reports_from_reports(
+    reports: list[LinearReport],
+    *,
+    eligible_config: dict[str, Any],
+    distill_config: LinearDistillConfig,
+    progressive_step: int | None,
+    progressive_step_size: int,
+) -> list[LinearReport]:
+    selected = select_progressive_reports(
+        reports,
+        step=progressive_step,
+        step_size=progressive_step_size,
+        max_replacements=None,
+    )
+    selected = _apply_explicit_layer_selection(selected, eligible_config)
+    if distill_config.max_layers is not None:
+        selected = selected[: distill_config.max_layers]
+    return selected
+
+
 def _selected_reports(
     model: nn.Module,
     config: dict[str, Any],
@@ -470,16 +545,13 @@ def _selected_reports(
     eligible_config = config.get("eligible_linear", {})
     if not isinstance(eligible_config, dict):
         raise ValueError("eligible_linear config must be a mapping")
-    reports = discover_linear_layers(
-        model,
-        min_in_features=int(eligible_config.get("min_in_features", 64)),
-        min_out_features=int(eligible_config.get("min_out_features", 64)),
-    )
-    return select_progressive_reports(
+    reports = _linear_reports(model, eligible_config)
+    return _selected_reports_from_reports(
         reports,
-        step=progressive_step,
-        step_size=progressive_step_size,
-        max_replacements=LinearDistillConfig.from_mapping(config.get("distill")).max_layers,
+        eligible_config=eligible_config,
+        distill_config=LinearDistillConfig.from_mapping(config.get("distill")),
+        progressive_step=progressive_step,
+        progressive_step_size=progressive_step_size,
     )
 
 

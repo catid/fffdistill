@@ -1,0 +1,46 @@
+seed: 1337
+teacher_checkpoint: null
+mode: isolated_teacher_forced
+eligible_linear:
+  min_in_features: 64
+  min_out_features: 64
+distill:
+  steps: 150
+  lr: 0.001
+  batch_size: 256
+  normalized_mse_weight: 1.0
+  cosine_weight: 0.0
+  variance_weight: 0.0
+  max_layers: 1
+  max_capture_tokens_per_layer: 65536
+  max_capture_bytes_per_layer: 268435456
+  device: cuda
+  capture_autocast_bf16: true
+fff:
+  shared_unrouted_frac: 0.20
+  route_rows: 1
+  route_result_rows: 2
+  leaf_rows: 4
+  depth: 5
+  route_rows_contribute: true
+  route_row_role: split_routing_output
+  route_rows_output_count: all
+  route_rows_output_fraction: 0.5
+  activation: silu
+  hard_routing: true
+  train_temperature: 1.0
+  region_leak: 0.01
+  master_leaf: false
+balance:
+  recipe: none
+  coeff: 0.001
+  min_leaf_tokens: 64
+router:
+  recipe: vanilla_ste
+  loss_coeff: 0.001
+locoprop:
+  enabled: true
+  interval_steps: 500
+  ridge_lambda: 0.0001
+  blend_alpha: 0.5
+  damp_optimizer_state_after_refit: true

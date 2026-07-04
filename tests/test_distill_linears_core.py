@@ -67,6 +67,18 @@ class _TinyTeacher(nn.Module):
         return None
 
 
+class _ThreeLinearTeacher(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.early = nn.Linear(6, 4)
+        self.middle = nn.Linear(6, 4)
+        self.late = nn.Linear(6, 4)
+
+    def forward(self, image: torch.Tensor) -> torch.Tensor:
+        flat = image.reshape(image.shape[0], -1)
+        return self.early(flat) + self.middle(flat) + self.late(flat)
+
+
 def _teacher_checkpoint_payload(parameter_count: int = 1234) -> dict[str, object]:
     return {
         "config": {
@@ -432,6 +444,48 @@ def test_layerwise_distillation_decreases_mse_and_writes_artifacts(tmp_path) -> 
     assert records[-1]["final_cosine_loss"] == pytest.approx(result.final_cosine_loss)
     _assert_distill_quality_and_timing_fields(records[-1])
     _assert_distill_quality_and_timing_fields(result.log_record())
+
+
+def test_layerwise_distillation_selects_explicit_layer_indices(tmp_path) -> None:
+    torch.manual_seed(111)
+    model = _ThreeLinearTeacher()
+    x = torch.randn(16, 6)
+    config = _small_distill_config()
+    config["eligible_linear"] = {
+        "min_in_features": 6,
+        "min_out_features": 4,
+        "include_indices": [1, 2],
+    }
+    config["distill"] = {
+        **config["distill"],  # type: ignore[index]
+        "steps": 1,
+        "batch_size": 8,
+        "max_layers": 2,
+        "max_capture_tokens_per_layer": 16,
+    }
+
+    results = run_layerwise_distillation(model, [x], config, output_dir=tmp_path)
+
+    assert [result.name for result in results] == ["middle", "late"]
+    summary = json.loads((tmp_path / "layer_summary.json").read_text(encoding="utf-8"))
+    assert [record["name"] for record in summary] == ["middle", "late"]
+
+
+def test_linear_replacement_plan_selects_explicit_layer_names() -> None:
+    config = _small_distill_config()
+    config["eligible_linear"] = {
+        "min_in_features": 6,
+        "min_out_features": 4,
+        "include_names": ["late", "early"],
+    }
+    config["distill"] = {
+        **config["distill"],  # type: ignore[index]
+        "max_layers": 2,
+    }
+
+    plan = distill_linears.linear_replacement_plan(_ThreeLinearTeacher(), config)
+
+    assert plan["selected_replacements"] == ["late", "early"]
 
 
 def test_distill_linear_from_bfloat16_tensors_uses_fp32_losses(tmp_path) -> None:
