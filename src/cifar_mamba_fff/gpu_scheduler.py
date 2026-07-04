@@ -355,14 +355,22 @@ def launch_detached_job(spec: MachineSpec, job: GpuJob, *, timeout_s: int = 20) 
             launch_stderr=str(write_result["stderr"]),
         )
 
-    launch_command = f"nohup bash {quote(str(files.script))} >/dev/null 2>&1 & echo $!"
+    launch_command = f"nohup bash {quote(str(files.script))} >/dev/null 2>&1 </dev/null & echo $!"
     launch_result = run_remote(spec, launch_command, timeout_s=timeout_s)
     if not launch_result["ok"]:
-        job.status = JobStatus.FAILED_INFRA
+        status_probe = read_remote_text(spec, files.status, timeout_s=timeout_s)
+        if status_probe["ok"]:
+            try:
+                payload = json.loads(str(status_probe["stdout"]))
+                job.status = JobStatus(str(payload["status"]))
+            except (json.JSONDecodeError, KeyError, ValueError):
+                job.status = JobStatus.RUNNING
+        else:
+            job.status = JobStatus.FAILED_INFRA
     else:
         job.status = JobStatus.RUNNING
     return LaunchResult(
-        ok=bool(launch_result["ok"]),
+        ok=bool(launch_result["ok"]) or job.status != JobStatus.FAILED_INFRA,
         status=job.status,
         job=job,
         files=files,

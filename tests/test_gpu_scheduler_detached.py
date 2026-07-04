@@ -231,3 +231,60 @@ def test_preflight_machine_can_require_cifar10_train_readiness(monkeypatch) -> N
     assert result.ok is True
     assert "scripts/prepare_cifar10.py" in commands[0]
     assert "--download false --extract false" in commands[0]
+
+
+def test_launch_detached_job_probes_status_after_launch_timeout(monkeypatch) -> None:
+    launch_detached_job = _require_public_helper("launch_detached_job")
+    job = GpuJob(
+        command="PYTHONPATH=src CUDA_VISIBLE_DEVICES=0 .venv/bin/python -m trainer",
+        output_dir=Path("outputs/scheduler_smoke/work/0"),
+        machine="work",
+        gpu_id=0,
+    )
+    spec = MachineSpec(name="work", host="localhost", gpus=2, role="local", workdir="/repo")
+    launch_commands: list[str] = []
+
+    monkeypatch.setattr(
+        gpu_scheduler,
+        "write_remote_text",
+        lambda spec_arg, path, text, *, executable, timeout_s: {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "",
+            "stderr": "",
+        },
+    )
+
+    def fake_run_remote(
+        spec_arg: MachineSpec,
+        command: str,
+        *,
+        timeout_s: int,
+    ) -> Mapping[str, object]:
+        assert spec_arg == spec
+        launch_commands.append(command)
+        return {
+            "ok": False,
+            "returncode": None,
+            "stdout": "",
+            "stderr": "timed out after 20 seconds",
+        }
+
+    monkeypatch.setattr(gpu_scheduler, "run_remote", fake_run_remote)
+    monkeypatch.setattr(
+        gpu_scheduler,
+        "read_remote_text",
+        lambda spec_arg, path, *, timeout_s: {
+            "ok": True,
+            "returncode": 0,
+            "stdout": json.dumps({"status": JobStatus.RUNNING.value, "returncode": None}),
+            "stderr": "",
+        },
+    )
+
+    result = launch_detached_job(spec, job, timeout_s=20)
+
+    assert result.ok is True
+    assert result.status == JobStatus.RUNNING
+    assert job.status == JobStatus.RUNNING
+    assert "</dev/null" in launch_commands[0]
