@@ -45,6 +45,24 @@ REQUIRED_SNIPPETS = (
     "test_accessed=true",
 )
 
+GC5_EXPECTED_FAMILIES = {
+    "official_muon_cosine_lr_low",
+    "official_muon_cosine_lr_base",
+    "official_muon_cosine_lr_high",
+    "official_muon_wsd_lr_low",
+    "official_muon_wsd_lr_base",
+    "official_muon_wsd_lr_high",
+    "pace_muon_cosine_lr_low",
+    "pace_muon_cosine_lr_base",
+    "pace_muon_cosine_lr_high",
+    "normuon_cosine_lr_low",
+    "normuon_cosine_lr_base",
+    "normuon_cosine_lr_high",
+    "pace_normuon_cosine_lr_low",
+    "pace_normuon_cosine_lr_base",
+    "pace_normuon_cosine_lr_high",
+}
+
 
 def _csv_text(value: object) -> str:
     return "" if value is None else str(value)
@@ -792,6 +810,63 @@ def _validate_t19_metrics(report_text: str, docs_dir: Path) -> None:
     )
 
 
+def _validate_gc5_metrics(report_text: str, docs_dir: Path) -> None:
+    trial_source = docs_dir / "fff_gc5_optimizer_wsd_validation_trials.csv"
+    family_source = docs_dir / "fff_gc5_optimizer_wsd_validation_families.csv"
+    if not trial_source.exists() and not family_source.exists():
+        return
+    if not trial_source.exists() or not family_source.exists():
+        raise FileNotFoundError(
+            "GC5 validation reporting requires both "
+            f"{trial_source} and {family_source}"
+        )
+
+    trial_rows = _read_csv(trial_source, expected_rows=len(GC5_EXPECTED_FAMILIES))
+    family_rows = _read_csv(family_source, expected_rows=len(GC5_EXPECTED_FAMILIES))
+    _require_all_false(trial_rows, "test_accessed", source=trial_source)
+    _require_all_false(family_rows, "test_accessed", source=family_source)
+    trial_cases = {row["case"] for row in trial_rows}
+    family_names = {row["family"] for row in family_rows}
+    if trial_cases != GC5_EXPECTED_FAMILIES:
+        raise ValueError(f"{trial_source} has unexpected GC5 cases: {sorted(trial_cases)}")
+    if family_names != GC5_EXPECTED_FAMILIES:
+        raise ValueError(f"{family_source} has unexpected GC5 families: {sorted(family_names)}")
+    trial_steps = {_fmt_int(row["train_steps"]) for row in trial_rows}
+    family_steps = {_fmt_int(row["mean_train_steps"]) for row in family_rows}
+    if trial_steps != {"4218"} or family_steps != {"4218"}:
+        raise ValueError(
+            f"{trial_source} and {family_source} must use the matched 4218-step GC5 budget"
+        )
+    best_family = max(
+        family_rows,
+        key=lambda row: (
+            float(row["mean_best_val_accuracy"]),
+            row["family"],
+        ),
+    )
+    _expect_metric(
+        report_text,
+        r"GC5 optimizer/WSD validation rows: `([0-9]+)`",
+        str(len(trial_rows)),
+        label="GC5 validation trial row count",
+        source=trial_source,
+    )
+    _expect_metric(
+        report_text,
+        r"GC5 best validation family: `([^`]+)`",
+        best_family["family"],
+        label="GC5 best validation family",
+        source=family_source,
+    )
+    _expect_metric(
+        report_text,
+        r"GC5 best validation accuracy: `([0-9.]+)`",
+        best_family["mean_best_val_accuracy"],
+        label="GC5 best validation accuracy",
+        source=family_source,
+    )
+
+
 def _validate_source_metrics(
     report_text: str,
     docs_dir: Path,
@@ -807,6 +882,7 @@ def _validate_source_metrics(
     _validate_stage_h_final_metrics(report_text, docs_dir)
     _validate_t15_metrics(report_text, fairness_rows, source=docs_dir / "t15_fairness_summary.csv")
     _validate_t19_metrics(report_text, docs_dir)
+    _validate_gc5_metrics(report_text, docs_dir)
 
 
 def validate_final_report(report: Path = Path("docs/final_report.md")) -> None:
