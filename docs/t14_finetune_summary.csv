@@ -3,3 +3,7 @@ outputs/t14_finetune_smoke_20260704,initial full FFF KD smoke batch 512,failed,C
 outputs/t14_finetune_smoke_20260704_b32,batch 32 after FFF memory fix,failed,official Mamba3 TileLang backward dynamic shared memory 143808,false
 outputs/t14_finetune_smoke_20260704_b32_nobalance,batch 32 balance disabled,failed,official Mamba3 TileLang backward dynamic shared memory 143808,false
 outputs/t14_finetune_smoke_20260704_b32_nobalance_contig,batch 32 balance disabled FFF contiguous output,failed,official Mamba3 TileLang backward dynamic shared memory 143808,false
+outputs/t14_finetune_smoke_autocast_fix_train_nobalance_real,batch 32 assembled FFF KD one train/val step no balance,succeeded,,false
+outputs/t14_finetune_hpo_autocast_fix_train_nobalance_real,HPO wrapper train-mode one trial one train/val step no balance,succeeded,,false
+outputs/t14_finetune_smoke_autocast_fix_train_balance_globalcap,batch 32 assembled FFF KD one global train step with balance,succeeded,,false
+outputs/t14_student_final_partial_autocast_fix_nobalance_qfalse_v2,selected one-step HPO checkpoint partial CIFAR-10 test max_test_steps=1,succeeded partial_test_accuracy=0.3125,,true

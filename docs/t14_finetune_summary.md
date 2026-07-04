@@ -29,6 +29,9 @@ artifacts.
 - Focused FFF/T14 regression gate after the autocast and HPO-command fixes:
   `pytest -q tests/test_finetune_student.py tests/test_fff_grouped_matches_naive.py`
   passed with `44 passed`.
+- Student final-evaluation gate added:
+  `pytest -q tests/test_student_final_eval.py tests/test_finetune_student.py`
+  passed with `13 passed`; the evaluator CLI help imports successfully.
 - Focused ruff gate passed for the changed T14/FFF files.
 - CIFAR-10 test access: false for every T14 smoke/HPO artifact.
 
@@ -104,6 +107,7 @@ No substitute architecture, optimizer, CPU path, or fake Mamba path was used.
 | `outputs/t14_finetune_smoke_autocast_fix_train_nobalance_real` | batch-32 assembled FFF KD, one train step + one val step, no balance | succeeded; 64/64 linears replaced, official Muon+AdamW, no test access | false |
 | `outputs/t14_finetune_hpo_autocast_fix_train_nobalance_real` | fine-tune HPO wrapper, one train-mode trial, one train step + one val step, no balance | succeeded; wrapper launched `--smoke-mode train`, metrics summary written | false |
 | `outputs/t14_finetune_smoke_autocast_fix_train_balance_globalcap` | batch-32 assembled FFF KD, one train step + one val step, default balance enabled | succeeded; `train_steps_total=1`, 64/64 linears replaced, official Muon+AdamW | false |
+| `outputs/t14_student_final_partial_autocast_fix_nobalance_qfalse_v2` | selected one-step HPO checkpoint, partial CIFAR-10 test evaluation with `max_test_steps=1` | succeeded; `partial_test_evaluation=true`, `test_accuracy_partial=0.3125`, 64/64 linears replaced | true |
 
 ## Additional Safety Fix
 
@@ -112,9 +116,15 @@ No substitute architecture, optimizer, CPU path, or fake Mamba path was used.
   only for quick-smoke entrypoint checks.
 - `--max-train-steps` previously capped steps per epoch. It now caps total train steps
   globally, preventing a bounded smoke from accidentally running one step for every epoch.
+- Added `cifar_mamba_fff.evaluate_student` and `scripts/evaluate_student_final.sh` for
+  strict selected-checkpoint student test evaluation. The evaluator requires CUDA,
+  requires checkpoint validation metrics, rebuilds the assembled FFF student, loads the
+  selected checkpoint, marks `test_accessed=true`, and separates partial from full test
+  metrics.
 
 ## Limitation
 
-T14 smoke and validation-path execution are unblocked, but this summary does not claim
-final CIFAR-10 test accuracy. Final test evaluation must remain reserved for
-validation-selected checkpoints in the final report.
+T14 now has a validation-selected partial final-test artifact for the one-step HPO
+checkpoint, but this is not a final quality claim. Full CIFAR-10 test accuracy and
+multi-seed recipe claims remain final-report work and must stay separated from smoke and
+partial-test evidence.

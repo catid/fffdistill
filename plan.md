@@ -260,9 +260,16 @@ Stage G: end-to-end KD fine-tuning.
 - T14 safety fixes: real fine-tune HPO now launches train mode instead of metadata mode
   when `quick_smoke=false`, and `--max-train-steps` is a global cap rather than a
   per-epoch cap.
+- Student final-evaluation plumbing now exists in `cifar_mamba_fff.evaluate_student` and
+  `scripts/evaluate_student_final.sh`. It requires checkpoint validation metrics, rebuilds
+  the assembled FFF student, loads the selected checkpoint, marks `test_accessed=true`,
+  and separates partial from full CIFAR-10 test metrics. A validation-selected one-step
+  HPO checkpoint was evaluated with `max_test_steps=1` at
+  `outputs/t14_student_final_partial_autocast_fix_nobalance_qfalse_v2`, yielding
+  `test_accuracy_partial=0.3125` with all 64 FFF replacements loaded.
 - No substitute architecture, optimizer, CPU path, smaller model, or fake Mamba path was
-  used. Final CIFAR-10 test accuracy remains reserved for validation-selected
-  checkpoints only and must not be inferred from smoke artifacts.
+  used. Full final CIFAR-10 test accuracy remains reserved for validation-selected
+  checkpoints only and must not be inferred from smoke or partial-test artifacts.
 
 Stage H: final repeated runs with at least three seeds for top validation-selected recipes.
 
