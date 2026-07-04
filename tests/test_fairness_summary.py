@@ -17,12 +17,36 @@ def test_validate_fairness_rows_allows_test_only_on_final_splits() -> None:
             {"method": "teacher", "split": "final_test", "test_accessed": "true"},
             {"method": "student", "split": "partial_final_test", "test_accessed": "true"},
             {"method": "ablation", "split": "validation_smoke", "test_accessed": "false"},
-        ]
+        ],
+        expected_rows=3,
+        expected_test_access_rows=2,
     )
 
     with pytest.raises(ValueError, match="non-final split"):
         validate_fairness_rows(
-            [{"method": "bad", "split": "validation_smoke", "test_accessed": "true"}]
+            [{"method": "bad", "split": "validation_smoke", "test_accessed": "true"}],
+            expected_rows=1,
+            expected_test_access_rows=1,
+        )
+
+    with pytest.raises(ValueError, match="test-access rows"):
+        validate_fairness_rows(
+            [{"method": "teacher", "split": "final_test", "test_accessed": "true"}],
+            expected_rows=1,
+            expected_test_access_rows=2,
+        )
+
+    validate_fairness_rows(
+        [{"method": "teacher", "split": "final_test", "test_accessed": " 1 "}],
+        expected_rows=1,
+        expected_test_access_rows=1,
+    )
+
+    with pytest.raises(ValueError, match="invalid boolean"):
+        validate_fairness_rows(
+            [{"method": "bad", "split": "validation_smoke", "test_accessed": "maybe"}],
+            expected_rows=1,
+            expected_test_access_rows=0,
         )
 
 
@@ -50,3 +74,8 @@ def test_write_fairness_reports_writes_markdown_and_csv(tmp_path: Path) -> None:
     csv_text = (tmp_path / "fairness.csv").read_text(encoding="utf-8")
     assert "dense_mamba3_teacher" in csv_text
     assert "matched_low_rank_linear" in csv_text
+
+
+def test_build_fairness_rows_rejects_missing_sources(tmp_path: Path) -> None:
+    with pytest.raises(FileNotFoundError, match="required teacher summary"):
+        build_fairness_rows(tmp_path)

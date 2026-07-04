@@ -6,6 +6,8 @@ import re
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 
+from .utils import bool_arg
+
 FAIRNESS_COLUMNS = [
     "method",
     "evidence",
@@ -25,13 +27,24 @@ FAIRNESS_COLUMNS = [
     "budget",
     "fairness_note",
 ]
+EXPECTED_ROW_COUNTS = {
+    "t13_stage_f_layerwise_summary.csv": 64,
+    "t20_route_row_output_ablation_results.csv": 7,
+    "t19_optimizer_ablation_summary.csv": 6,
+    "t14_finetune_summary.csv": 8,
+}
+EXPECTED_FAIRNESS_ROWS = 28
+EXPECTED_TEST_ACCESS_ROWS = 2
 
 
-def _read_csv(path: Path) -> list[dict[str, str]]:
+def _read_csv(path: Path, *, expected_rows: int | None = None) -> list[dict[str, str]]:
     if not path.exists():
-        return []
+        raise FileNotFoundError(f"required fairness source CSV is missing: {path}")
     with path.open("r", encoding="utf-8", newline="") as handle:
-        return list(csv.DictReader(handle))
+        rows = list(csv.DictReader(handle))
+    if expected_rows is not None and len(rows) != expected_rows:
+        raise ValueError(f"{path} expected {expected_rows} rows, found {len(rows)}")
+    return rows
 
 
 def _write_csv(path: Path, rows: Sequence[Mapping[str, object]]) -> None:
@@ -73,8 +86,27 @@ def _mean(rows: Iterable[Mapping[str, str]], key: str) -> str:
     return _float_text(sum(values) / len(values))
 
 
+def _parse_bool(value: object, *, field: str = "test_accessed") -> bool:
+    if isinstance(value, bool):
+        return value
+    if value in (None, ""):
+        raise ValueError(f"{field} is missing a boolean value")
+    try:
+        return bool_arg(str(value))
+    except argparse.ArgumentTypeError as exc:
+        raise ValueError(f"{field} has invalid boolean value {value!r}") from exc
+
+
+def _bool_text(value: object, *, field: str = "test_accessed") -> str:
+    return str(_parse_bool(value, field=field)).lower()
+
+
 def _all_false(rows: Iterable[Mapping[str, str]], key: str = "test_accessed") -> bool:
-    return all(str(row.get(key, "")).strip().lower() in {"", "false", "0"} for row in rows)
+    return all(not _parse_bool(row.get(key), field=key) for row in rows)
+
+
+def _test_accessed(row: Mapping[str, object]) -> bool:
+    return _parse_bool(row.get("test_accessed"), field="test_accessed")
 
 
 def _extract_backtick_float(text: str, pattern: str) -> str:
@@ -90,15 +122,21 @@ def _row(**kwargs: object) -> dict[str, object]:
 
 def _teacher_row(docs_dir: Path) -> dict[str, object]:
     path = docs_dir / "t06_teacher_hpo_final_summary.md"
-    text = path.read_text(encoding="utf-8") if path.exists() else ""
+    if not path.exists():
+        raise FileNotFoundError(f"required teacher summary is missing: {path}")
+    text = path.read_text(encoding="utf-8")
+    validation_accuracy = _extract_backtick_float(text, r"Best validation accuracy: `([0-9.]+)`")
+    final_test_accuracy = _extract_backtick_float(text, r"Final test accuracy: `([0-9.]+)`")
+    if not validation_accuracy or not final_test_accuracy:
+        raise ValueError(f"teacher summary is missing validation/final test accuracy: {path}")
     return _row(
         method="dense_mamba3_teacher",
         evidence=str(path),
         split="final_test",
         status="selected_full_test",
         test_accessed="true",
-        validation_accuracy=_extract_backtick_float(text, r"Best validation accuracy: `([0-9.]+)`"),
-        final_test_accuracy=_extract_backtick_float(text, r"Final test accuracy: `([0-9.]+)`"),
+        validation_accuracy=validation_accuracy,
+        final_test_accuracy=final_test_accuracy,
         train_steps="175 epochs",
         seeds="1 selected checkpoint",
         budget="Full teacher HPO selection followed by one full CIFAR-10 test evaluation.",
@@ -108,13 +146,13 @@ def _teacher_row(docs_dir: Path) -> dict[str, object]:
 
 def _stage_f_row(docs_dir: Path) -> dict[str, object]:
     path = docs_dir / "t13_stage_f_layerwise_summary.csv"
-    rows = _read_csv(path)
+    rows = _read_csv(path, expected_rows=EXPECTED_ROW_COUNTS[path.name])
     return _row(
         method="assembled_fff_stage_f_layerwise",
         evidence=str(path),
         split="validation_layerwise",
         status="completed",
-        test_accessed=str(not _all_false(rows)).lower(),
+        test_accessed=_bool_text(not _all_false(rows)),
         distillation_nmse=_mean(rows, "final_nmse"),
         cosine_similarity=_mean(rows, "final_cosine_similarity"),
         tokens_per_second=_mean(rows, "tokens_per_second"),
@@ -129,7 +167,7 @@ def _stage_f_row(docs_dir: Path) -> dict[str, object]:
 
 def _t20_rows(docs_dir: Path) -> list[dict[str, object]]:
     path = docs_dir / "t20_route_row_output_ablation_results.csv"
-    rows = _read_csv(path)
+    rows = _read_csv(path, expected_rows=EXPECTED_ROW_COUNTS[path.name])
     out: list[dict[str, object]] = []
     for row in rows:
         out.append(
@@ -138,7 +176,7 @@ def _t20_rows(docs_dir: Path) -> list[dict[str, object]]:
                 evidence=str(path),
                 split="validation_single_layer",
                 status="completed",
-                test_accessed=str(row.get("test_accessed", "")).lower(),
+                test_accessed=_bool_text(row.get("test_accessed")),
                 validation_accuracy=_float_text(row.get("validation_accuracy_after_replacement")),
                 distillation_nmse=_float_text(row.get("final_nmse")),
                 cosine_similarity=_float_text(row.get("final_cosine_similarity")),
@@ -159,7 +197,7 @@ def _t20_rows(docs_dir: Path) -> list[dict[str, object]]:
 
 def _t19_rows(docs_dir: Path) -> list[dict[str, object]]:
     path = docs_dir / "t19_optimizer_ablation_summary.csv"
-    rows = _read_csv(path)
+    rows = _read_csv(path, expected_rows=EXPECTED_ROW_COUNTS[path.name])
     out: list[dict[str, object]] = []
     for row in rows:
         out.append(
@@ -168,7 +206,7 @@ def _t19_rows(docs_dir: Path) -> list[dict[str, object]]:
                 evidence=str(path),
                 split="validation_smoke",
                 status="completed",
-                test_accessed=str(row.get("test_accessed", "")).lower(),
+                test_accessed=_bool_text(row.get("test_accessed")),
                 validation_accuracy=_float_text(row.get("best_val_accuracy")),
                 tokens_per_second=_float_text(row.get("train_images_per_second_train_only")),
                 train_steps=_int_text(row.get("train_steps_total")),
@@ -185,19 +223,20 @@ def _t19_rows(docs_dir: Path) -> list[dict[str, object]]:
 
 def _t14_rows(docs_dir: Path) -> list[dict[str, object]]:
     path = docs_dir / "t14_finetune_summary.csv"
-    rows = _read_csv(path)
+    rows = _read_csv(path, expected_rows=EXPECTED_ROW_COUNTS[path.name])
     out: list[dict[str, object]] = []
     for row in rows:
         purpose = row.get("purpose", "")
         status = row.get("status", "")
         partial_match = re.search(r"partial_test_accuracy=([0-9.]+)", status)
+        test_accessed = _test_accessed(row)
         out.append(
             _row(
                 method=f"t14_{Path(row.get('run', '')).name}",
                 evidence=str(path),
-                split="partial_final_test" if row.get("test_accessed") == "true" else "validation_smoke",
+                split="partial_final_test" if test_accessed else "validation_smoke",
                 status=status,
-                test_accessed=str(row.get("test_accessed", "")).lower(),
+                test_accessed=_bool_text(test_accessed),
                 partial_test_accuracy=_float_text(partial_match.group(1)) if partial_match else "",
                 train_steps="1 bounded step" if "one train" in purpose else "",
                 seeds="1",
@@ -272,14 +311,28 @@ def build_fairness_rows(docs_dir: Path = Path("docs")) -> list[dict[str, object]
     return rows
 
 
-def validate_fairness_rows(rows: Sequence[Mapping[str, object]]) -> None:
+def validate_fairness_rows(
+    rows: Sequence[Mapping[str, object]],
+    *,
+    expected_rows: int | None = EXPECTED_FAIRNESS_ROWS,
+    expected_test_access_rows: int | None = EXPECTED_TEST_ACCESS_ROWS,
+) -> None:
+    if expected_rows is not None and len(rows) != expected_rows:
+        raise ValueError(f"expected {expected_rows} fairness rows, found {len(rows)}")
+    test_access_rows = 0
     for row in rows:
-        test_accessed = str(row.get("test_accessed", "")).lower() == "true"
+        test_accessed = _test_accessed(row)
         split = str(row.get("split", ""))
+        if test_accessed:
+            test_access_rows += 1
         if test_accessed and split not in {"final_test", "partial_final_test"}:
             raise ValueError(
                 f"row {row.get('method')} reports test access on non-final split {split!r}"
             )
+    if expected_test_access_rows is not None and test_access_rows != expected_test_access_rows:
+        raise ValueError(
+            f"expected {expected_test_access_rows} test-access rows, found {test_access_rows}"
+        )
 
 
 def write_fairness_markdown(path: Path, rows: Sequence[Mapping[str, object]]) -> None:
@@ -340,7 +393,7 @@ def write_fairness_reports(
         "rows": len(rows),
         "markdown_path": str(markdown_path),
         "csv_path": str(csv_path),
-        "test_access_rows": sum(str(row.get("test_accessed", "")).lower() == "true" for row in rows),
+        "test_access_rows": sum(_test_accessed(row) for row in rows),
     }
 
 

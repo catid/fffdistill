@@ -5,7 +5,7 @@
 - Beads was initialized before Git existed, so the fresh database lacked a repository fingerprint. The installed CLI recommended `bd migrate --update-repo-id`; that migration was run before tasks were created.
 - The Claude Opus planner wrapper failed schema validation with `Claude JSON did not contain a structured_output object`. The raw artifact at `.git/codex-claude-quality/plan.json.raw.json` shows the underlying `claude-opus-4-8` run returned success and produced an advisory plan. This is recorded as a planning-tool limitation.
 
-Further suspected bugs, fixes, tests, and residual risks will be appended during T18.
+T18 adversarial-review findings and closure evidence are recorded at the end of this log.
 
 ## Environment Gate Failure
 
@@ -142,3 +142,13 @@ Further suspected bugs, fixes, tests, and residual risks will be appended during
 - The generated table has 28 rows spanning the dense Mamba-3 teacher, Stage F layerwise FFF, T20 route-output ablations, T19 optimizer/schedule smoke ablations, T14 KD/evaluation artifacts, official `fastfeedforward.FFF` shape smoke, and explicit `not_run` placeholders for required baselines without committed metrics.
 - Fairness validation enforces that `test_accessed=true` appears only on `final_test` or `partial_final_test` rows. The two test-access rows are the selected teacher full final test and the selected student one-step partial final-test plumbing artifact.
 - T15 intentionally does not invent metrics for dense-copy, shared-only, low-rank, or smaller-dense baselines. They are listed as limitations instead of being treated as successful comparisons.
+
+## T18 Adversarial Review
+
+- Read-only sidecar review found four closure blockers: weak student final-test selection provenance, fairness/report generators accepting missing or inconsistent source evidence, missing T18 completion evidence in this log, and stale Beads status language in the final report.
+- `cifar_mamba_fff.evaluate_student` now requires an explicit `--selection-record` by default for student final evaluation. The record must report `status=succeeded`, must mark `selected_for_final_eval=true`, must not have accessed CIFAR-10 test data, must match the selected checkpoint path and validation accuracy, and must match `checkpoint_sha256` when the record includes a hash. Plain trial records are rejected unless the run is explicitly marked as untracked failure analysis. `--allow-untracked-selection true` remains available only as an explicit failure-analysis override and is recorded in output metadata.
+- Student final-evaluation default validation gate was raised from `0.0` to `0.90`. Below-target selected checkpoints now require `--allow-below-target true`, preserving the earlier one-step partial-test artifact as failure-analysis/plumbing evidence rather than a quality claim.
+- `cifar_mamba_fff.fairness` now treats source summaries as required evidence. Missing CSVs or teacher summaries raise, expected source row counts are checked, test-access booleans are parsed through one strict parser, the generated fairness table must contain 28 rows, and exactly two rows may report test access: the selected dense teacher full final test and the selected student partial final-test plumbing row.
+- `cifar_mamba_fff.make_report` now validates that `docs/t15_fairness_summary.csv` exists, has the expected row count, has test access only on final or partial-final rows, and exactly matches fairness rows regenerated from the source docs. This keeps the final report tied to committed fairness provenance rather than prose snippets or stale CSVs alone.
+- Focused checks after these fixes: `pytest -q tests/test_student_final_eval.py tests/test_fairness_summary.py tests/test_make_report.py` passed with 15 tests; focused ruff passed; `python -m cifar_mamba_fff.fairness` and `python -m cifar_mamba_fff.make_report --quick-smoke true` passed. Full `bash scripts/run_tests.sh` passed with environment verification, ruff, and 343 pytest tests; the only warnings were the known upstream TVM/TileLang duplicate-field warnings.
+- Residual risks: the one-step FFF student partial CIFAR-10 test artifact already exists and remains documented as plumbing/failure-analysis evidence only; full multi-seed FFF student final accuracy and several matched baselines remain unrun limitations. Report validation checks row counts and test-access provenance but does not yet cross-check every prose metric against every source CSV cell.

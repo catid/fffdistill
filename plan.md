@@ -263,8 +263,13 @@ Stage G: end-to-end KD fine-tuning.
 - Student final-evaluation plumbing now exists in `cifar_mamba_fff.evaluate_student` and
   `scripts/evaluate_student_final.sh`. It requires checkpoint validation metrics, rebuilds
   the assembled FFF student, loads the selected checkpoint, marks `test_accessed=true`,
-  and separates partial from full CIFAR-10 test metrics. A validation-selected one-step
-  HPO checkpoint was evaluated with `max_test_steps=1` at
+  and separates partial from full CIFAR-10 test metrics. T18 hardened this gate so student
+  final evaluation requires a validation-selection record by default; the record must
+  mark `selected_for_final_eval=true`, match checkpoint path, validation accuracy, and
+  checkpoint hash when available, and it must not have accessed CIFAR-10 test.
+  Below-target or untracked final evaluations now require explicit failure-analysis
+  overrides recorded in output metadata. A validation-selected one-step HPO checkpoint
+  was evaluated with `max_test_steps=1` at
   `outputs/t14_student_final_partial_autocast_fix_nobalance_qfalse_v2`, yielding
   `test_accuracy_partial=0.3125` with all 64 FFF replacements loaded.
 - No substitute architecture, optimizer, CPU path, smaller model, or fake Mamba path was
@@ -285,6 +290,12 @@ Fairness and baselines:
 - Fairness validation enforces that CIFAR-10 test access is reported only on
   `final_test` or `partial_final_test` rows. Missing baselines remain limitations, not
   hidden successes.
+- T18 hardened fairness/report provenance checks: required source CSVs and teacher
+  summary files must exist with expected row counts, the fairness table must contain
+  exactly 28 rows, exactly two rows may report test access unless the expected
+  counts are deliberately changed with tests, test-access booleans must parse
+  canonically, and final-report validation rejects stale committed fairness CSVs
+  by regenerating rows from the source evidence.
 
 ## Required Quality Gates
 

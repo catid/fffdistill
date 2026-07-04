@@ -120,7 +120,9 @@ No substitute architecture, optimizer, CPU path, or fake Mamba path was used.
   strict selected-checkpoint student test evaluation. The evaluator requires CUDA,
   requires checkpoint validation metrics, rebuilds the assembled FFF student, loads the
   selected checkpoint, marks `test_accessed=true`, and separates partial from full test
-  metrics.
+  metrics. T18 later hardened this path to require a validation-selection record with
+  `selected_for_final_eval=true` by default; untracked or below-target evaluations must
+  be explicitly labeled as failure analysis.
 
 ## Limitation
 

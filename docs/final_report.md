@@ -49,7 +49,8 @@ Detailed inventory: `docs/cluster_inventory.md`.
 - Report commit at T17 start: `fae2047178eed2ba846374d44c88b7d39cfcf902`.
 - Key closed task IDs include T00-T16, T19, T20, T22, and blocker `fff-qb3.34`.
 - T14 and T15 were closed with explicit limitations after deterministic gates passed.
-- Current final-report task: `fff-qb3.18`; adversarial review task follows as `fff-qb3.19`.
+- Final-report task `fff-qb3.18` is closed. Adversarial review task `fff-qb3.19`
+  records the T18 closure gate and residual limitations in `docs/bugfix_log.md`.
 
 ## Teacher
 
@@ -183,6 +184,10 @@ Validation/smoke evidence:
 - One-step HPO selected checkpoint: validation accuracy `0.40625`.
 - Partial selected-checkpoint CIFAR-10 test evaluation: `max_test_steps=1`,
   `test_accuracy_partial=0.3125`, `test_accessed=true`.
+- Student final evaluation is now hardened to require a validation-selection record
+  with `selected_for_final_eval=true` by default; below-target or untracked
+  evaluations require explicit failure-analysis overrides that are recorded in
+  output metadata.
 
 This partial test result is final-evaluation plumbing evidence, not a final quality
 claim. No full multi-seed FFF student final accuracy is claimed.
@@ -200,6 +205,9 @@ The table contains 28 rows and enforces that `test_accessed=true` appears only o
 `final_test` or `partial_final_test` rows. It includes explicit `not_run` rows for
 dense-copy student, shared-only rows baseline, matched low-rank Linear, and matched
 smaller dense Linear. These are limitations, not hidden successes.
+The final-report validator also checks the committed fairness CSV row count and
+test-access row count, then regenerates fairness rows from source evidence and
+rejects a stale CSV.
 
 Optimizer ablation smoke:
 

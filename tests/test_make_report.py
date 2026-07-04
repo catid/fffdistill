@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import csv
+import shutil
 from pathlib import Path
 
 import pytest
 
+from cifar_mamba_fff.fairness import write_fairness_reports
 from cifar_mamba_fff.make_report import validate_final_report
 
 
@@ -17,3 +20,21 @@ def test_validate_final_report_rejects_missing_sections(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="missing required snippets"):
         validate_final_report(report)
+
+
+def test_validate_final_report_rejects_stale_fairness_csv(tmp_path: Path) -> None:
+    docs_dir = tmp_path / "docs"
+    shutil.copytree(Path("docs"), docs_dir)
+    write_fairness_reports(docs_dir=docs_dir)
+
+    fairness_csv = docs_dir / "t15_fairness_summary.csv"
+    with fairness_csv.open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    rows[0]["final_test_accuracy"] = "0.000000"
+    with fairness_csv.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+
+    with pytest.raises(ValueError, match="stale"):
+        validate_final_report(docs_dir / "final_report.md")

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ from cifar_mamba_fff.evaluate_student import (
     format_student_final_result,
     selected_student_val_accuracy,
     validate_student_final_eval_threshold,
+    validate_student_selection_record,
 )
 
 
@@ -60,6 +62,167 @@ def test_student_final_eval_threshold_requires_explicit_failure_override() -> No
         min_selected_val_accuracy=0.5,
         allow_below_target=True,
     )
+
+
+def test_student_selection_record_is_required_unless_explicitly_untracked() -> None:
+    with pytest.raises(ValueError, match="requires --selection-record"):
+        validate_student_selection_record(
+            checkpoint_path=Path("student_best.pt"),
+            checkpoint_sha256="abc",
+            selected_val_accuracy_value=0.4,
+            selection_record=None,
+            allow_untracked_selection=False,
+        )
+
+    metadata = validate_student_selection_record(
+        checkpoint_path=Path("student_best.pt"),
+        checkpoint_sha256="abc",
+        selected_val_accuracy_value=0.4,
+        selection_record=None,
+        allow_untracked_selection=True,
+    )
+    assert metadata["allow_untracked_selection"] is True
+
+
+def test_student_selection_record_must_match_checkpoint_and_validation(tmp_path: Path) -> None:
+    record = tmp_path / "trial_result.json"
+    record.write_text(
+        json.dumps(
+            {
+                "status": "succeeded",
+                "test_accessed": False,
+                "selected_for_final_eval": True,
+                "result": {
+                    "summary": {
+                        "checkpoint_path": "student_best.pt",
+                        "best_val_accuracy": 0.4,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    metadata = validate_student_selection_record(
+        checkpoint_path=Path("student_best.pt"),
+        checkpoint_sha256="abc",
+        selected_val_accuracy_value=0.4,
+        selection_record=record,
+        allow_untracked_selection=False,
+    )
+    assert metadata["selection_record"] == str(record)
+    assert metadata["checkpoint_sha256"] == "abc"
+
+    with pytest.raises(ValueError, match="does not match"):
+        validate_student_selection_record(
+            checkpoint_path=Path("other.pt"),
+            checkpoint_sha256="abc",
+            selected_val_accuracy_value=0.4,
+            selection_record=record,
+            allow_untracked_selection=False,
+        )
+
+
+def test_student_selection_record_must_mark_final_selection(tmp_path: Path) -> None:
+    record = tmp_path / "plain_trial_result.json"
+    record.write_text(
+        json.dumps(
+            {
+                "status": "succeeded",
+                "test_accessed": False,
+                "result": {
+                    "summary": {
+                        "checkpoint_path": "student_best.pt",
+                        "best_val_accuracy": 0.4,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="selected_for_final_eval"):
+        validate_student_selection_record(
+            checkpoint_path=Path("student_best.pt"),
+            checkpoint_sha256="abc",
+            selected_val_accuracy_value=0.4,
+            selection_record=record,
+            allow_untracked_selection=False,
+        )
+
+
+def test_student_selection_record_rejects_test_access_and_hash_mismatch(tmp_path: Path) -> None:
+    checkpoint = tmp_path / "student_best.pt"
+    checkpoint.write_bytes(b"checkpoint")
+    record = tmp_path / "trial_result.json"
+    record.write_text(
+        json.dumps(
+            {
+                "status": "succeeded",
+                "test_accessed": "false",
+                "selected_for_final_eval": True,
+                "result": {
+                    "summary": {
+                        "checkpoint_path": str(checkpoint),
+                        "best_val_accuracy": 0.4,
+                        "checkpoint_sha256": "abc",
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    validate_student_selection_record(
+        checkpoint_path=checkpoint,
+        checkpoint_sha256="abc",
+        selected_val_accuracy_value=0.4,
+        selection_record=record,
+        allow_untracked_selection=False,
+    )
+
+    record.write_text(
+        json.dumps(
+            {
+                "status": "succeeded",
+                "test_accessed": "true",
+                "selected_for_final_eval": True,
+                "checkpoint_path": str(checkpoint),
+                "val_accuracy": 0.4,
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="must not have accessed"):
+        validate_student_selection_record(
+            checkpoint_path=checkpoint,
+            checkpoint_sha256="abc",
+            selected_val_accuracy_value=0.4,
+            selection_record=record,
+            allow_untracked_selection=False,
+        )
+
+    record.write_text(
+        json.dumps(
+            {
+                "status": "succeeded",
+                "test_accessed": False,
+                "selected_for_final_eval": True,
+                "checkpoint_path": str(checkpoint),
+                "val_accuracy": 0.4,
+                "checkpoint_sha256": "different",
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="checkpoint_sha256"):
+        validate_student_selection_record(
+            checkpoint_path=checkpoint,
+            checkpoint_sha256="abc",
+            selected_val_accuracy_value=0.4,
+            selection_record=record,
+            allow_untracked_selection=False,
+        )
 
 
 def test_format_student_final_result_separates_partial_and_full_metrics() -> None:
