@@ -1,8 +1,8 @@
 # T15 Fair Baseline And Comparison Checks
 
-This table aggregates committed evidence only. Missing baselines are listed as
-`not_run` instead of being filled with invented metrics. Smoke, validation, partial
-final-test, and full final-test rows are deliberately separated.
+This table aggregates committed evidence only. Any unavailable comparison is
+reported explicitly instead of being filled with invented metrics. Smoke,
+validation, partial final-test, and full final-test rows are deliberately separated.
 
 | Method | Split | Status | Test accessed | Val acc | Final/partial test acc | NMSE | Tokens/s | Budget note |
 | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- |

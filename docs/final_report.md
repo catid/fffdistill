@@ -268,6 +268,11 @@ Full Stage H selected FFF student final CIFAR-10 test:
   any full CIFAR-10 test evaluation.
 - Selection manifest: `docs/stage_h_final_selection_manifest.jsonl`.
 - Summary: `docs/stage_h_final_full_test_summary.md`.
+- Validation run: `stage_h_validation_full3ep_20260704_5b5e4e1`.
+- Final-eval run: `student_final_stage_h_validation_full3ep_20260704_a32f93f`
+  at final-eval commit `a32f93f1ee0b76744c41de95c3a9ffd4ed4ba7b7`.
+  The final evaluator reused the validation-selected checkpoint paths from the
+  validation run and recorded checkpoint SHA256 hashes in the selection manifest.
 - Full Stage H selected FFF student final CIFAR-10 validation mean: `0.914800`.
 - Full Stage H selected FFF student final CIFAR-10 test mean accuracy: `0.914933`.
 - Full Stage H selected FFF student final CIFAR-10 test std accuracy: `0.004022`.

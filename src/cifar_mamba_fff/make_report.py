@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import re
 import statistics
 from collections.abc import Mapping, Sequence
@@ -573,6 +574,21 @@ def _validate_t14_metrics(report_text: str, docs_dir: Path) -> None:
 
 
 def _validate_stage_h_final_metrics(report_text: str, docs_dir: Path) -> None:
+    validation_source = docs_dir / "stage_h_validation_full3ep_families.csv"
+    validation_rows = _read_csv(validation_source, expected_rows=4)
+    _require_all_false(validation_rows, "test_accessed", source=validation_source)
+    validation_sorted = sorted(
+        validation_rows,
+        key=lambda row: _float(row, "mean_best_val_accuracy", source=validation_source),
+        reverse=True,
+    )
+    if validation_sorted[0].get("family") != "no_balance_cosine":
+        raise ValueError(f"{validation_source} does not select no_balance_cosine by validation mean")
+    if _float(validation_sorted[0], "mean_best_val_accuracy", source=validation_source) <= _float(
+        validation_sorted[1], "mean_best_val_accuracy", source=validation_source
+    ):
+        raise ValueError(f"{validation_source} selected family is not a strict validation leader")
+
     family_source = docs_dir / "stage_h_final_full_test_families.csv"
     family_rows = _read_csv(family_source, expected_rows=1)
     family = family_rows[0]
@@ -584,6 +600,10 @@ def _validate_stage_h_final_metrics(report_text: str, docs_dir: Path) -> None:
         raise ValueError(f"{family_source} did not access CIFAR-10 test")
     if _fmt_int(family.get("seed_count")) != "3":
         raise ValueError(f"{family_source} expected three selected seeds")
+    if _fmt_float(_float(family, "mean_selected_val_accuracy", source=family_source), 6) != _fmt_float(
+        _float(validation_sorted[0], "mean_best_val_accuracy", source=validation_source), 6
+    ):
+        raise ValueError(f"{family_source} selected validation mean does not match {validation_source}")
 
     trial_source = docs_dir / "stage_h_final_full_test_trials.csv"
     trial_rows = _read_csv(trial_source, expected_rows=3)
@@ -594,6 +614,50 @@ def _validate_stage_h_final_metrics(report_text: str, docs_dir: Path) -> None:
     seeds = sorted(_fmt_int(row["seed"]) for row in trial_rows)
     if seeds != ["21001", "21002", "21003"]:
         raise ValueError(f"{trial_source} expected selected seeds 21001,21002,21003")
+    commits = sorted({str(row.get("remote_git_commit", "")) for row in trial_rows})
+    if len(commits) != 1 or not commits[0]:
+        raise ValueError(f"{trial_source} expected one non-empty final-eval remote_git_commit")
+    run_ids = sorted({str(row.get("run", "")) for row in trial_rows})
+    if len(run_ids) != 1 or not run_ids[0]:
+        raise ValueError(f"{trial_source} expected one non-empty final-eval run id")
+
+    selection_source = docs_dir / "stage_h_final_selection_manifest.jsonl"
+    selection_rows: list[Mapping[str, object]] = []
+    with selection_source.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            payload = json.loads(line)
+            if not isinstance(payload, Mapping):
+                raise ValueError(f"{selection_source}:{line_number} is not a JSON object")
+            selection_rows.append(payload)
+    if len(selection_rows) != 3:
+        raise ValueError(f"{selection_source} expected three selected manifests")
+    selection_by_case = {str(row.get("case", "")): row for row in selection_rows}
+    if set(selection_by_case) != {str(row["case"]) for row in trial_rows}:
+        raise ValueError(f"{selection_source} cases do not match {trial_source}")
+    for row in trial_rows:
+        selection = selection_by_case[str(row["case"])]
+        if selection.get("family") != "no_balance_cosine":
+            raise ValueError(f"{selection_source} has non-selected family {selection.get('family')!r}")
+        if not _bool(selection.get("selected_for_final_eval"), field="selected_for_final_eval", source=selection_source):
+            raise ValueError(f"{selection_source} contains unselected final manifest")
+        if _bool(selection.get("test_accessed"), field="test_accessed", source=selection_source):
+            raise ValueError(f"{selection_source} selection manifest accessed CIFAR-10 test")
+        if str(selection.get("selection_stage")) != "stage_h_validation_full3ep":
+            raise ValueError(f"{selection_source} has unexpected selection_stage")
+        if "highest mean validation accuracy" not in str(selection.get("selection_rule", "")):
+            raise ValueError(f"{selection_source} is missing the validation-selection rule")
+        if _fmt_int(selection.get("seed")) != _fmt_int(row["seed"]):
+            raise ValueError(f"{selection_source} seed does not match final trial row")
+        if str(selection.get("checkpoint_path")) != str(row.get("checkpoint_path")):
+            raise ValueError(f"{selection_source} checkpoint path does not match final trial row")
+        if str(selection.get("checkpoint_sha256")) != str(row.get("checkpoint_sha256")):
+            raise ValueError(f"{selection_source} checkpoint hash does not match final trial row")
+        if _fmt_float(_float(selection, "best_val_accuracy", source=selection_source), 6) != _fmt_float(
+            _float(row, "selected_val_accuracy", source=trial_source), 6
+        ):
+            raise ValueError(f"{selection_source} validation accuracy does not match final trial row")
 
     _expect_metric(
         report_text,
@@ -633,6 +697,24 @@ def _validate_stage_h_final_metrics(report_text: str, docs_dir: Path) -> None:
         f"test accuracy `{_fmt_float(_float(family, 'best_test_accuracy', source=family_source), 6)}`",
         label="Stage H final best test accuracy",
         source=family_source,
+    )
+    _expect_contains(
+        report_text,
+        "Validation run: `stage_h_validation_full3ep_20260704_5b5e4e1`",
+        label="Stage H final validation run id",
+        source=trial_source,
+    )
+    _expect_contains(
+        report_text,
+        f"Final-eval run: `{run_ids[0]}`",
+        label="Stage H final eval run id",
+        source=trial_source,
+    )
+    _expect_contains(
+        report_text,
+        f"final-eval commit `{commits[0]}`",
+        label="Stage H final eval commit",
+        source=trial_source,
     )
 
 

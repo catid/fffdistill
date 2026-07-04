@@ -265,8 +265,18 @@ def aggregate_by_family(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any
                 "mean_test_accuracy": statistics.fmean(test_acc),
                 "std_test_accuracy": statistics.stdev(test_acc) if len(test_acc) > 1 else 0.0,
                 "mean_test_steps": statistics.fmean(test_steps) if test_steps else None,
-                "partial_test_evaluation": any(bool(row["partial_test_evaluation"]) for row in family_rows),
-                "test_accessed": any(bool(row["test_accessed"]) for row in family_rows),
+                "partial_test_evaluation": any(
+                    _parse_bool(
+                        row.get("partial_test_evaluation"),
+                        field="partial_test_evaluation",
+                        source=f"family {family}",
+                    )
+                    for row in family_rows
+                ),
+                "test_accessed": any(
+                    _parse_bool(row.get("test_accessed"), field="test_accessed", source=f"family {family}")
+                    for row in family_rows
+                ),
                 "best_case": best["case"],
                 "best_seed": best["seed"],
                 "best_test_accuracy": best["test_accuracy"],

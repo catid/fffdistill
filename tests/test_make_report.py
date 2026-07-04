@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import shutil
 from pathlib import Path
 
@@ -68,6 +69,34 @@ def _rewrite_csv_row(path: Path, *, row_index: int, updates: dict[str, str]) -> 
         writer = csv.DictWriter(handle, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
+
+
+def _rewrite_jsonl_record(path: Path, *, record_index: int, updates: dict[str, object]) -> None:
+    rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    rows[record_index].update(updates)
+    path.write_text("\n".join(json.dumps(row, sort_keys=True) for row in rows) + "\n", encoding="utf-8")
+
+
+def test_validate_final_report_rejects_stage_h_selection_rank_drift(tmp_path: Path) -> None:
+    docs_dir = tmp_path / "docs"
+    shutil.copytree(Path("docs"), docs_dir)
+    source = docs_dir / "stage_h_validation_full3ep_families.csv"
+    _rewrite_csv_row(source, row_index=0, updates={"mean_best_val_accuracy": "0.100000"})
+    write_fairness_reports(docs_dir=docs_dir)
+
+    with pytest.raises(ValueError, match="does not select no_balance_cosine"):
+        validate_final_report(docs_dir / "final_report.md")
+
+
+def test_validate_final_report_rejects_test_accessed_selection_manifest(tmp_path: Path) -> None:
+    docs_dir = tmp_path / "docs"
+    shutil.copytree(Path("docs"), docs_dir)
+    source = docs_dir / "stage_h_final_selection_manifest.jsonl"
+    _rewrite_jsonl_record(source, record_index=0, updates={"test_accessed": True})
+    write_fairness_reports(docs_dir=docs_dir)
+
+    with pytest.raises(ValueError, match="selection manifest accessed CIFAR-10 test"):
+        validate_final_report(docs_dir / "final_report.md")
 
 
 def test_validate_final_report_rejects_stale_corrected_stage_f_metric(tmp_path: Path) -> None:
