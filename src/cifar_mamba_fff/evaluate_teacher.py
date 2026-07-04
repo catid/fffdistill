@@ -19,6 +19,8 @@ from .train_teacher import (
 )
 from .utils import RunContext, append_jsonl, bool_arg, write_json
 
+MIN_REPORTABLE_TEACHER_VAL_ACCURACY = 0.90
+
 
 def _jsonable(value: object) -> object:
     if is_dataclass(value) and not isinstance(value, type):
@@ -47,6 +49,51 @@ def selected_val_accuracy(checkpoint: Mapping[str, object]) -> float:
     if not isinstance(metrics, Mapping) or "val_accuracy" not in metrics:
         raise ValueError("checkpoint is missing validation metrics; refusing final test access")
     return float(metrics["val_accuracy"])
+
+
+def validate_final_eval_threshold(
+    *,
+    min_selected_val_accuracy: float,
+    allow_below_target: bool,
+) -> None:
+    if min_selected_val_accuracy < MIN_REPORTABLE_TEACHER_VAL_ACCURACY and not allow_below_target:
+        raise ValueError(
+            f"min_selected_val_accuracy={min_selected_val_accuracy:.4f} is below the "
+            f"project final-test floor {MIN_REPORTABLE_TEACHER_VAL_ACCURACY:.4f}; "
+            "pass --allow-below-target true only for an explicitly labeled failure analysis"
+        )
+
+
+def format_teacher_final_result(
+    *,
+    checkpoint_path: Path,
+    selected_val_accuracy_value: float,
+    metrics: Mapping[str, float],
+    elapsed_seconds: float,
+    parameter_count: int,
+    quick_smoke: bool,
+    max_test_steps: int | None,
+) -> dict[str, object]:
+    partial = quick_smoke or max_test_steps is not None
+    result: dict[str, object] = {
+        "phase": "teacher_final_test",
+        "checkpoint_path": str(checkpoint_path),
+        "selected_val_accuracy": selected_val_accuracy_value,
+        "test_steps": metrics["val_steps"],
+        "elapsed_seconds": elapsed_seconds,
+        "parameter_count": parameter_count,
+        "quick_smoke": quick_smoke,
+        "max_test_steps": max_test_steps,
+        "partial_test_evaluation": partial,
+        "test_accessed": True,
+    }
+    if partial:
+        result["test_accuracy_partial"] = metrics["val_accuracy"]
+        result["test_loss_partial"] = metrics["val_loss"]
+    else:
+        result["test_accuracy"] = metrics["val_accuracy"]
+        result["test_loss"] = metrics["val_loss"]
+    return result
 
 
 def run_config_from_checkpoint(
@@ -113,6 +160,7 @@ def evaluate_teacher_checkpoint(
     batch_size: int | None = None,
     num_workers: int | None = None,
     min_selected_val_accuracy: float = 0.90,
+    allow_below_target: bool = False,
 ) -> dict[str, object]:
     if not checkpoint_path.exists():
         raise FileNotFoundError(f"teacher checkpoint not found: {checkpoint_path}")
@@ -121,6 +169,10 @@ def evaluate_teacher_checkpoint(
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     if not isinstance(checkpoint, Mapping):
         raise ValueError("teacher checkpoint must be a mapping")
+    validate_final_eval_threshold(
+        min_selected_val_accuracy=min_selected_val_accuracy,
+        allow_below_target=allow_below_target,
+    )
     selected_val = selected_val_accuracy(checkpoint)
     if selected_val < min_selected_val_accuracy:
         raise ValueError(
@@ -178,18 +230,15 @@ def evaluate_teacher_checkpoint(
     )
     torch.cuda.synchronize(device)
     elapsed = time.perf_counter() - start
-    result = {
-        "phase": "teacher_final_test",
-        "checkpoint_path": str(checkpoint_path),
-        "selected_val_accuracy": selected_val,
-        "test_accuracy": metrics["val_accuracy"],
-        "test_loss": metrics["val_loss"],
-        "test_steps": metrics["val_steps"],
-        "elapsed_seconds": elapsed,
-        "parameter_count": parameter_count,
-        "quick_smoke": quick_smoke,
-        "test_accessed": True,
-    }
+    result = format_teacher_final_result(
+        checkpoint_path=checkpoint_path,
+        selected_val_accuracy_value=selected_val,
+        metrics=metrics,
+        elapsed_seconds=elapsed,
+        parameter_count=parameter_count,
+        quick_smoke=quick_smoke,
+        max_test_steps=max_test_steps,
+    )
     write_json(metrics_path, result)
     append_jsonl(context.output_dir / "teacher_final_test_metrics.jsonl", result)
     return result
@@ -204,6 +253,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--num-workers", type=int, default=None)
     parser.add_argument("--min-selected-val-accuracy", type=float, default=0.90)
+    parser.add_argument("--allow-below-target", type=bool_arg, default=False)
     args = parser.parse_args(argv)
     result = evaluate_teacher_checkpoint(
         checkpoint_path=Path(args.checkpoint),
@@ -213,6 +263,7 @@ def main(argv: list[str] | None = None) -> int:
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         min_selected_val_accuracy=args.min_selected_val_accuracy,
+        allow_below_target=args.allow_below_target,
     )
     print(f"teacher final test complete: {_jsonable(result)}")
     return 0

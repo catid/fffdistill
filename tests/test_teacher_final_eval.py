@@ -5,8 +5,10 @@ from pathlib import Path
 import pytest
 
 from cifar_mamba_fff.evaluate_teacher import (
+    format_teacher_final_result,
     run_config_from_checkpoint,
     selected_val_accuracy,
+    validate_final_eval_threshold,
 )
 
 
@@ -84,6 +86,52 @@ def test_selected_val_accuracy_requires_checkpoint_metrics() -> None:
     assert selected_val_accuracy(_checkpoint_config()) == pytest.approx(0.9048)
     with pytest.raises(ValueError, match="validation metrics"):
         selected_val_accuracy({"config": {}})
+
+
+def test_final_eval_threshold_requires_explicit_below_target_override() -> None:
+    validate_final_eval_threshold(min_selected_val_accuracy=0.90, allow_below_target=False)
+
+    with pytest.raises(ValueError, match="project final-test floor"):
+        validate_final_eval_threshold(min_selected_val_accuracy=0.0, allow_below_target=False)
+
+    validate_final_eval_threshold(min_selected_val_accuracy=0.0, allow_below_target=True)
+
+
+def test_final_eval_result_labels_partial_metrics_without_final_accuracy_key() -> None:
+    result = format_teacher_final_result(
+        checkpoint_path=Path("teacher_best.pt"),
+        selected_val_accuracy_value=0.9234,
+        metrics={"val_accuracy": 0.91, "val_loss": 0.2, "val_steps": 3.0},
+        elapsed_seconds=1.25,
+        parameter_count=9_500_000,
+        quick_smoke=False,
+        max_test_steps=3,
+    )
+
+    assert result["partial_test_evaluation"] is True
+    assert result["test_accuracy_partial"] == pytest.approx(0.91)
+    assert result["test_loss_partial"] == pytest.approx(0.2)
+    assert "test_accuracy" not in result
+    assert "test_loss" not in result
+    assert result["test_accessed"] is True
+
+
+def test_final_eval_result_uses_final_accuracy_key_only_for_full_eval() -> None:
+    result = format_teacher_final_result(
+        checkpoint_path=Path("teacher_best.pt"),
+        selected_val_accuracy_value=0.9234,
+        metrics={"val_accuracy": 0.91, "val_loss": 0.2, "val_steps": 40.0},
+        elapsed_seconds=8.0,
+        parameter_count=9_500_000,
+        quick_smoke=False,
+        max_test_steps=None,
+    )
+
+    assert result["partial_test_evaluation"] is False
+    assert result["test_accuracy"] == pytest.approx(0.91)
+    assert result["test_loss"] == pytest.approx(0.2)
+    assert "test_accuracy_partial" not in result
+    assert "test_loss_partial" not in result
 
 
 def test_final_eval_checkpoint_config_enables_test_only_for_selected_eval() -> None:
