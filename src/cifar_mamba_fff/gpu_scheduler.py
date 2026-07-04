@@ -581,6 +581,15 @@ def collect_detached_job_artifacts(
     return collected
 
 
+def resolve_collect_root(collect_root: str | Path | None, *, run_id: str | None) -> Path:
+    if collect_root is not None:
+        return Path(collect_root)
+    base = Path("outputs/scheduler_collected")
+    if run_id is None:
+        return base
+    return base / run_id
+
+
 def wait_for_jobs(
     machines: list[MachineSpec],
     jobs: list[GpuJob],
@@ -681,8 +690,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--collect-root",
-        default="outputs/scheduler_collected",
-        help="Local directory where small logs/status/metrics are copied from each launched job.",
+        default=None,
+        help=(
+            "Local directory where small logs/status/metrics are copied from each launched job. "
+            "Defaults to outputs/scheduler_collected/<run-id> when --run-id is set, otherwise "
+            "outputs/scheduler_collected."
+        ),
     )
     parser.add_argument(
         "--launch-results-out",
@@ -698,6 +711,7 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("--hpo-max-attempts-per-job must be >= --hpo-trials-per-job")
     if not args.dry_run and not args.quick_smoke and not args.allow_long_jobs:
         raise RuntimeError("refusing non-smoke scheduler launch without --allow-long-jobs true")
+    collect_root = resolve_collect_root(args.collect_root, run_id=args.run_id)
 
     machines = load_machines(args.machines)
     unavailable_slots = parse_unavailable_slots(args.unavailable_slot)
@@ -804,7 +818,7 @@ def main(argv: list[str] | None = None) -> int:
                     artifacts = collect_detached_job_artifacts(
                         specs_by_name[str(job.machine)],
                         job,
-                        local_root=Path(args.collect_root),
+                        local_root=collect_root,
                         timeout_s=args.launch_timeout_s,
                     )
                     handle.write(

@@ -21,6 +21,7 @@ from cifar_mamba_fff.gpu_scheduler import (
     launch_detached_job,
     parse_unavailable_slots,
     read_detached_job_status,
+    resolve_collect_root,
     write_queue,
 )
 from cifar_mamba_fff.profile import time_cuda_callable
@@ -315,6 +316,16 @@ def test_scheduler_main_threads_hpo_args_and_requires_cifar_preflight(
     assert "--max-train-steps 1" in queue_records[0]["command"]
     assert "--max-val-steps 1" in queue_records[0]["command"]
     assert "recorded 1 GPU slots" in capsys.readouterr().out
+
+
+def test_scheduler_default_collect_root_is_run_scoped() -> None:
+    assert resolve_collect_root(None, run_id="teacher-hpo-001") == Path(
+        "outputs/scheduler_collected/teacher-hpo-001"
+    )
+    assert resolve_collect_root(None, run_id=None) == Path("outputs/scheduler_collected")
+    assert resolve_collect_root("outputs/custom_collect", run_id="teacher-hpo-001") == Path(
+        "outputs/custom_collect"
+    )
 
 
 def test_scheduler_command_quotes_paths_with_spaces() -> None:

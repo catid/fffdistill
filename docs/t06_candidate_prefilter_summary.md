@@ -74,3 +74,49 @@ Results:
 - full gate: environment verification passed, ruff passed, 222 pytest tests passed
 
 Independent read-only subworker review found no integration issues and confirmed the smoke uses synthetic tensors rather than CIFAR data.
+
+## Multi-Machine Broad HPO Smoke
+
+After committing and syncing the prefilter to remotes, a broad-config scheduler smoke was launched on the 10 currently usable GPUs. `foureyes:2` and `foureyes:3` were excluded because they were still occupied by unrelated high-memory jobs.
+
+```bash
+source .venv/bin/activate
+PYTHONPATH=src python -m cifar_mamba_fff.gpu_scheduler \
+  --dry-run false \
+  --quick-smoke true \
+  --smoke-mode metadata \
+  --job-kind teacher_hpo \
+  --teacher-hpo-config configs/teacher_hpo.yaml \
+  --run-id t06_prefilter_broad_smoke_20260704_0604 \
+  --hpo-trials-per-job 1 \
+  --hpo-max-attempts-per-job 64 \
+  --max-train-steps 1 \
+  --max-val-steps 1 \
+  --unavailable-slot foureyes:2 \
+  --unavailable-slot foureyes:3 \
+  --wait true \
+  --wait-timeout-s 1200 \
+  --poll-interval-s 5
+```
+
+Results:
+
+| Slot | Status | Rejected | Kernel Rejects | Accepted Config | Smoke Val Acc |
+| --- | --- | ---: | ---: | --- | ---: |
+| work:0 | succeeded | 8 | 1 | d=160 depth=24 p=4 state=64 head=64 rank=2 bi=True bs=512 cosine params=9,772,554 | 0.18359375 |
+| work:1 | succeeded | 30 | 3 | d=288 depth=16 p=2 state=64 head=64 rank=2 bi=False bs=256 wsd params=9,525,066 | 0.171875 |
+| ai:0 | succeeded | 18 | 0 | d=224 depth=24 p=2 state=64 head=32 rank=2 bi=False bs=512 cosine params=9,141,386 | 0.1171875 |
+| ai:1 | succeeded | 27 | 0 | d=288 depth=8 p=4 state=64 head=64 rank=2 bi=True bs=256 wsd params=9,480,138 | 0.13671875 |
+| foureyes:0 | succeeded | 8 | 0 | d=288 depth=16 p=4 state=64 head=32 rank=2 bi=False bs=256 wsd params=9,641,706 | 0.12890625 |
+| foureyes:1 | succeeded | 7 | 0 | d=256 depth=20 p=2 state=64 head=64 rank=2 bi=False bs=1024 cosine params=9,567,306 | 0.17578125 |
+| ripper:0 | succeeded | 0 | 0 | d=192 depth=16 p=2 state=64 head=64 rank=2 bi=True bs=512 cosine params=9,053,258 | 0.13671875 |
+| ripper:1 | failed_logic | 64 | 5 | none | n/a |
+| ripper:2 | succeeded | 49 | 4 | d=224 depth=24 p=2 state=64 head=32 rank=2 bi=False bs=512 wsd params=9,141,386 | 0.15625 |
+| ripper:3 | succeeded | 17 | 3 | d=288 depth=16 p=2 state=64 head=64 rank=2 bi=False bs=256 cosine params=9,525,066 | 0.078125 |
+
+Interpretation:
+
+- The broad config is viable but inefficient: 9 of 10 jobs found a parameter-valid and kernel-safe candidate within 64 attempts.
+- One job exhausted all 64 attempts and failed with zero valid candidates. This is expected HPO accounting, not a training success.
+- Real HPO launches should use a higher `--hpo-max-attempts-per-job` or a documented kernel-safe narrowed config if zero-candidate jobs waste too much GPU time.
+- Scheduler artifact collection was patched after this run so default collection paths include `--run-id`, preventing later HPO waves from overwriting collected summaries.
