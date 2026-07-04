@@ -8,7 +8,10 @@ from copy import deepcopy
 import pytest
 
 import cifar_mamba_fff.hpo.distill_hpo as distill_hpo
-from cifar_mamba_fff.distill_linears import reject_unknown_distill_config_keys
+from cifar_mamba_fff.distill_linears import (
+    LinearDistillConfig,
+    reject_unknown_distill_config_keys,
+)
 from cifar_mamba_fff.hpo.distill_hpo import (
     apply_distill_hpo_overrides,
     canonicalize_distill_route_overrides,
@@ -419,6 +422,60 @@ def test_cases_sampler_respects_offsets_and_preserves_case_names() -> None:
     ]
 
 
+def test_cases_sampler_derives_and_validates_launch_seed_and_router_family() -> None:
+    candidates = sample_distill_hpo_cases(
+        [
+            {
+                "name": "seed_from_metadata",
+                "launch_seed": 21001,
+                "router_family": "vanilla_ste",
+                "overrides": {
+                    "router_recipe": "vanilla_ste",
+                    "route_rows": 1,
+                    "route_row_role": "routing_only",
+                },
+            }
+        ],
+        max_trials=1,
+        max_attempts=1,
+    )
+    assert candidates[0].overrides["seed"] == 21001
+
+    with pytest.raises(ValueError, match="launch_seed"):
+        sample_distill_hpo_cases(
+            [
+                {
+                    "name": "mismatch",
+                    "launch_seed": 21001,
+                    "overrides": {
+                        "seed": 21002,
+                        "route_rows": 1,
+                        "route_row_role": "routing_only",
+                    },
+                }
+            ],
+            max_trials=1,
+            max_attempts=1,
+        )
+
+    with pytest.raises(ValueError, match="router_family"):
+        sample_distill_hpo_cases(
+            [
+                {
+                    "name": "router_mismatch",
+                    "router_family": "utility_targeted_ste",
+                    "overrides": {
+                        "router_recipe": "vanilla_ste",
+                        "route_rows": 1,
+                        "route_row_role": "routing_only",
+                    },
+                }
+            ],
+            max_trials=1,
+            max_attempts=1,
+        )
+
+
 def test_cases_sampler_trial_plan_writes_exact_named_case(tmp_path) -> None:
     summary = write_distill_hpo_trial_plan(
         base_config=load_yaml("configs/fff_distill_default.yaml"),
@@ -684,6 +741,109 @@ def test_stage_f_train_eval_shards_cover_all_eligible_layers_once() -> None:
     assert search_space["router_recipe"] == ["vanilla_ste"]
     assert search_space["route_row_role"] == ["split_routing_output"]
     assert search_space["locoprop_refit"] == ["every_500"]
+
+
+def test_l7k_equal_budget_router_config_plans_strict_hard_layer_cases(tmp_path) -> None:
+    base = load_yaml("configs/fff_distill_default.yaml")
+    hpo_config = load_yaml("configs/fff_distill_router_equal_budget_hard_layers.yaml")
+    contract = hpo_config["execution_contract"]
+    cases = hpo_config["cases"]
+    router_families = [
+        "vanilla_ste",
+        "clipped_ste",
+        "sigmoid_surrogate_ste",
+        "st_gumbel",
+        "expert_choice_imitation",
+        "utility_targeted_ste",
+        "hard_em_utility_ste",
+    ]
+    launch_seeds = [21001, 21002, 21003]
+
+    assert hpo_config["sampler"] == "cases"
+    assert hpo_config["max_trials"] == len(router_families) * len(launch_seeds)
+    assert contract["sample_split"] == "train_eval"
+    assert contract["metric_split"] == "holdout"
+    assert contract["metric_holdout_fraction"] == pytest.approx(0.10)
+    assert contract["test_accessed"] is False
+    assert contract["launch_seeds"] == launch_seeds
+    assert len(cases) == hpo_config["max_trials"]
+    assert [
+        (case["router_family"], case["launch_seed"])
+        for case in cases
+    ] == [(family, seed) for family in router_families for seed in launch_seeds]
+
+    summary = write_distill_hpo_trial_plan(
+        base_config=base,
+        hpo_config=hpo_config,
+        output_dir=tmp_path,
+        max_trials=hpo_config["max_trials"],
+        max_attempts=hpo_config["max_trials"],
+        seed=123,
+    )
+
+    assert summary["sampler"] == "cases"
+    assert summary["accepted_trials"] == hpo_config["max_trials"]
+    assert summary["test_accessed"] is False
+    assert summary["execution_contract"] == contract
+    assert [trial["attempt_index"] for trial in summary["trials"]] == list(range(hpo_config["max_trials"]))
+    for trial in summary["trials"]:
+        overrides = trial["overrides"]
+        expected_seed = cases[int(trial["trial_index"])]["launch_seed"]
+        assert overrides["seed"] == expected_seed
+        assert overrides["include_indices"] == [35, 39, 41, 43, 45, 47]
+        assert overrides["shared_unrouted_frac"] == pytest.approx(0.20)
+        assert overrides["route_rows"] == 1
+        assert overrides["route_result_rows"] == 2
+        assert overrides["leaf_rows"] == 4
+        assert overrides["depth"] == 5
+        assert overrides["route_rows_contribute"] is True
+        assert overrides["route_row_role"] == "split_routing_output"
+        assert overrides["route_rows_output_count"] == "all"
+        assert overrides["route_rows_output_fraction"] == pytest.approx(0.5)
+        assert overrides["hard_routing"] is True
+        assert overrides["balance_recipe"] == "split_minleaf"
+
+        config = load_yaml(tmp_path / "trials" / f"trial_{trial['trial_index']:06d}" / "distill_config.yaml")
+        reject_unknown_distill_config_keys(config)
+        assert config["seed"] == expected_seed
+        assert config["eligible_linear"]["include_indices"] == [35, 39, 41, 43, 45, 47]
+        assert config["fff"]["route_row_role"] == "split_routing_output"
+        assert config["fff"]["route_result_rows"] == 2
+        assert config["balance"]["recipe"] == "split_minleaf"
+        distill_config = LinearDistillConfig.from_mapping(config.get("distill"))
+        assert distill_config.metric_holdout_fraction == pytest.approx(0.10)
+
+
+def test_l7k_execution_contract_rejects_wrong_sample_split(tmp_path) -> None:
+    hpo_config = load_yaml("configs/fff_distill_router_equal_budget_hard_layers.yaml")
+
+    with pytest.raises(ValueError, match="sample_split"):
+        run_distill_hpo_trials(
+            base_config=load_yaml("configs/fff_distill_default.yaml"),
+            hpo_config=hpo_config,
+            output_dir=tmp_path,
+            max_trials=1,
+            max_attempts=1,
+            seed=123,
+            teacher_checkpoint="/tmp/teacher_best.pt",
+            sample_split="val",
+            trial_runner=lambda **kwargs: pytest.fail("runner should not be called"),
+        )
+
+
+def test_l7k_execution_contract_rejects_metric_holdout_mismatch(tmp_path) -> None:
+    hpo_config = deepcopy(load_yaml("configs/fff_distill_router_equal_budget_hard_layers.yaml"))
+    hpo_config["execution_contract"]["metric_holdout_fraction"] = 0.25
+
+    with pytest.raises(ValueError, match="metric_holdout_fraction"):
+        write_distill_hpo_trial_plan(
+            base_config=load_yaml("configs/fff_distill_default.yaml"),
+            hpo_config=hpo_config,
+            output_dir=tmp_path,
+            max_trials=1,
+            max_attempts=1,
+            seed=123,
+        )
 
 
 def test_distill_hpo_generated_config_still_rejects_real_unknown_keys(tmp_path) -> None:

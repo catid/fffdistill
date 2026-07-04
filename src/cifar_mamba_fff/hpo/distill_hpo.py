@@ -14,6 +14,7 @@ from typing import Literal
 
 import yaml
 
+from cifar_mamba_fff.distill_linears import LinearDistillConfig
 from cifar_mamba_fff.models.fff_linear import FFFLinearConfig
 from cifar_mamba_fff.utils import bool_arg, load_yaml, write_json
 
@@ -90,7 +91,7 @@ KNOWN_OVERRIDE_KEYS = (
     | set(ROUTER_OVERRIDE_MAP)
     | set(LOCO_PROP_OVERRIDE_MAP)
     | set(ELIGIBLE_OVERRIDE_MAP)
-    | {"case_name", "locoprop_refit"}
+    | {"case_name", "locoprop_refit", "seed"}
 )
 
 
@@ -665,6 +666,21 @@ def _case_overrides(case: Mapping[str, object], *, case_index: int) -> dict[str,
         overrides = dict(overrides_value)
     else:
         overrides = {key: value for key, value in case.items() if key not in {"name", "overrides"}}
+    if "launch_seed" in case:
+        launch_seed = int(case["launch_seed"])
+        if "seed" in overrides and int(overrides["seed"]) != launch_seed:
+            raise ValueError(
+                f"case {name} launch_seed={launch_seed} does not match overrides.seed={overrides['seed']}"
+            )
+        overrides.setdefault("seed", launch_seed)
+    if "router_family" in case and "router_recipe" in overrides:
+        router_family = str(case["router_family"])
+        router_recipe = str(overrides["router_recipe"])
+        if router_family != router_recipe:
+            raise ValueError(
+                f"case {name} router_family={router_family!r} does not match "
+                f"overrides.router_recipe={router_recipe!r}"
+            )
     overrides["case_name"] = name
     _reject_unknown_override_keys(overrides)
     return overrides
@@ -780,6 +796,8 @@ def apply_distill_hpo_overrides(
     if "include_indices" in overrides and "include_names" in overrides:
         raise ValueError("eligible_linear include_indices and include_names are mutually exclusive")
     config: dict[str, object] = copy.deepcopy(dict(base_config))
+    if "seed" in overrides:
+        config["seed"] = int(overrides["seed"])
     fff = _as_mapping(config.get("fff"), section="fff")
     eligible = _as_mapping(config.get("eligible_linear"), section="eligible_linear")
     balance = _as_mapping(config.get("balance"), section="balance")
@@ -829,6 +847,67 @@ def _write_yaml(path: Path, payload: Mapping[str, object]) -> None:
     path.write_text(yaml.safe_dump(dict(payload), sort_keys=True), encoding="utf-8")
 
 
+def _execution_contract(hpo_config: Mapping[str, object]) -> dict[str, object]:
+    value = hpo_config.get("execution_contract")
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise ValueError("distill HPO execution_contract must be a mapping")
+    return dict(value)
+
+
+def _contract_bool(value: object, *, field: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"distill HPO execution_contract.{field} must be boolean")
+    return value
+
+
+def _validate_contract_for_trial(
+    *,
+    contract: Mapping[str, object],
+    trial_config: Mapping[str, object],
+    overrides: Mapping[str, object],
+) -> None:
+    if not contract:
+        return
+    if "test_accessed" in contract and _contract_bool(contract["test_accessed"], field="test_accessed"):
+        raise ValueError("distill HPO execution_contract.test_accessed must be false")
+    if "launch_seeds" in contract:
+        launch_seeds_raw = contract["launch_seeds"]
+        if not isinstance(launch_seeds_raw, Sequence) or isinstance(launch_seeds_raw, (str, bytes)):
+            raise ValueError("distill HPO execution_contract.launch_seeds must be a sequence")
+        launch_seeds = {int(seed) for seed in launch_seeds_raw}
+        if "seed" not in overrides:
+            raise ValueError("distill HPO execution_contract.launch_seeds requires each case to set seed")
+        seed = int(overrides["seed"])
+        if seed not in launch_seeds:
+            raise ValueError(
+                f"distill HPO case seed {seed} is not listed in execution_contract.launch_seeds"
+            )
+    metric_split = contract.get("metric_split")
+    if metric_split is not None and str(metric_split) != "holdout":
+        raise ValueError("distill HPO execution_contract.metric_split must be holdout")
+    if "metric_holdout_fraction" in contract:
+        expected = float(contract["metric_holdout_fraction"])
+        actual = LinearDistillConfig.from_mapping(trial_config.get("distill")).metric_holdout_fraction
+        if not math.isclose(actual, expected, rel_tol=0.0, abs_tol=1e-12):
+            raise ValueError(
+                "distill HPO execution_contract.metric_holdout_fraction="
+                f"{expected} does not match generated distill.metric_holdout_fraction={actual}"
+            )
+
+
+def _validate_contract_for_run(*, contract: Mapping[str, object], sample_split: str) -> None:
+    if not contract:
+        return
+    expected_sample_split = contract.get("sample_split")
+    if expected_sample_split is not None and str(expected_sample_split) != sample_split:
+        raise ValueError(
+            "distill HPO execution_contract.sample_split="
+            f"{expected_sample_split!r} does not match requested sample_split={sample_split!r}"
+        )
+
+
 def write_distill_hpo_trial_plan(
     *,
     base_config: Mapping[str, object],
@@ -841,6 +920,7 @@ def write_distill_hpo_trial_plan(
     grid_offset: int = 0,
 ) -> dict[str, object]:
     sampler = distill_hpo_sampler(hpo_config)
+    contract = _execution_contract(hpo_config)
     if sampler == "cases":
         candidates = sample_distill_hpo_cases(
             hpo_config.get("cases"),
@@ -869,6 +949,11 @@ def write_distill_hpo_trial_plan(
         trial_config = apply_distill_hpo_overrides(base_config, candidate.overrides)
         if teacher_checkpoint is not None:
             trial_config["teacher_checkpoint"] = teacher_checkpoint
+        _validate_contract_for_trial(
+            contract=contract,
+            trial_config=trial_config,
+            overrides=candidate.overrides,
+        )
         config_path = trial_dir / "distill_config.yaml"
         _write_yaml(config_path, trial_config)
         record = {
@@ -891,6 +976,7 @@ def write_distill_hpo_trial_plan(
         "grid_offset": grid_offset,
         "seed": seed,
         "teacher_checkpoint": teacher_checkpoint,
+        "execution_contract": contract,
         "test_accessed": False,
         "trials": trial_records,
     }
@@ -963,6 +1049,8 @@ def run_distill_hpo_trials(
 ) -> dict[str, object]:
     if not quick_smoke and teacher_checkpoint is None:
         raise RuntimeError("teacher_checkpoint is required for executable distill HPO")
+    contract = _execution_contract(hpo_config)
+    _validate_contract_for_run(contract=contract, sample_split=sample_split)
     plan = write_distill_hpo_trial_plan(
         base_config=base_config,
         hpo_config=hpo_config,

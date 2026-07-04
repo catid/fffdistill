@@ -1,0 +1,174 @@
+study_name: fff_l7k_router_equal_budget_hard_layers_train_eval
+sampler: cases
+objective: validation_normalized_mse
+direction: minimize
+max_trials: 21
+description: Strict equal-budget hard out_proj router comparison for fff-l7k.
+execution_contract:
+  sample_split: train_eval
+  metric_split: holdout
+  metric_holdout_fraction: 0.10
+  test_accessed: false
+  launch_seeds: [21001, 21002, 21003]
+  seed_scope: case override; generated distill_config.yaml top-level seed must match launch_seed.
+cases:
+  - name: vanilla_ste_seed21001
+    launch_seed: 21001
+    router_family: vanilla_ste
+    overrides: &vanilla
+      seed: 21001
+      include_indices: [35, 39, 41, 43, 45, 47]
+      router_recipe: vanilla_ste
+      shared_unrouted_frac: 0.20
+      route_rows: 1
+      route_result_rows: 2
+      leaf_rows: 4
+      depth: 5
+      route_rows_contribute: true
+      route_row_role: split_routing_output
+      route_rows_output_count: all
+      route_rows_output_fraction: 0.5
+      activation: silu
+      hard_routing: true
+      region_leak: 0.01
+      master_leaf: false
+      balance_recipe: split_minleaf
+      balance_coeff: 0.001
+      min_leaf_tokens: 64
+      locoprop_refit: every_500
+  - name: vanilla_ste_seed21002
+    launch_seed: 21002
+    router_family: vanilla_ste
+    overrides:
+      <<: *vanilla
+      seed: 21002
+  - name: vanilla_ste_seed21003
+    launch_seed: 21003
+    router_family: vanilla_ste
+    overrides:
+      <<: *vanilla
+      seed: 21003
+  - name: clipped_ste_seed21001
+    launch_seed: 21001
+    router_family: clipped_ste
+    overrides: &clipped
+      <<: *vanilla
+      seed: 21001
+      router_recipe: clipped_ste
+      tau: 1.0
+      clip_margin: 1.0
+  - name: clipped_ste_seed21002
+    launch_seed: 21002
+    router_family: clipped_ste
+    overrides:
+      <<: *clipped
+      seed: 21002
+  - name: clipped_ste_seed21003
+    launch_seed: 21003
+    router_family: clipped_ste
+    overrides:
+      <<: *clipped
+      seed: 21003
+  - name: sigmoid_surrogate_ste_seed21001
+    launch_seed: 21001
+    router_family: sigmoid_surrogate_ste
+    overrides: &sigmoid
+      <<: *vanilla
+      seed: 21001
+      router_recipe: sigmoid_surrogate_ste
+      tau: 1.0
+  - name: sigmoid_surrogate_ste_seed21002
+    launch_seed: 21002
+    router_family: sigmoid_surrogate_ste
+    overrides:
+      <<: *sigmoid
+      seed: 21002
+  - name: sigmoid_surrogate_ste_seed21003
+    launch_seed: 21003
+    router_family: sigmoid_surrogate_ste
+    overrides:
+      <<: *sigmoid
+      seed: 21003
+  - name: st_gumbel_seed21001
+    launch_seed: 21001
+    router_family: st_gumbel
+    overrides: &st_gumbel
+      <<: *vanilla
+      seed: 21001
+      router_recipe: st_gumbel
+      tau: 1.0
+  - name: st_gumbel_seed21002
+    launch_seed: 21002
+    router_family: st_gumbel
+    overrides:
+      <<: *st_gumbel
+      seed: 21002
+  - name: st_gumbel_seed21003
+    launch_seed: 21003
+    router_family: st_gumbel
+    overrides:
+      <<: *st_gumbel
+      seed: 21003
+  - name: expert_choice_imitation_seed21001
+    launch_seed: 21001
+    router_family: expert_choice_imitation
+    overrides: &expert_choice
+      <<: *vanilla
+      seed: 21001
+      router_recipe: expert_choice_imitation
+      capacity_factor: 1.25
+      imitation_coeff: 1.0
+  - name: expert_choice_imitation_seed21002
+    launch_seed: 21002
+    router_family: expert_choice_imitation
+    overrides:
+      <<: *expert_choice
+      seed: 21002
+  - name: expert_choice_imitation_seed21003
+    launch_seed: 21003
+    router_family: expert_choice_imitation
+    overrides:
+      <<: *expert_choice
+      seed: 21003
+  - name: utility_targeted_ste_seed21001
+    launch_seed: 21001
+    router_family: utility_targeted_ste
+    overrides: &utility_targeted
+      <<: *vanilla
+      seed: 21001
+      router_recipe: utility_targeted_ste
+      utility_loss_coeff: 1.0
+      utility_tau: 0.3
+  - name: utility_targeted_ste_seed21002
+    launch_seed: 21002
+    router_family: utility_targeted_ste
+    overrides:
+      <<: *utility_targeted
+      seed: 21002
+  - name: utility_targeted_ste_seed21003
+    launch_seed: 21003
+    router_family: utility_targeted_ste
+    overrides:
+      <<: *utility_targeted
+      seed: 21003
+  - name: hard_em_utility_ste_seed21001
+    launch_seed: 21001
+    router_family: hard_em_utility_ste
+    overrides: &hard_em
+      <<: *vanilla
+      seed: 21001
+      router_recipe: hard_em_utility_ste
+      utility_loss_coeff: 1.0
+      utility_tau: 0.3
+  - name: hard_em_utility_ste_seed21002
+    launch_seed: 21002
+    router_family: hard_em_utility_ste
+    overrides:
+      <<: *hard_em
+      seed: 21002
+  - name: hard_em_utility_ste_seed21003
+    launch_seed: 21003
+    router_family: hard_em_utility_ste
+    overrides:
+      <<: *hard_em
+      seed: 21003
