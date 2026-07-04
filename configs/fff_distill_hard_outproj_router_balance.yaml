@@ -1,0 +1,90 @@
+study_name: hard_outproj_router_balance_train_eval
+sampler: cases
+objective: validation_normalized_mse
+direction: minimize
+max_trials: 12
+cases:
+  - name: baseline_vanilla_none
+    overrides: &base
+      include_indices: [35, 39, 41, 43, 45, 47]
+      router_recipe: vanilla_ste
+      shared_unrouted_frac: 0.20
+      route_rows: 1
+      leaf_rows: 4
+      depth: 5
+      route_row_role: split_routing_output
+      route_result_rows: 2
+      route_rows_output_count: all
+      route_rows_output_fraction: 0.5
+      activation: silu
+      region_leak: 0.01
+      master_leaf: false
+      balance_recipe: none
+      balance_coeff: 0.001
+      min_leaf_tokens: 64
+      locoprop_refit: every_500
+  - name: vanilla_split_minleaf
+    overrides:
+      <<: *base
+      balance_recipe: split_minleaf
+  - name: vanilla_split_minleaf_uniform
+    overrides:
+      <<: *base
+      balance_recipe: split_minleaf_uniform
+  - name: vanilla_split_minleaf_margin
+    overrides:
+      <<: *base
+      balance_recipe: split_minleaf_margin
+      balance_coeff: 0.003
+      margin: 0.2
+      margin_coeff: 0.001
+  - name: clipped_split_minleaf
+    overrides:
+      <<: *base
+      router_recipe: clipped_ste
+      balance_recipe: split_minleaf
+      tau: 1.0
+      clip_margin: 1.0
+  - name: sigmoid_split_minleaf
+    overrides:
+      <<: *base
+      router_recipe: sigmoid_surrogate_ste
+      balance_recipe: split_minleaf
+      tau: 1.0
+  - name: st_gumbel_split_minleaf
+    overrides:
+      <<: *base
+      router_recipe: st_gumbel
+      balance_recipe: split_minleaf
+      tau: 1.0
+  - name: utility_targeted_split_minleaf
+    overrides:
+      <<: *base
+      router_recipe: utility_targeted_ste
+      balance_recipe: split_minleaf
+      utility_loss_coeff: 1.0
+      utility_tau: 0.3
+  - name: hard_em_split_minleaf
+    overrides:
+      <<: *base
+      router_recipe: hard_em_utility_ste
+      balance_recipe: split_minleaf
+      utility_loss_coeff: 1.0
+  - name: expert_choice_split_minleaf
+    overrides:
+      <<: *base
+      router_recipe: expert_choice_imitation
+      balance_recipe: split_minleaf
+      capacity_factor: 1.25
+      imitation_coeff: 1.0
+  - name: vanilla_route_rows_2
+    overrides:
+      <<: *base
+      route_rows: 2
+      route_result_rows: 2
+      balance_recipe: split_minleaf
+  - name: vanilla_depth_6
+    overrides:
+      <<: *base
+      depth: 6
+      balance_recipe: split_minleaf
