@@ -11,6 +11,7 @@ import cifar_mamba_fff.distill_linears as distill_linears
 from cifar_mamba_fff.distill_linears import (
     BalanceDistillConfig,
     LinearDistillConfig,
+    LocoPropDistillConfig,
     RouterDistillConfig,
     _balance_auxiliary_loss,
     _capture_autocast_context,
@@ -177,6 +178,27 @@ def test_balance_distill_config_parses_hpo_aliases() -> None:
 
     with pytest.raises(ValueError, match=r"balance\.recipe"):
         BalanceDistillConfig.from_mapping({"recipe": "not_a_recipe"})
+
+
+def test_locoprop_distill_config_parses_and_validates() -> None:
+    config = LocoPropDistillConfig.from_mapping(
+        {
+            "enabled": True,
+            "interval_steps": 250,
+            "ridge_lambda": 0.001,
+            "locoprop_blend_alpha": 1.0,
+            "damp_optimizer_state_after_refit": False,
+        }
+    )
+
+    assert config.enabled is True
+    assert config.interval_steps == 250
+    assert config.ridge_lambda == pytest.approx(0.001)
+    assert config.blend_alpha == pytest.approx(1.0)
+    assert config.damp_optimizer_state_after_refit is False
+
+    with pytest.raises(ValueError, match=r"locoprop\.blend_alpha"):
+        LocoPropDistillConfig.from_mapping({"enabled": True, "blend_alpha": 1.5})
 
 
 def test_capture_autocast_context_uses_bf16_only_for_cuda(
@@ -485,6 +507,61 @@ def test_distill_linear_applies_balance_config_and_writes_metrics(tmp_path) -> N
     assert final_balance["loss"] >= 0.0
     assert final_balance["weighted_loss"] >= 0.0
     assert set(final_balance["components"]) == {"split", "min_leaf", "margin"}
+
+
+def test_distill_linear_locoprop_refit_logs_and_reduces_mse(tmp_path) -> None:
+    torch.manual_seed(19)
+    linear = nn.Linear(6, 4)
+    x = torch.randn(96, 6)
+    y = linear(x).detach()
+
+    result = distill_linear_from_tensors(
+        "layer",
+        linear,
+        x,
+        y,
+        fff_config={
+            "shared_rows": 4,
+            "depth": 1,
+            "route_rows": 1,
+            "leaf_rows": 2,
+            "activation": "silu",
+            "hard_routing": True,
+            "route_row_role": "routing_only",
+            "route_rows_output_count": 0,
+        },
+        distill_config=LinearDistillConfig.from_mapping(
+            {
+                "steps": 1,
+                "lr": 0.001,
+                "batch_size": 16,
+                "max_capture_bytes_per_layer": None,
+            }
+        ),
+        router_config=RouterDistillConfig(recipe="vanilla_ste", loss_coeff=0.0),
+        balance_config=BalanceDistillConfig(recipe="none", coeff=0.0),
+        locoprop_config=LocoPropDistillConfig(
+            enabled=True,
+            ridge_lambda=1.0e-4,
+            blend_alpha=1.0,
+        ),
+        output_dir=tmp_path,
+    )
+
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "layer_metrics.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    refit = next(record["locoprop"] for record in records if record["phase"] == "locoprop_refit")
+    final_refit = records[-1]["locoprop"]
+
+    assert refit["status"] == "succeeded"
+    assert refit["enabled"] is True
+    assert refit["basis_rows"] > 0
+    assert refit["actual_mse_after"] <= refit["actual_mse_before"] + 1.0e-6
+    assert refit["mse_after"] <= refit["mse_before"] + 1.0e-6
+    assert final_refit["status"] == "succeeded"
+    assert result.final_normalized_mse <= result.initial_normalized_mse
 
 
 def test_hard_routing_without_route_output_or_router_loss_is_rejected(tmp_path) -> None:

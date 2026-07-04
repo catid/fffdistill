@@ -14,6 +14,7 @@ from torch import nn
 
 from .data import build_cifar10_loaders
 from .evaluate_teacher import run_config_from_checkpoint, selected_val_accuracy
+from .locoprop.ridge_refit import ridge_refit
 from .losses.balance import (
     min_leaf_occupancy_loss,
     route_margin_loss,
@@ -279,6 +280,47 @@ class BalanceDistillConfig:
             raise ValueError("balance.margin must be a non-negative finite value")
         if self.margin_coeff < 0.0 or not math.isfinite(self.margin_coeff):
             raise ValueError("balance.margin_coeff must be a non-negative finite value")
+
+
+@dataclass(frozen=True)
+class LocoPropDistillConfig:
+    enabled: bool = False
+    interval_steps: int = 500
+    ridge_lambda: float = 1.0e-4
+    blend_alpha: float = 0.5
+    damp_optimizer_state_after_refit: bool = True
+
+    @classmethod
+    def from_mapping(cls, raw: dict[str, Any] | None) -> LocoPropDistillConfig:
+        if raw is None:
+            return cls()
+        if not isinstance(raw, dict):
+            raise ValueError("locoprop config must be a mapping")
+        config = cls(
+            enabled=_parse_distill_bool(raw.get("enabled", cls.enabled), key="locoprop.enabled"),
+            interval_steps=int(raw.get("interval_steps", cls.interval_steps)),
+            ridge_lambda=float(raw.get("ridge_lambda", cls.ridge_lambda)),
+            blend_alpha=float(
+                raw.get("blend_alpha", raw.get("locoprop_blend_alpha", cls.blend_alpha))
+            ),
+            damp_optimizer_state_after_refit=_parse_distill_bool(
+                raw.get(
+                    "damp_optimizer_state_after_refit",
+                    cls.damp_optimizer_state_after_refit,
+                ),
+                key="locoprop.damp_optimizer_state_after_refit",
+            ),
+        )
+        config.validate()
+        return config
+
+    def validate(self) -> None:
+        if self.interval_steps <= 0:
+            raise ValueError("locoprop.interval_steps must be positive")
+        if self.ridge_lambda < 0.0 or not math.isfinite(self.ridge_lambda):
+            raise ValueError("locoprop.ridge_lambda must be a non-negative finite value")
+        if not 0.0 <= self.blend_alpha <= 1.0 or not math.isfinite(self.blend_alpha):
+            raise ValueError("locoprop.blend_alpha must be in [0, 1]")
 
 
 @dataclass(frozen=True)
@@ -813,6 +855,200 @@ def _balance_auxiliary_loss(
     return weighted_loss, diagnostics
 
 
+def _locoprop_basis_and_prior(
+    layer: FFFLinear,
+    x: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, list[dict[str, object]]]:
+    flat = x.detach().to(dtype=torch.float32)
+    route_info = layer._route_flat(flat, hard=True)
+    basis_parts: list[torch.Tensor] = []
+    prior_parts: list[torch.Tensor] = []
+    layout: list[dict[str, object]] = []
+
+    if layer.shared_weight is not None and layer.shared_output is not None:
+        shared_values = layer._activation(
+            F.linear(flat, layer.shared_weight.float(), layer.shared_bias.float())
+        )
+        basis_parts.append(shared_values)
+        prior_parts.append(layer.shared_output.detach().float())
+        layout.append({"kind": "shared", "rows": layer.shared_rows})
+
+    route_rows_per_node = layer._route_output_rows_per_node_selected()
+    if route_rows_per_node > 0:
+        if layer.route_row_role == "shared_routing_and_output":
+            if layer.route_output is None:
+                raise RuntimeError("route_output is required for LocoProp route refit")
+            values = route_info.route_values[:, :, :route_rows_per_node].detach().float()
+            prior = layer.route_output[:, :route_rows_per_node].detach().float()
+            kind = "route_output"
+        elif layer.route_row_role == "split_routing_output":
+            if layer.route_result_output is None:
+                raise RuntimeError("route_result_output is required for LocoProp route refit")
+            values = route_info.route_result_values[:, :, :route_rows_per_node].detach().float()
+            prior = layer.route_result_output[:, :route_rows_per_node].detach().float()
+            kind = "route_result_output"
+        else:
+            raise RuntimeError("routing_only cannot have route output rows")
+        route_basis = flat.new_zeros(flat.shape[0], layer.internal_nodes * route_rows_per_node)
+        offsets = torch.arange(route_rows_per_node, device=flat.device)
+        cols = route_info.node_ids.unsqueeze(-1) * route_rows_per_node + offsets
+        route_basis.scatter_add_(1, cols.reshape(flat.shape[0], -1), values.reshape(flat.shape[0], -1))
+        basis_parts.append(route_basis)
+        prior_parts.append(prior.reshape(-1, layer.out_features))
+        layout.append(
+            {
+                "kind": kind,
+                "rows_per_node": route_rows_per_node,
+                "rows": layer.internal_nodes * route_rows_per_node,
+            }
+        )
+
+    leaf_values = layer._activation(
+        torch.einsum("ni,lri->nlr", flat, layer.leaf_weight[: layer.leaves].float())
+        + layer.leaf_bias[: layer.leaves].float()
+    )
+    leaf_basis = flat.new_zeros(flat.shape[0], layer.leaf_banks, layer.leaf_rows)
+    leaf_basis[:, : layer.leaves] = leaf_values * route_info.leaf_weights.float().unsqueeze(-1)
+
+    master_idx = layer.master_leaf_index
+    if master_idx is not None:
+        leaf_basis[:, master_idx] = layer._activation(
+            F.linear(flat, layer.leaf_weight[master_idx].float(), layer.leaf_bias[master_idx].float())
+        )
+
+    fallback_idx = layer.fallback_leaf_index
+    fallback_weight = layer._fallback_weight()
+    if fallback_idx is not None and fallback_weight != 0.0:
+        fallback_values = layer._activation(
+            F.linear(
+                flat,
+                layer.leaf_weight[fallback_idx].float(),
+                layer.leaf_bias[fallback_idx].float(),
+            )
+        )
+        leaf_basis[:, fallback_idx] = fallback_values * fallback_weight
+
+    basis_parts.append(leaf_basis.reshape(flat.shape[0], -1))
+    prior_parts.append(layer.leaf_output.detach().float().reshape(-1, layer.out_features))
+    layout.append({"kind": "leaf_output", "rows": layer.leaf_banks * layer.leaf_rows})
+
+    return torch.cat(basis_parts, dim=1), torch.cat(prior_parts, dim=0), layout
+
+
+def _copy_locoprop_weights(
+    layer: FFFLinear,
+    weights: torch.Tensor,
+    layout: list[dict[str, object]],
+) -> list[nn.Parameter]:
+    touched: list[nn.Parameter] = []
+    offset = 0
+    with torch.no_grad():
+        for entry in layout:
+            rows = int(entry["rows"])
+            block = weights[offset : offset + rows].to(device=layer.leaf_output.device)
+            offset += rows
+            kind = str(entry["kind"])
+            if kind == "shared":
+                if layer.shared_output is None:
+                    raise RuntimeError("shared_output disappeared during LocoProp copy")
+                layer.shared_output.copy_(block.to(dtype=layer.shared_output.dtype))
+                touched.append(layer.shared_output)
+            elif kind == "route_output":
+                if layer.route_output is None:
+                    raise RuntimeError("route_output disappeared during LocoProp copy")
+                rows_per_node = int(entry["rows_per_node"])
+                reshaped = block.reshape(layer.internal_nodes, rows_per_node, layer.out_features)
+                layer.route_output[:, :rows_per_node].copy_(reshaped.to(dtype=layer.route_output.dtype))
+                touched.append(layer.route_output)
+            elif kind == "route_result_output":
+                if layer.route_result_output is None:
+                    raise RuntimeError("route_result_output disappeared during LocoProp copy")
+                rows_per_node = int(entry["rows_per_node"])
+                reshaped = block.reshape(layer.internal_nodes, rows_per_node, layer.out_features)
+                layer.route_result_output[:, :rows_per_node].copy_(
+                    reshaped.to(dtype=layer.route_result_output.dtype)
+                )
+                touched.append(layer.route_result_output)
+            elif kind == "leaf_output":
+                reshaped = block.reshape(layer.leaf_banks, layer.leaf_rows, layer.out_features)
+                layer.leaf_output.copy_(reshaped.to(dtype=layer.leaf_output.dtype))
+                touched.append(layer.leaf_output)
+            else:
+                raise RuntimeError(f"unknown LocoProp layout kind: {kind}")
+    if offset != weights.shape[0]:
+        raise RuntimeError("LocoProp layout did not consume all solved rows")
+    return touched
+
+
+def _damp_optimizer_state(
+    optimizer: torch.optim.Optimizer,
+    parameters: list[nn.Parameter],
+) -> int:
+    damped = 0
+    for parameter in parameters:
+        state = optimizer.state.get(parameter)
+        if not state:
+            continue
+        for value in state.values():
+            if isinstance(value, torch.Tensor):
+                value.zero_()
+                damped += 1
+    return damped
+
+
+def _apply_locoprop_refit(
+    layer: FFFLinear,
+    x: torch.Tensor,
+    y: torch.Tensor,
+    config: LocoPropDistillConfig,
+    *,
+    optimizer: torch.optim.Optimizer,
+) -> dict[str, object]:
+    if not config.enabled:
+        return {"enabled": False, "status": "skipped"}
+    with torch.no_grad():
+        pred_before = layer(x).float()
+        actual_mse_before = torch.mean((pred_before - y.float()).square()).item()
+        basis, prior, layout = _locoprop_basis_and_prior(layer, x)
+        target = y.float()
+        if layer.bias is not None:
+            target = target - layer.bias.detach().float()
+        result = ridge_refit(
+            basis,
+            target,
+            ridge_lambda=config.ridge_lambda,
+            v0=prior,
+            alpha=config.blend_alpha,
+            out_dtype=prior.dtype,
+        )
+        touched = _copy_locoprop_weights(layer, result.weights, layout)
+        damped_state_tensors = (
+            _damp_optimizer_state(optimizer, touched)
+            if config.damp_optimizer_state_after_refit
+            else 0
+        )
+        pred_after = layer(x).float()
+        actual_mse_after = torch.mean((pred_after - y.float()).square()).item()
+    return {
+        "enabled": True,
+        "status": "succeeded",
+        "basis_rows": int(basis.shape[1]),
+        "tokens": int(basis.shape[0]),
+        "ridge_lambda": config.ridge_lambda,
+        "blend_alpha": config.blend_alpha,
+        "mse_before": result.mse_before,
+        "mse_after": result.mse_after,
+        "actual_mse_before": float(actual_mse_before),
+        "actual_mse_after": float(actual_mse_after),
+        "jitter_used": result.jitter_used,
+        "used_fallback": result.used_fallback,
+        "attempts": result.attempts,
+        "cholesky_info": result.cholesky_info,
+        "method": result.method,
+        "damped_optimizer_state_tensors": damped_state_tensors,
+    }
+
+
 def _guard_router_training(
     layer: FFFLinear,
     router_config: RouterDistillConfig,
@@ -852,6 +1088,7 @@ def distill_linear_from_tensors(
     distill_config: LinearDistillConfig,
     router_config: RouterDistillConfig | None = None,
     balance_config: BalanceDistillConfig | None = None,
+    locoprop_config: LocoPropDistillConfig | None = None,
     output_dir: Path,
 ) -> LayerDistillResult:
     if x.ndim != 2 or x.shape[1] != linear.in_features:
@@ -873,6 +1110,7 @@ def distill_linear_from_tensors(
     replacement.train()
     router_config = router_config or RouterDistillConfig()
     balance_config = balance_config or BalanceDistillConfig()
+    locoprop_config = locoprop_config or LocoPropDistillConfig()
     _guard_router_training(replacement, router_config, balance_config)
     optimizer = torch.optim.AdamW(replacement.parameters(), lr=distill_config.lr)
     metrics_path = output_dir / "layer_metrics.jsonl"
@@ -939,6 +1177,35 @@ def distill_linear_from_tensors(
         loss.backward()
         optimizer.step()
 
+    locoprop_record: dict[str, object] = {
+        "enabled": locoprop_config.enabled,
+        "status": "skipped",
+    }
+    if locoprop_config.enabled:
+        try:
+            locoprop_record = _apply_locoprop_refit(
+                replacement,
+                x_train,
+                y_train,
+                locoprop_config,
+                optimizer=optimizer,
+            )
+        except Exception as exc:
+            locoprop_record = {
+                "enabled": True,
+                "status": "failed",
+                "reason": f"{type(exc).__name__}: {exc}",
+            }
+        append_jsonl(
+            metrics_path,
+            {
+                "layer": name,
+                "phase": "locoprop_refit",
+                "tokens": int(x_train.shape[0]),
+                "locoprop": locoprop_record,
+            },
+        )
+
     with torch.no_grad():
         final_loss_tensor = compute_loss(x_train, y_train)
         final_mse = distillation_loss(
@@ -984,6 +1251,7 @@ def distill_linear_from_tensors(
                 balance_config,
                 total_tokens=x_train.shape[0],
             )[1],
+            "locoprop": locoprop_record,
             "replacement_path": result.replacement_path,
         },
     )
@@ -1002,6 +1270,7 @@ def run_layerwise_distillation(
     distill_config = LinearDistillConfig.from_mapping(config.get("distill"))
     router_config = RouterDistillConfig.from_mapping(config.get("router"))
     balance_config = BalanceDistillConfig.from_mapping(config.get("balance"))
+    locoprop_config = LocoPropDistillConfig.from_mapping(config.get("locoprop"))
     raw_fff_config = config.get("fff") or {}
     if not isinstance(raw_fff_config, dict):
         raise ValueError("fff config must be a mapping")
@@ -1044,6 +1313,7 @@ def run_layerwise_distillation(
             distill_config=distill_config,
             router_config=router_config,
             balance_config=balance_config,
+            locoprop_config=locoprop_config,
             output_dir=output_dir,
         )
         results.append(

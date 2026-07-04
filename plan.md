@@ -150,6 +150,10 @@ Stage C: STE/router smoke tests on one representative middle Linear layer.
 - Balance HPO knobs are active in layerwise distillation. `balance.recipe/coeff`,
   min-leaf occupancy, uniform leaf balance, and margin regularization are parsed, added to
   the training loss, and logged in layer metrics.
+- LocoProp-S is wired as an optional output-vector refit in layerwise distillation. It
+  builds a fixed-route/fixed-activation local basis, solves a ridge problem in FP32,
+  blends solved output vectors back into the FFF layer, and logs solve telemetry plus
+  before/after MSE.
 
 Stage D: single-layer architecture sweep.
 
