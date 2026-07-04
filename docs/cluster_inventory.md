@@ -4,8 +4,8 @@ Generated: 2026-07-04T04:40:59.489382+00:00
 
 ## Current Caveats
 
-- Strict cluster verification sees all 12 configured GPUs and project venvs, but detached scheduler preflight found `ripper`, `foureyes`, and `ai` workdirs still at commit `eb67a76a3a2831c70641d76d7ff04d8ffe53bb0d` while `work` expected `6f35d8c1eb7efde0ad1712d32a690743f35045d8`. Sync remote workdirs to the latest pushed commit before launching remote teacher jobs.
-- A 12-slot metadata scheduler attempt before preflight hardening launched successfully on local `work` slots only; remotes rejected `--smoke-mode metadata` from stale `train_teacher.py`. The scheduler now classifies this as `failed_infra` during preflight instead of launching stale remote code.
+- Strict cluster verification sees all 12 configured GPUs and project venvs. Remote workdirs on `ripper`, `foureyes`, and `ai` were synced from `work` after commit `2885d7fb0060ef4d277df5f6c359b4acb6e35cb5`, preserving remote `.venv`, data, outputs, and checkpoints.
+- A 12-slot metadata scheduler attempt before preflight hardening launched successfully on local `work` slots only; remotes rejected `--smoke-mode metadata` from stale `train_teacher.py`. The scheduler now classifies stale workdirs as `failed_infra` during preflight, and after remote sync a 12-slot metadata scheduler smoke succeeded on all configured slots with empty stderr logs and collected status/stdout artifacts.
 - `foureyes` GPUs 2 and 3 report about 15 GiB free, so memory-heavy real jobs should treat those as busy until a fresh inventory shows they have cleared. `ai` has 2x RTX 5090 GPUs with about 32 GiB each, so batch-size caps should be separate from the 95 GiB Pro6000 class.
 - Earlier remote setup verified official Mamba3/Muon/fastfeedforward environments on `ripper`, `foureyes`, and `ai`. GitHub SSH from the remote hosts previously failed with `publickey` errors, so remote repo sync may need rsync from `work` or an explicitly authorized git reset after credentials are fixed.
 
