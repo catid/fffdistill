@@ -131,10 +131,11 @@ Current Stage A status:
   environment; update the constraints file deliberately when changing dependency versions.
 - Completed Stage A bugfixes include FFF route-output empty-batch handling and no-grad
   LocoProp-S ridge refits.
-- Teacher HPO now has an opt-in CUDA BF16 kernel-smoke candidate prefilter. Parameter-valid
-  official Mamba-3 candidates that fail the optimized TileLang CUDA path are rejected
-  before they consume HPO trial slots. Broad HPO and pinned HPO smoke configs enable this
-  gate with a synthetic batch size of 1.
+- Teacher HPO now has opt-in candidate prefilters for both 9M-11M parameter-count
+  compatibility and CUDA BF16 kernel smoke. Broad HPO and pinned HPO smoke configs
+  enable the parameter-count pool first, then reject official Mamba-3 candidates that
+  fail the optimized TileLang CUDA path before they consume HPO trial slots. The CUDA
+  smoke uses a synthetic batch size of 1 and never touches CIFAR-10 test data.
 - Long teacher HPO may start only after the current prefilter code is committed/pushed,
   remotes are synced to that commit, current GPU occupancy is rechecked, and unavailable
   slots are explicitly excluded.

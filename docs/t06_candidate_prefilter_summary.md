@@ -116,7 +116,8 @@ Results:
 
 Interpretation:
 
-- The broad config is viable but inefficient: 9 of 10 jobs found a parameter-valid and kernel-safe candidate within 64 attempts.
-- One job exhausted all 64 attempts and failed with zero valid candidates. This is expected HPO accounting, not a training success.
-- Real HPO launches should use a higher `--hpo-max-attempts-per-job` or a documented kernel-safe narrowed config if zero-candidate jobs waste too much GPU time.
+- The original broad config was viable but inefficient: 9 of 10 jobs found a parameter-valid and kernel-safe candidate within 64 attempts.
+- One job exhausted all 64 attempts and failed with zero valid candidates. This was expected HPO accounting, not a training success.
+- Follow-up HPO code adds a parameter-count prefilter before the CUDA kernel smoke so future refill waves draw model dimensions only from 9M-11M official Mamba-3 candidates while still sampling optimizer/augmentation/schedule choices normally.
+- Future real HPO launches should keep `--hpo-max-attempts-per-job` high enough for CUDA kernel-smoke failures, but should no longer spend most attempts on parameter-count-invalid model shapes.
 - Scheduler artifact collection was patched after this run so default collection paths include `--run-id`, preventing later HPO waves from overwriting collected summaries.

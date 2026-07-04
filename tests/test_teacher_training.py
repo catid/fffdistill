@@ -15,6 +15,7 @@ from cifar_mamba_fff.data import Cifar10DataConfig
 from cifar_mamba_fff.hpo.teacher_hpo import (
     CandidateFilterConfig,
     CudaKernelSmokeUnavailable,
+    build_parameter_count_prefilter_pool,
     cuda_kernel_smoke_candidate,
     evaluate_hpo_candidate,
     parse_candidate_filter_config,
@@ -173,6 +174,9 @@ def test_hpo_candidate_filter_config_parses_strictly() -> None:
     assert parse_candidate_filter_config(
         {"candidate_filter": {"cuda_kernel_smoke": True, "kernel_smoke_batch_size": 2}}
     ) == CandidateFilterConfig(cuda_kernel_smoke=True, kernel_smoke_batch_size=2)
+    assert parse_candidate_filter_config(
+        {"candidate_filter": {"parameter_count_prefilter": True}}
+    ) == CandidateFilterConfig(parameter_count_prefilter=True)
 
     with pytest.raises(ValueError, match="must be a mapping"):
         parse_candidate_filter_config({"candidate_filter": True})
@@ -182,6 +186,8 @@ def test_hpo_candidate_filter_config_parses_strictly() -> None:
         parse_candidate_filter_config({"candidate_filter": {"cuda_kernel_smoke": "false"}})
     with pytest.raises(ValueError, match="kernel_smoke_batch_size must be a positive integer"):
         parse_candidate_filter_config({"candidate_filter": {"kernel_smoke_batch_size": 1.5}})
+    with pytest.raises(ValueError, match="parameter_count_prefilter must be a bool"):
+        parse_candidate_filter_config({"candidate_filter": {"parameter_count_prefilter": "true"}})
 
 
 def test_cuda_kernel_smoke_candidate_requires_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -240,6 +246,151 @@ def test_teacher_hpo_smoke_config_uses_known_kernel_safe_default() -> None:
     assert run_config.model.mimo_rank == 2
     assert run_config.model.bidirectional is False
     assert run_config.train.batch_size_per_gpu == 512
+
+
+def test_parameter_count_prefilter_pool_keeps_only_target_sized_model_shapes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_model = Mamba3CifarConfig()
+
+    def fake_evaluate(config: Mamba3CifarConfig) -> TeacherCandidateResult:
+        accepted = config.d_model == 224 and config.depth == 20
+        return TeacherCandidateResult(
+            accepted=accepted,
+            parameter_count=10_000_000 if accepted else 7_000_000,
+            reason="accepted" if accepted else "outside target parameter range",
+        )
+
+    monkeypatch.setattr(teacher_hpo, "evaluate_teacher_candidate", fake_evaluate)
+
+    pool = build_parameter_count_prefilter_pool(
+        base_model,
+        {
+            "d_model": [160, 224],
+            "depth": [8, 20],
+            "batch_size_per_gpu": [512, 1024],
+            "lr_muon_loguniform": [0.003, 0.05],
+        },
+    )
+
+    assert pool == [{"d_model": 224, "depth": 20}]
+
+
+def test_parameter_count_prefilter_overrides_invalid_sampled_model_shape(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_run = load_teacher_run_config("configs/teacher_default.yaml", quick_smoke=True)
+    sampled = iter(
+        [
+            {"d_model": 160, "depth": 8, "batch_size_per_gpu": 1024},
+        ]
+    )
+
+    def fake_evaluate(config: Mamba3CifarConfig) -> TeacherCandidateResult:
+        accepted = config.d_model == 224 and config.depth == 20
+        return TeacherCandidateResult(
+            accepted=accepted,
+            parameter_count=10_000_000 if accepted else 7_000_000,
+            reason="accepted" if accepted else "outside target parameter range",
+        )
+
+    monkeypatch.setattr(teacher_hpo, "sample_teacher_overrides", lambda _search_space, *, rng: next(sampled))
+    monkeypatch.setattr(teacher_hpo, "evaluate_teacher_candidate", fake_evaluate)
+
+    candidates = sample_valid_hpo_candidates(
+        base_run,
+        {
+            "d_model": [160, 224],
+            "depth": [8, 20],
+            "batch_size_per_gpu": [512, 1024],
+        },
+        quick_smoke=True,
+        max_trials=1,
+        max_attempts=1,
+        rng=teacher_hpo.random.Random(123),
+        event_log_path=tmp_path / "events.jsonl",
+        candidate_filter=CandidateFilterConfig(parameter_count_prefilter=True),
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].attempt_index == 0
+    assert candidates[0].run_config.model.d_model == 224
+    assert candidates[0].run_config.model.depth == 20
+    assert candidates[0].run_config.data.batch_size == 1024
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert events == [{"accepted_model_shapes": 1, "event": "parameter_count_prefilter_pool"}]
+
+
+def test_parameter_prefilter_still_rejects_known_cuda_kernel_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_run = load_teacher_run_config("configs/teacher_default.yaml", quick_smoke=True)
+    sampled = iter(
+        [
+            {"d_model": 160, "depth": 8, "batch_size_per_gpu": 512},
+            {"d_model": 160, "depth": 8, "batch_size_per_gpu": 512},
+        ]
+    )
+
+    def fake_evaluate(config: Mamba3CifarConfig) -> TeacherCandidateResult:
+        accepted = config.d_model == 224 and config.depth == 20
+        return TeacherCandidateResult(
+            accepted=accepted,
+            parameter_count=10_000_000 if accepted else 7_000_000,
+            reason="accepted" if accepted else "outside target parameter range",
+        )
+
+    smoke_calls = 0
+
+    def fake_kernel_smoke(_run_config: TeacherRunConfig) -> TeacherCandidateResult:
+        nonlocal smoke_calls
+        smoke_calls += 1
+        if smoke_calls == 1:
+            return TeacherCandidateResult(
+                False,
+                10_000_000,
+                "cuda_kernel_smoke_failed: InternalError: Failed to set the allowed dynamic shared memory size",
+            )
+        return TeacherCandidateResult(True, 10_000_000, "accepted")
+
+    monkeypatch.setattr(teacher_hpo, "sample_teacher_overrides", lambda _search_space, *, rng: next(sampled))
+    monkeypatch.setattr(teacher_hpo, "evaluate_teacher_candidate", fake_evaluate)
+
+    candidates = sample_valid_hpo_candidates(
+        base_run,
+        {
+            "d_model": [160, 224],
+            "depth": [8, 20],
+            "batch_size_per_gpu": [512],
+        },
+        quick_smoke=True,
+        max_trials=1,
+        max_attempts=2,
+        rng=teacher_hpo.random.Random(123),
+        event_log_path=tmp_path / "events.jsonl",
+        candidate_filter=CandidateFilterConfig(
+            parameter_count_prefilter=True,
+            cuda_kernel_smoke=True,
+            kernel_smoke_batch_size=1,
+        ),
+        kernel_smoke_fn=fake_kernel_smoke,
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].attempt_index == 1
+    assert smoke_calls == 2
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert events[0] == {"accepted_model_shapes": 1, "event": "parameter_count_prefilter_pool"}
+    assert events[1]["event"] == "rejected_pretrial"
+    assert "dynamic shared memory" in events[1]["reason"]
 
 
 def test_hpo_valid_resampling_does_not_count_rejected_candidates(

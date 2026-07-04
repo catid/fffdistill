@@ -4,6 +4,7 @@ direction: maximize
 max_trials: 120
 prune_on: val_accuracy
 candidate_filter:
+  parameter_count_prefilter: true
   cuda_kernel_smoke: true
   kernel_smoke_batch_size: 1
 search_space:

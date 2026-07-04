@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import itertools
 import math
 import random
 from collections.abc import Callable, Mapping, Sequence
@@ -45,6 +46,7 @@ class CudaKernelSmokeUnavailable(RuntimeError):
 class CandidateFilterConfig:
     cuda_kernel_smoke: bool = False
     kernel_smoke_batch_size: int = 1
+    parameter_count_prefilter: bool = False
 
     def validate(self) -> None:
         if not isinstance(self.cuda_kernel_smoke, bool):
@@ -55,6 +57,8 @@ class CandidateFilterConfig:
             or self.kernel_smoke_batch_size <= 0
         ):
             raise ValueError("candidate_filter.kernel_smoke_batch_size must be a positive integer")
+        if not isinstance(self.parameter_count_prefilter, bool):
+            raise ValueError("candidate_filter.parameter_count_prefilter must be a bool")
 
 
 def _parse_optional_bool(value: object, *, key: str, default: bool) -> bool:
@@ -79,7 +83,10 @@ def parse_candidate_filter_config(raw: Mapping[str, object]) -> CandidateFilterC
         value = {}
     if not isinstance(value, Mapping):
         raise ValueError("candidate_filter must be a mapping")
-    unknown = sorted(set(value) - {"cuda_kernel_smoke", "kernel_smoke_batch_size"})
+    unknown = sorted(
+        set(value)
+        - {"cuda_kernel_smoke", "kernel_smoke_batch_size", "parameter_count_prefilter"}
+    )
     if unknown:
         raise ValueError(f"candidate_filter contains unknown keys: {', '.join(unknown)}")
     config = CandidateFilterConfig(
@@ -92,6 +99,11 @@ def parse_candidate_filter_config(raw: Mapping[str, object]) -> CandidateFilterC
             value.get("kernel_smoke_batch_size"),
             key="kernel_smoke_batch_size",
             default=1,
+        ),
+        parameter_count_prefilter=_parse_optional_bool(
+            value.get("parameter_count_prefilter"),
+            key="parameter_count_prefilter",
+            default=False,
         ),
     )
     config.validate()
@@ -184,6 +196,48 @@ def sample_teacher_overrides(
         if not isinstance(values, Sequence) or isinstance(values, (str, bytes)) or not values:
             raise ValueError(f"search_space.{key} must be a non-empty sequence")
         overrides[key] = rng.choice(list(values))
+    return overrides
+
+
+def _search_space_sequence(search_space: Mapping[str, object], key: str) -> list[object]:
+    values = search_space[key]
+    if not isinstance(values, Sequence) or isinstance(values, (str, bytes)) or not values:
+        raise ValueError(f"search_space.{key} must be a non-empty sequence")
+    return list(values)
+
+
+def build_parameter_count_prefilter_pool(
+    base_model: Mamba3CifarConfig,
+    search_space: Mapping[str, object],
+) -> list[dict[str, object]]:
+    model_fields = set(Mamba3CifarConfig.__dataclass_fields__)
+    model_keys = [
+        key
+        for key in search_space
+        if key in model_fields and not key.endswith("_loguniform")
+    ]
+    if not model_keys:
+        return [{}]
+
+    pool: list[dict[str, object]] = []
+    value_lists = [_search_space_sequence(search_space, key) for key in model_keys]
+    for values in itertools.product(*value_lists):
+        overrides = dict(zip(model_keys, values, strict=True))
+        _, result = evaluate_hpo_candidate(base_model, overrides)
+        if result.accepted:
+            pool.append(overrides)
+    return pool
+
+
+def _sample_with_prefiltered_model_overrides(
+    search_space: Mapping[str, object],
+    *,
+    rng: random.Random,
+    model_pool: Sequence[Mapping[str, object]] | None,
+) -> dict[str, object]:
+    overrides = sample_teacher_overrides(search_space, rng=rng)
+    if model_pool:
+        overrides.update(dict(rng.choice(list(model_pool))))
     return overrides
 
 
@@ -320,10 +374,28 @@ def sample_valid_hpo_candidates(
             )
 
     candidates: list[HpoCandidate] = []
+    model_pool: list[dict[str, object]] | None = None
+    if filter_config.parameter_count_prefilter:
+        model_pool = build_parameter_count_prefilter_pool(base_run.model, search_space)
+        if event_log_path is not None:
+            _locked_append_jsonl(
+                event_log_path,
+                {
+                    "event": "parameter_count_prefilter_pool",
+                    "accepted_model_shapes": len(model_pool),
+                },
+            )
+        if not model_pool:
+            return []
+
     for attempt_index in range(max_attempts):
         if len(candidates) >= max_trials:
             break
-        overrides = sample_teacher_overrides(search_space, rng=rng)
+        overrides = _sample_with_prefiltered_model_overrides(
+            search_space,
+            rng=rng,
+            model_pool=model_pool,
+        )
         candidate_model, result = evaluate_hpo_candidate(base_run.model, overrides)
         if not result.accepted:
             if event_log_path is not None:
