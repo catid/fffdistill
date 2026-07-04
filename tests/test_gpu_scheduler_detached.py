@@ -61,6 +61,13 @@ def test_local_detached_job_files_and_script_construct_status_and_log_paths() ->
     assert 'final_status="failed_logic"' in script_text
 
 
+def test_collected_artifact_names_include_hpo_trial_config() -> None:
+    assert "teacher_hpo_summary.json" in gpu_scheduler.COLLECTED_ARTIFACT_NAMES
+    assert "teacher_hpo_events.jsonl" in gpu_scheduler.COLLECTED_ARTIFACT_NAMES
+    assert "trials/trial_000000/trial_config.json" in gpu_scheduler.COLLECTED_ARTIFACT_NAMES
+    assert "trials/trial_000000/trial_summary.json" in gpu_scheduler.COLLECTED_ARTIFACT_NAMES
+
+
 @pytest.mark.parametrize(
     ("payload_status", "returncode"),
     [(JobStatus.SUCCEEDED, 0), (JobStatus.FAILED_LOGIC, 2)],

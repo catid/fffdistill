@@ -27,6 +27,7 @@ COLLECTED_ARTIFACT_NAMES = (
     "metrics.jsonl",
     "teacher_hpo_summary.json",
     "teacher_hpo_events.jsonl",
+    "trials/trial_000000/trial_config.json",
     "trials/trial_000000/trial_summary.json",
     "trials/trial_000000/run_context.json",
     "trials/trial_000000/metrics_summary.json",
