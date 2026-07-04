@@ -9,6 +9,16 @@ from torch import nn
 _ADAMW_GROUP = "adamw"
 _MUON_GROUP = "muon"
 _CLASSIFIER_NAME_COMPONENTS = frozenset({"classifier", "head"})
+_FFF_BANK_PARAMETER_NAMES = frozenset(
+    {
+        "route_weight",
+        "route_output",
+        "route_result_weight",
+        "route_result_output",
+        "leaf_weight",
+        "leaf_output",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -79,6 +89,11 @@ def _excluded_name_reason(name: str, adamw_name_fragments: tuple[str, ...]) -> s
     return None
 
 
+def _is_fff_replacement_bank(name: str, param: nn.Parameter) -> bool:
+    parameter_name = name.rsplit(".", maxsplit=1)[-1]
+    return param.ndim == 3 and parameter_name in _FFF_BANK_PARAMETER_NAMES
+
+
 def format_param_assignment(assignment: ParamAssignment) -> str:
     shape = "x".join(str(dimension) for dimension in assignment.shape) or "scalar"
     return (
@@ -117,6 +132,7 @@ def split_muon_adamw_parameters(
     model: nn.Module,
     *,
     adamw_name_fragments: tuple[str, ...] = ("bias", "norm", "bn", "embedding", "embed", "head", "classifier"),
+    fff_bank_muon: bool = False,
     assignment_logger: Callable[[str], None] | None = None,
 ) -> tuple[list[nn.Parameter], list[nn.Parameter], list[ParamAssignment]]:
     muon_params: list[nn.Parameter] = []
@@ -143,6 +159,27 @@ def split_muon_adamw_parameters(
         elif excluded_name_reason is not None:
             adamw_params.append(param)
             assignments.append(ParamAssignment(name, shape, _ADAMW_GROUP, excluded_name_reason))
+        elif _is_fff_replacement_bank(name, param):
+            if fff_bank_muon:
+                muon_params.append(param)
+                assignments.append(
+                    ParamAssignment(
+                        name,
+                        shape,
+                        _MUON_GROUP,
+                        "FFF replacement bank 3D matrix batch",
+                    )
+                )
+            else:
+                adamw_params.append(param)
+                assignments.append(
+                    ParamAssignment(
+                        name,
+                        shape,
+                        _ADAMW_GROUP,
+                        "FFF replacement bank uses AdamW fallback",
+                    )
+                )
         elif param.ndim == 2:
             muon_params.append(param)
             assignments.append(ParamAssignment(name, shape, _MUON_GROUP, "hidden matrix parameter"))

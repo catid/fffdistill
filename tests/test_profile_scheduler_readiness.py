@@ -19,6 +19,8 @@ from cifar_mamba_fff.gpu_scheduler import (
     build_distill_hpo_command,
     build_dry_run_jobs,
     build_finetune_hpo_command,
+    build_student_final_command,
+    build_student_final_jobs,
     build_teacher_hpo_command,
     build_train_teacher_command,
     launch_detached_job,
@@ -427,6 +429,79 @@ def test_scheduler_finetune_hpo_jobs_bind_gpu_seed_config_and_offsets() -> None:
     assert len({job.seed for job in jobs}) == len(jobs)
 
 
+def test_scheduler_student_final_jobs_bind_manifest_rows_and_allow_reused_seeds(
+    tmp_path: Path,
+) -> None:
+    machines = [
+        MachineSpec(
+            name="work",
+            host="localhost",
+            gpus=2,
+            role="local",
+            workdir="/tmp/repo",
+        )
+    ]
+    manifest = tmp_path / "student_final_manifest.jsonl"
+    manifest.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "machine": "work",
+                        "gpu": 0,
+                        "case": "baseline_seed21001",
+                        "family": "baseline",
+                        "seed": 21001,
+                        "best_val_accuracy": 0.91,
+                        "checkpoint_path": "outputs/a/student_best.pt",
+                        "checkpoint_sha256": "a" * 64,
+                        "selection_record": "docs/selection/baseline_seed21001.json",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "machine": "work",
+                        "gpu": 1,
+                        "case": "wsd_seed21001",
+                        "family": "wsd",
+                        "seed": 21001,
+                        "best_val_accuracy": 0.90,
+                        "checkpoint_path": "outputs/b/student_best.pt",
+                        "checkpoint_sha256": "b" * 64,
+                        "selection_record": "docs/selection/wsd_seed21001.json",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    jobs = build_student_final_jobs(
+        machines,
+        manifest=manifest,
+        quick_smoke=False,
+        dry_run=True,
+        run_id="student-final",
+        batch_size=512,
+        num_workers=4,
+    )
+
+    assert [(job.machine, job.gpu_id, job.seed) for job in jobs] == [
+        ("work", 0, 21001),
+        ("work", 1, 21001),
+    ]
+    assert jobs[0].output_dir == Path("outputs/scheduler_student_final/student-final/work/0")
+    assert ".venv/bin/python -m cifar_mamba_fff.evaluate_student" in jobs[0].command
+    assert "--checkpoint outputs/a/student_best.pt" in jobs[0].command
+    assert "--selection-record docs/selection/baseline_seed21001.json" in jobs[0].command
+    assert "--batch-size 512" in jobs[0].command
+    assert "--num-workers 4" in jobs[0].command
+    assert jobs[0].metadata["job_kind"] == "student_final"
+    assert jobs[0].metadata["case"] == "baseline_seed21001"
+    assert jobs[1].metadata["family"] == "wsd"
+
+
 def test_scheduler_custom_seed_base_changes_hpo_job_seeds() -> None:
     machines = [
         MachineSpec(
@@ -566,6 +641,31 @@ def test_scheduler_finetune_hpo_command_quotes_and_uses_cuda_visible_device() ->
     assert "--max-train-steps 5" in command
     assert "--max-val-steps 2" in command
     assert "--seed 2026" in command
+
+
+def test_scheduler_student_final_command_quotes_and_uses_cuda_visible_device() -> None:
+    command = build_student_final_command(
+        gpu_id=2,
+        output_dir=Path("outputs/student final/work gpu2"),
+        python_bin=".venv with spaces/bin/python",
+        checkpoint="outputs/check point/student_best.pt",
+        selection_record="docs/selection record.json",
+        quick_smoke=False,
+        batch_size=512,
+        num_workers=4,
+        min_selected_val_accuracy=0.85,
+    )
+
+    assert command.startswith("PYTHONPATH=src CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES=2 ")
+    assert "'.venv with spaces/bin/python'" in command
+    assert "-m cifar_mamba_fff.evaluate_student" in command
+    assert "--checkpoint 'outputs/check point/student_best.pt'" in command
+    assert "--selection-record 'docs/selection record.json'" in command
+    assert "--output-dir 'outputs/student final/work gpu2'" in command
+    assert "--quick-smoke false" in command
+    assert "--batch-size 512" in command
+    assert "--num-workers 4" in command
+    assert "--min-selected-val-accuracy 0.85" in command
 
 
 def test_scheduler_main_threads_hpo_args_and_requires_cifar_preflight(
@@ -859,6 +959,111 @@ def test_scheduler_main_threads_finetune_hpo_args_and_requires_cifar_preflight(
     assert "--grid-offset 4" in queue_records[0]["command"]
     assert "--max-train-steps 3" in queue_records[0]["command"]
     assert "--max-val-steps 1" in queue_records[0]["command"]
+    assert "recorded 1 GPU slots" in capsys.readouterr().out
+
+
+def test_scheduler_main_threads_student_final_manifest_and_requires_cifar_preflight(
+    tmp_path,
+    monkeypatch,
+    capsys,
+) -> None:
+    machines_path = tmp_path / "machines.yaml"
+    machines_path.write_text(
+        "\n".join(
+            [
+                "machines:",
+                "  work:",
+                "    host: localhost",
+                "    gpus: 1",
+                "    role: local",
+                f"    workdir: {tmp_path}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    manifest = tmp_path / "student_final_manifest.jsonl"
+    manifest.write_text(
+        json.dumps(
+            {
+                "machine": "work",
+                "gpu": 0,
+                "case": "baseline_seed21001",
+                "family": "baseline",
+                "seed": 21001,
+                "best_val_accuracy": 0.91,
+                "checkpoint_path": "outputs/a/student_best.pt",
+                "checkpoint_sha256": "a" * 64,
+                "selection_record": "docs/selection/baseline_seed21001.json",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    preflight_requirements: list[bool] = []
+
+    def fake_preflight_machine(*args, **kwargs):
+        preflight_requirements.append(bool(kwargs["require_cifar10_train"]))
+        return gpu_scheduler.PreflightResult(
+            machine="work",
+            ok=False,
+            returncode=1,
+            commit="commit",
+            stdout="",
+            stderr="synthetic student final preflight stop",
+        )
+
+    def fake_launch_detached_jobs(*args, **kwargs):
+        assert args[1] == []
+        return []
+
+    monkeypatch.setattr(gpu_scheduler, "preflight_machine", fake_preflight_machine)
+    monkeypatch.setattr(gpu_scheduler, "launch_detached_jobs", fake_launch_detached_jobs)
+    monkeypatch.setattr(gpu_scheduler, "git_commit", lambda: "commit")
+    monkeypatch.setattr(gpu_scheduler, "_git_worktree_clean", lambda: True)
+
+    rc = gpu_scheduler.main(
+        [
+            "--machines",
+            str(machines_path),
+            "--queue-out",
+            str(tmp_path / "queue.jsonl"),
+            "--launch-results-out",
+            str(tmp_path / "launch.jsonl"),
+            "--dry-run",
+            "false",
+            "--quick-smoke",
+            "false",
+            "--allow-long-jobs",
+            "true",
+            "--job-kind",
+            "student_final",
+            "--run-id",
+            "student-final",
+            "--student-final-manifest",
+            str(manifest),
+            "--student-final-batch-size",
+            "512",
+            "--student-final-num-workers",
+            "4",
+            "--wait",
+            "false",
+        ]
+    )
+
+    assert rc == 0
+    assert preflight_requirements == [True]
+    queue_records = [
+        json.loads(line)
+        for line in (tmp_path / "queue.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert queue_records[0]["output_dir"] == "outputs/scheduler_student_final/student-final/work/0"
+    assert queue_records[0]["seed"] == 21001
+    assert queue_records[0]["metadata"]["job_kind"] == "student_final"
+    assert queue_records[0]["metadata"]["case"] == "baseline_seed21001"
+    assert "--checkpoint outputs/a/student_best.pt" in queue_records[0]["command"]
+    assert "--selection-record docs/selection/baseline_seed21001.json" in queue_records[0]["command"]
+    assert "--batch-size 512" in queue_records[0]["command"]
+    assert "--num-workers 4" in queue_records[0]["command"]
     assert "recorded 1 GPU slots" in capsys.readouterr().out
 
 

@@ -79,6 +79,7 @@ class TeacherTrainConfig:
     normuon_beta2: float = 0.93
     normuon_eps: float = 1e-10
     grad_clip_norm: float | None = None
+    fff_bank_muon: bool = False
 
     def validate(self) -> None:
         _positive_int("epochs", self.epochs)
@@ -130,6 +131,8 @@ class TeacherTrainConfig:
             raise ValueError("normuon_beta2 must be in [0, 1)")
         if self.normuon_eps <= 0.0:
             raise ValueError("normuon_eps must be positive")
+        if not isinstance(self.fff_bank_muon, bool):
+            raise ValueError("fff_bank_muon must be a bool")
         if self.grad_clip_norm is not None:
             _finite_nonnegative("grad_clip_norm", self.grad_clip_norm)
             if self.grad_clip_norm == 0.0:
@@ -343,9 +346,13 @@ def _import_official_muon_class() -> type[torch.optim.Optimizer]:
 def _split_and_log_optimizer_parameters(
     model: nn.Module,
     *,
+    fff_bank_muon: bool,
     assignment_log_path: Path | None,
-) -> tuple[list[nn.Parameter], list[nn.Parameter], dict[str, int]]:
-    muon_params, adamw_params, assignments = split_muon_adamw_parameters(model)
+) -> tuple[list[nn.Parameter], list[nn.Parameter], dict[str, object]]:
+    muon_params, adamw_params, assignments = split_muon_adamw_parameters(
+        model,
+        fff_bank_muon=fff_bank_muon,
+    )
     if not muon_params:
         raise ValueError("Muon parameter group is empty; refusing AdamW-only teacher training")
     if not adamw_params:
@@ -358,11 +365,29 @@ def _split_and_log_optimizer_parameters(
             encoding="utf-8",
         )
 
+    fff_bank_assignments = [
+        assignment for assignment in assignments if "FFF replacement bank" in assignment.reason
+    ]
+    fff_bank_muon_assignments = [
+        assignment for assignment in fff_bank_assignments if assignment.group == "muon"
+    ]
+    fff_bank_adamw_assignments = [
+        assignment for assignment in fff_bank_assignments if assignment.group == "adamw"
+    ]
     return muon_params, adamw_params, {
         "muon_tensors": len(muon_params),
         "adamw_tensors": len(adamw_params),
         "muon_parameters": sum(parameter.numel() for parameter in muon_params),
         "adamw_parameters": sum(parameter.numel() for parameter in adamw_params),
+        "fff_bank_muon_enabled": fff_bank_muon,
+        "fff_bank_muon_tensors": len(fff_bank_muon_assignments),
+        "fff_bank_adamw_tensors": len(fff_bank_adamw_assignments),
+        "fff_bank_muon_parameters": sum(
+            math.prod(assignment.shape) for assignment in fff_bank_muon_assignments
+        ),
+        "fff_bank_adamw_parameters": sum(
+            math.prod(assignment.shape) for assignment in fff_bank_adamw_assignments
+        ),
     }
 
 
@@ -374,6 +399,7 @@ def build_muon_adamw_optimizer(
 ) -> tuple[torch.optim.Optimizer, dict[str, object]]:
     muon_params, adamw_params, parameter_summary = _split_and_log_optimizer_parameters(
         model,
+        fff_bank_muon=train_config.fff_bank_muon,
         assignment_log_path=assignment_log_path,
     )
     optimizer_cls = _import_official_muon_class()
@@ -411,6 +437,7 @@ def build_normuon_adamw_optimizer(
 ) -> tuple[torch.optim.Optimizer, dict[str, object]]:
     muon_params, adamw_params, parameter_summary = _split_and_log_optimizer_parameters(
         model,
+        fff_bank_muon=train_config.fff_bank_muon,
         assignment_log_path=assignment_log_path,
     )
     optimizer = MuonNorMuon(

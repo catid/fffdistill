@@ -1,0 +1,23 @@
+{
+  "best_val_accuracy": 0.9306,
+  "case": "dense_copy_seed21003",
+  "checkpoint_path": "outputs/scheduler_finetune_hpo/dense_copy_baseline_validation_20260704_02e0197_wave1/ai/0/trials/trial_000002_dense_copy_seed21003/student_best.pt",
+  "checkpoint_sha256": "2356c1d2b9fe66a1480d7dcf8833cea7541bab59175675a6c7d8ab6dbb90c49d",
+  "family": "dense_copy",
+  "seed": 21003,
+  "selected_for_final_eval": true,
+  "selection_rule": "Selected every completed T15 validation baseline seed for final baseline comparison after validation-only baseline runs; no CIFAR-10 test metrics were used for selection.",
+  "selection_stage": "t15_baselines_all_families_20260704",
+  "source_trial_result": "outputs/scheduler_finetune_hpo/dense_copy_baseline_validation_20260704_02e0197_wave1/ai/0/trials/trial_000002_dense_copy_seed21003/trial_result.json",
+  "source_validation_summary": "docs/t15_missing_baseline_validation_summary.md",
+  "status": "succeeded",
+  "summary": {
+    "best_val_accuracy": 0.9306,
+    "checkpoint_path": "outputs/scheduler_finetune_hpo/dense_copy_baseline_validation_20260704_02e0197_wave1/ai/0/trials/trial_000002_dense_copy_seed21003/student_best.pt",
+    "checkpoint_sha256": "2356c1d2b9fe66a1480d7dcf8833cea7541bab59175675a6c7d8ab6dbb90c49d",
+    "selected_for_final_eval": true,
+    "status": "succeeded",
+    "test_accessed": false
+  },
+  "test_accessed": false
+}

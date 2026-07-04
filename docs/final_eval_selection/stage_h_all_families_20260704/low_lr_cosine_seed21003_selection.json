@@ -1,0 +1,23 @@
+{
+  "best_val_accuracy": 0.888,
+  "case": "low_lr_cosine_seed21003",
+  "checkpoint_path": "outputs/scheduler_finetune_hpo/stage_h_validation_full3ep_20260704_5b5e4e1/foureyes/2/trials/trial_000008_low_lr_cosine_seed21003/student_best.pt",
+  "checkpoint_sha256": "347f262bd79abd5f77a396df818956d957ee240a9139dab9a8fb13159ae426be",
+  "family": "low_lr_cosine",
+  "seed": 21003,
+  "selected_for_final_eval": true,
+  "selection_rule": "Selected every completed Stage H validation family/seed for a full-family final-test comparison after validation-only Stage H HPO; no CIFAR-10 test metrics were used for selection.",
+  "selection_stage": "stage_h_all_families_20260704",
+  "source_trial_result": "outputs/scheduler_finetune_hpo/stage_h_validation_full3ep_20260704_5b5e4e1/foureyes/2/trials/trial_000008_low_lr_cosine_seed21003/trial_result.json",
+  "source_validation_summary": "docs/stage_h_validation_full3ep_summary.md",
+  "status": "succeeded",
+  "summary": {
+    "best_val_accuracy": 0.888,
+    "checkpoint_path": "outputs/scheduler_finetune_hpo/stage_h_validation_full3ep_20260704_5b5e4e1/foureyes/2/trials/trial_000008_low_lr_cosine_seed21003/student_best.pt",
+    "checkpoint_sha256": "347f262bd79abd5f77a396df818956d957ee240a9139dab9a8fb13159ae426be",
+    "selected_for_final_eval": true,
+    "status": "succeeded",
+    "test_accessed": false
+  },
+  "test_accessed": false
+}

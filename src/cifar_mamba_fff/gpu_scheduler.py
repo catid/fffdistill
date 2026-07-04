@@ -17,6 +17,7 @@ from .utils import bool_arg, git_commit
 DEFAULT_PYTHON_BIN = ".venv/bin/python"
 DEFAULT_SMOKE_MODE = "metadata"
 DEFAULT_JOB_KIND = "teacher_train"
+SCHEDULER_JOB_KINDS = ("teacher_train", "teacher_hpo", "distill_hpo", "finetune_hpo", "student_final")
 ROOT_COLLECTED_ARTIFACT_NAMES = (
     "status.json",
     "stdout.log",
@@ -350,6 +351,159 @@ def build_finetune_hpo_command(
     return command
 
 
+def build_student_final_command(
+    *,
+    gpu_id: int,
+    output_dir: Path,
+    checkpoint: str,
+    selection_record: str,
+    python_bin: str = DEFAULT_PYTHON_BIN,
+    quick_smoke: bool = False,
+    max_test_steps: int | None = None,
+    batch_size: int | None = None,
+    num_workers: int | None = None,
+    min_selected_val_accuracy: float = 0.90,
+    allow_below_target: bool = False,
+) -> str:
+    command = (
+        f"PYTHONPATH=src CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES={gpu_id} "
+        f"{quote(python_bin)} -m cifar_mamba_fff.evaluate_student "
+        f"--checkpoint {quote(checkpoint)} "
+        f"--selection-record {quote(selection_record)} "
+        f"--output-dir {quote(str(output_dir))} "
+        f"--quick-smoke {str(quick_smoke).lower()} "
+        f"--min-selected-val-accuracy {float(min_selected_val_accuracy)} "
+        f"--allow-below-target {str(allow_below_target).lower()}"
+    )
+    if max_test_steps is not None:
+        command += f" --max-test-steps {int(max_test_steps)}"
+    if batch_size is not None:
+        command += f" --batch-size {int(batch_size)}"
+    if num_workers is not None:
+        command += f" --num-workers {int(num_workers)}"
+    return command
+
+
+def _load_student_final_manifest(path: str | Path | None) -> list[dict[str, object]]:
+    if path is None:
+        raise ValueError("--student-final-manifest is required for student_final jobs")
+    manifest_path = Path(path)
+    records: list[dict[str, object]] = []
+    with manifest_path.open("r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            payload = json.loads(stripped)
+            if not isinstance(payload, dict):
+                raise ValueError(f"{manifest_path}:{line_number} must contain a JSON object")
+            records.append(payload)
+    if not records:
+        raise ValueError(f"{manifest_path} contains no student final jobs")
+    return records
+
+
+def _manifest_str(record: dict[str, object], key: str) -> str:
+    value = record.get(key)
+    if value in (None, ""):
+        raise ValueError(f"student final manifest row missing required field {key}")
+    return str(value)
+
+
+def _manifest_int(record: dict[str, object], key: str) -> int:
+    value = record.get(key)
+    if value in (None, ""):
+        raise ValueError(f"student final manifest row missing required integer field {key}")
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"student final manifest field {key} must be an integer") from exc
+
+
+def build_student_final_jobs(
+    machines: list[MachineSpec],
+    *,
+    manifest: str | Path | None,
+    quick_smoke: bool,
+    dry_run: bool,
+    python_bin: str = DEFAULT_PYTHON_BIN,
+    output_root: Path | None = None,
+    run_id: str | None = None,
+    unavailable_slots: set[tuple[str, int]] | None = None,
+    max_jobs: int | None = None,
+    max_test_steps: int | None = None,
+    batch_size: int | None = None,
+    num_workers: int | None = None,
+    min_selected_val_accuracy: float = 0.90,
+    allow_below_target: bool = False,
+) -> list[GpuJob]:
+    specs_by_name = {machine.name: machine for machine in machines}
+    unavailable_slots = unavailable_slots or set()
+    resolved_output_root = output_root or Path("outputs/scheduler_student_final")
+    if run_id is not None:
+        resolved_output_root = resolved_output_root / run_id
+    jobs: list[GpuJob] = []
+    for row_index, record in enumerate(_load_student_final_manifest(manifest)):
+        if max_jobs is not None and len(jobs) >= max_jobs:
+            break
+        machine = _manifest_str(record, "machine")
+        if machine not in specs_by_name:
+            raise ValueError(f"student final manifest uses unknown machine {machine!r}")
+        gpu_id = _manifest_int(record, "gpu")
+        if gpu_id < 0 or gpu_id >= specs_by_name[machine].gpus:
+            raise ValueError(f"student final manifest has invalid GPU {machine}:{gpu_id}")
+        if (machine, gpu_id) in unavailable_slots:
+            continue
+        case = _manifest_str(record, "case")
+        checkpoint = _manifest_str(record, "checkpoint_path")
+        selection_record = _manifest_str(record, "selection_record")
+        seed = _manifest_int(record, "seed")
+        output_dir = resolved_output_root / machine / str(gpu_id)
+        command = build_student_final_command(
+            gpu_id=gpu_id,
+            output_dir=output_dir,
+            checkpoint=checkpoint,
+            selection_record=selection_record,
+            python_bin=python_bin,
+            quick_smoke=quick_smoke,
+            max_test_steps=max_test_steps,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            min_selected_val_accuracy=min_selected_val_accuracy,
+            allow_below_target=allow_below_target,
+        )
+        jobs.append(
+            GpuJob(
+                command=command,
+                output_dir=output_dir,
+                machine=machine,
+                gpu_id=gpu_id,
+                seed=seed,
+                metadata={
+                    "quick_smoke": quick_smoke,
+                    "dry_run": dry_run,
+                    "job_kind": "student_final",
+                    "case": case,
+                    "family": _manifest_str(record, "family"),
+                    "selection_record": selection_record,
+                    "checkpoint_path": checkpoint,
+                    "selected_val_accuracy": record.get("best_val_accuracy"),
+                    "checkpoint_sha256": record.get("checkpoint_sha256"),
+                    "manifest_row_index": row_index,
+                    "cuda_device_order": "PCI_BUS_ID",
+                    "cuda_visible_devices": str(gpu_id),
+                    "python_bin": python_bin,
+                    "output_dir": str(output_dir),
+                    "max_test_steps": max_test_steps,
+                    "batch_size": batch_size,
+                    "num_workers": num_workers,
+                },
+            )
+        )
+    _validate_jobs_unique(jobs, require_unique_seeds=False)
+    return jobs
+
+
 def build_dry_run_jobs(
     machines: list[MachineSpec],
     *,
@@ -380,8 +534,10 @@ def build_dry_run_jobs(
     max_jobs: int | None = None,
     seed_base: int = 1337,
 ) -> list[GpuJob]:
-    if job_kind not in {"teacher_train", "teacher_hpo", "distill_hpo", "finetune_hpo"}:
-        raise ValueError("job_kind must be teacher_train, teacher_hpo, distill_hpo, or finetune_hpo")
+    if job_kind not in SCHEDULER_JOB_KINDS:
+        raise ValueError(f"job_kind must be one of: {', '.join(SCHEDULER_JOB_KINDS)}")
+    if job_kind == "student_final":
+        raise ValueError("student_final jobs require build_student_final_jobs")
     if seed_base < 0:
         raise ValueError("seed_base must be non-negative")
     if distill_max_sample_batches <= 0:
@@ -517,14 +673,14 @@ def build_dry_run_jobs(
     return jobs
 
 
-def _validate_jobs_unique(jobs: list[GpuJob]) -> None:
+def _validate_jobs_unique(jobs: list[GpuJob], *, require_unique_seeds: bool = True) -> None:
     output_dirs: set[Path] = set()
     seeds: set[int] = set()
     for job in jobs:
         if job.output_dir in output_dirs:
             raise ValueError(f"duplicate job output_dir: {job.output_dir}")
         output_dirs.add(job.output_dir)
-        if job.seed is None:
+        if job.seed is None or not require_unique_seeds:
             continue
         if job.seed in seeds:
             raise ValueError(f"duplicate job seed: {job.seed}")
@@ -1229,11 +1385,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--python-bin", default=DEFAULT_PYTHON_BIN)
     parser.add_argument(
         "--job-kind",
-        choices=("teacher_train", "teacher_hpo", "distill_hpo", "finetune_hpo"),
+        choices=SCHEDULER_JOB_KINDS,
         default=DEFAULT_JOB_KIND,
         help=(
             "Launch teacher train/smoke, one-GPU teacher HPO, one-GPU distill HPO, "
-            "or one-GPU fine-tune HPO jobs."
+            "one-GPU fine-tune HPO, or manifest-driven student final-test jobs."
         ),
     )
     parser.add_argument("--teacher-base-config", default="configs/teacher_default.yaml")
@@ -1278,6 +1434,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--max-train-steps", type=int, default=None)
     parser.add_argument("--max-val-steps", type=int, default=None)
+    parser.add_argument("--student-final-manifest", default=None)
+    parser.add_argument("--student-final-max-test-steps", type=int, default=None)
+    parser.add_argument("--student-final-batch-size", type=int, default=None)
+    parser.add_argument("--student-final-num-workers", type=int, default=None)
+    parser.add_argument("--student-final-min-selected-val-accuracy", type=float, default=0.90)
+    parser.add_argument("--student-final-allow-below-target", type=bool_arg, default=False)
     parser.add_argument("--prune-min-value", type=float, default=None)
     parser.add_argument(
         "--job-output-root",
@@ -1353,35 +1515,53 @@ def main(argv: list[str] | None = None) -> int:
 
     machines = load_machines(args.machines)
     unavailable_slots = parse_unavailable_slots(args.unavailable_slot)
-    jobs = build_dry_run_jobs(
-        machines,
-        quick_smoke=args.quick_smoke,
-        dry_run=args.dry_run,
-        python_bin=args.python_bin,
-        smoke_mode=args.smoke_mode,
-        job_kind=args.job_kind,
-        teacher_base_config=args.teacher_base_config,
-        teacher_hpo_config=args.teacher_hpo_config,
-        distill_base_config=args.distill_base_config,
-        distill_hpo_config=args.distill_hpo_config,
-        finetune_base_config=args.finetune_base_config,
-        finetune_hpo_config=args.finetune_hpo_config,
-        distill_teacher_checkpoint=args.distill_teacher_checkpoint,
-        distill_sample_split=args.distill_sample_split,
-        distill_max_sample_batches=args.distill_max_sample_batches,
-        distill_grid_offset_base=args.distill_grid_offset_base,
-        finetune_grid_offset_base=args.finetune_grid_offset_base,
-        hpo_trials_per_job=args.hpo_trials_per_job,
-        hpo_max_attempts_per_job=args.hpo_max_attempts_per_job,
-        max_train_steps=args.max_train_steps,
-        max_val_steps=args.max_val_steps,
-        prune_min_value=args.prune_min_value,
-        output_root=Path(args.job_output_root) if args.job_output_root is not None else None,
-        run_id=args.run_id,
-        unavailable_slots=unavailable_slots,
-        max_jobs=args.max_jobs,
-        seed_base=args.seed_base,
-    )
+    if args.job_kind == "student_final":
+        jobs = build_student_final_jobs(
+            machines,
+            manifest=args.student_final_manifest,
+            quick_smoke=args.quick_smoke,
+            dry_run=args.dry_run,
+            python_bin=args.python_bin,
+            output_root=Path(args.job_output_root) if args.job_output_root is not None else None,
+            run_id=args.run_id,
+            unavailable_slots=unavailable_slots,
+            max_jobs=args.max_jobs,
+            max_test_steps=args.student_final_max_test_steps,
+            batch_size=args.student_final_batch_size,
+            num_workers=args.student_final_num_workers,
+            min_selected_val_accuracy=args.student_final_min_selected_val_accuracy,
+            allow_below_target=args.student_final_allow_below_target,
+        )
+    else:
+        jobs = build_dry_run_jobs(
+            machines,
+            quick_smoke=args.quick_smoke,
+            dry_run=args.dry_run,
+            python_bin=args.python_bin,
+            smoke_mode=args.smoke_mode,
+            job_kind=args.job_kind,
+            teacher_base_config=args.teacher_base_config,
+            teacher_hpo_config=args.teacher_hpo_config,
+            distill_base_config=args.distill_base_config,
+            distill_hpo_config=args.distill_hpo_config,
+            finetune_base_config=args.finetune_base_config,
+            finetune_hpo_config=args.finetune_hpo_config,
+            distill_teacher_checkpoint=args.distill_teacher_checkpoint,
+            distill_sample_split=args.distill_sample_split,
+            distill_max_sample_batches=args.distill_max_sample_batches,
+            distill_grid_offset_base=args.distill_grid_offset_base,
+            finetune_grid_offset_base=args.finetune_grid_offset_base,
+            hpo_trials_per_job=args.hpo_trials_per_job,
+            hpo_max_attempts_per_job=args.hpo_max_attempts_per_job,
+            max_train_steps=args.max_train_steps,
+            max_val_steps=args.max_val_steps,
+            prune_min_value=args.prune_min_value,
+            output_root=Path(args.job_output_root) if args.job_output_root is not None else None,
+            run_id=args.run_id,
+            unavailable_slots=unavailable_slots,
+            max_jobs=args.max_jobs,
+            seed_base=args.seed_base,
+        )
     write_queue(Path(args.queue_out), jobs)
     print(f"recorded {len(jobs)} GPU slots in {args.queue_out}")
     if not args.dry_run:
@@ -1398,7 +1578,8 @@ def main(argv: list[str] | None = None) -> int:
                     python_bin=args.python_bin,
                     expected_commit=expected_launch_commit,
                     require_cifar10_train=args.smoke_mode == "train"
-                    or args.job_kind in {"teacher_hpo", "distill_hpo", "finetune_hpo"},
+                    or args.job_kind
+                    in {"teacher_hpo", "distill_hpo", "finetune_hpo", "student_final"},
                     timeout_s=args.launch_timeout_s,
                 )
                 for machine_name in machines_with_jobs

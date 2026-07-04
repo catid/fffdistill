@@ -37,7 +37,7 @@ are listed as limitations instead of filled with invented metrics.
 - CUDA runtime reported by torch: 13.0.
 - Official Mamba-3: `state-spaces/mamba` commit `ed6ce09e4d802e274b1ecc7205757b892e180a93`, imported as `mamba_ssm.Mamba3`.
 - Official Muon: `KellerJordan/Muon` commit `f98f1cacc0263b04290753e32be8d498c1efc806`, using `SingleDeviceMuonWithAuxAdam`.
-- `fastfeedforward.FFF`: installed and shape-smoke tested through `src/cifar_mamba_fff/models/official_fastfeedforward_baseline.py`.
+- `fastfeedforward.FFF`: installed and covered by a deterministic shape/budget detector plus bounded layer-regression harness in `src/cifar_mamba_fff/models/official_fastfeedforward_baseline.py`.
 - Local machine `work`: 2x NVIDIA RTX PRO 6000 Blackwell Workstation Edition, about 95 GiB each.
 - Remote inventory: `ripper` 4x RTX PRO 6000 Blackwell Max-Q, `foureyes` 4x RTX PRO 6000 Blackwell Max-Q, `ai` 2x RTX 5090. Strict verification saw all 12 configured GPUs; `foureyes:2-3` were occupied during some runs and were excluded when appropriate.
 
@@ -388,6 +388,10 @@ Within the evidence that exists:
 - Full FFF-replaced student final CIFAR-10 accuracy is established only for the
   validation-selected `no_balance_cosine` Stage H family. Other router-family
   full-student final-test comparisons remain unrun.
+- Official `fastfeedforward.FFF` now has a matched-budget shape detector and
+  bounded layerwise MSE/cosine/throughput harness where eval-compatible at
+  depth >= 1. No official-fastfeedforward full-student validation accuracy or
+  CIFAR-10 final-test baseline has been run.
 - Legacy Stage F layerwise FFF artifacts used validation-split activation
   capture and are leakage-limited for layerwise validation metrics. Corrected
   train-eval Stage F layerwise evidence is committed and feeds the current
@@ -403,7 +407,10 @@ Within the evidence that exists:
 - FFF-bank optimizer policy is currently AdamW fallback for 3D replacement banks;
   optimizer conclusions for assembled FFF students must remain labeled accordingly
   until a bank-specific Muon grouping is implemented and validated.
-- Remote GitHub SSH auth failed earlier on remote hosts; rsync from `work` was used for remote sync.
+- Remote GitHub SSH auth failed earlier on remote hosts; rsync from `work` was
+  used for remote sync. The rsync fallback and scheduler commit-cleanliness
+  preflight are test-covered, but scheduler preflight does not yet record and
+  compare canonical local/remote config SHA256 manifests.
 - Remote artifact collection was hardened after several compact summaries were generated; older summaries may depend on pre-hardening tail-only artifact collection. See `docs/t18_artifact_integrity.md`.
 - Some GPUs were intentionally excluded during runs due occupied/anomalous utilization.
 - The official Mamba-3 Python 3.12 path required documented vendor patches in dependencies, while preserving the official Mamba-3 TileLang MIMO kernels.

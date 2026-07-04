@@ -4,11 +4,13 @@ import pytest
 import torch
 from torch import nn
 
+from cifar_mamba_fff import train_teacher
 from cifar_mamba_fff.models.fff_linear import FFFLinear
 from cifar_mamba_fff.optim.muon_groups import (
     format_param_assignments,
     split_muon_adamw_parameters,
 )
+from cifar_mamba_fff.train_teacher import TeacherTrainConfig
 
 
 class TinyModel(nn.Module):
@@ -27,6 +29,38 @@ class TinyModel(nn.Module):
         self.frozen = nn.Linear(6, 6)
         for param in self.frozen.parameters():
             param.requires_grad_(False)
+
+
+class FakeOfficialMuon(torch.optim.Optimizer):
+    def __init__(self, param_groups: list[dict[str, object]]) -> None:
+        super().__init__(param_groups, defaults={})
+
+
+def _fff_model() -> nn.Sequential:
+    return nn.Sequential(
+        nn.Linear(8, 8),
+        FFFLinear(
+            8,
+            8,
+            depth=2,
+            shared_rows=2,
+            route_rows=2,
+            route_result_rows=1,
+            leaf_rows=1,
+            route_row_role="split_routing_output",
+            route_rows_output_count="all",
+        ),
+        FFFLinear(
+            8,
+            8,
+            depth=2,
+            shared_rows=0,
+            route_rows=1,
+            leaf_rows=1,
+            route_row_role="shared_routing_and_output",
+            route_rows_output_count="all",
+        ),
+    )
 
 
 def test_muon_param_groups_assign_expected_categories() -> None:
@@ -78,20 +112,7 @@ def test_muon_param_groups_log_exact_assignments() -> None:
 
 
 def test_muon_param_groups_keep_fff_bias_banks_in_adamw() -> None:
-    model = nn.Sequential(
-        nn.Linear(8, 8),
-        FFFLinear(
-            8,
-            8,
-            depth=2,
-            shared_rows=2,
-            route_rows=2,
-            route_result_rows=1,
-            leaf_rows=1,
-            route_row_role="split_routing_output",
-            route_rows_output_count="all",
-        ),
-    )
+    model = _fff_model()
 
     _, _, assignments = split_muon_adamw_parameters(model)
     by_name = {assignment.name: assignment for assignment in assignments}
@@ -105,6 +126,9 @@ def test_muon_param_groups_keep_fff_bias_banks_in_adamw() -> None:
         "1.route_result_bias",
         "1.leaf_bias",
         "1.bias",
+        "2.route_bias",
+        "2.leaf_bias",
+        "2.bias",
     ):
         assert by_name[name].group == "adamw"
         assert by_name[name].reason == "bias parameter"
@@ -114,9 +138,58 @@ def test_muon_param_groups_keep_fff_bias_banks_in_adamw() -> None:
         "1.route_result_output",
         "1.leaf_weight",
         "1.leaf_output",
+        "2.route_weight",
+        "2.route_output",
+        "2.leaf_weight",
+        "2.leaf_output",
     ):
         assert by_name[name].group == "adamw"
-        assert by_name[name].reason == "3D parameter"
+        assert by_name[name].reason == "FFF replacement bank uses AdamW fallback"
+
+
+def test_muon_param_groups_can_opt_fff_banks_into_muon() -> None:
+    model = _fff_model()
+
+    muon, adamw, assignments = split_muon_adamw_parameters(model, fff_bank_muon=True)
+    by_name = {assignment.name: assignment for assignment in assignments}
+    bank_names = {
+        "1.route_weight",
+        "1.route_result_weight",
+        "1.route_result_output",
+        "1.leaf_weight",
+        "1.leaf_output",
+        "2.route_weight",
+        "2.route_output",
+        "2.leaf_weight",
+        "2.leaf_output",
+    }
+
+    for name in bank_names:
+        assert by_name[name].group == "muon"
+        assert by_name[name].reason == "FFF replacement bank 3D matrix batch"
+    for name in ("1.route_bias", "1.route_result_bias", "1.leaf_bias", "2.route_bias", "2.leaf_bias"):
+        assert by_name[name].group == "adamw"
+
+    assigned_ids = [id(param) for param in muon + adamw]
+    assert len(assigned_ids) == len(set(assigned_ids))
+    assert set(assigned_ids) == {id(param) for param in model.parameters() if param.requires_grad}
+
+
+def test_optimizer_summary_records_fff_bank_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    model = _fff_model()
+    monkeypatch.setattr(train_teacher, "_import_official_muon_class", lambda: FakeOfficialMuon)
+
+    optimizer, summary = train_teacher.build_training_optimizer(
+        model,
+        TeacherTrainConfig(fff_bank_muon=True),
+    )
+
+    assert isinstance(optimizer, FakeOfficialMuon)
+    assert summary["fff_bank_muon_enabled"] is True
+    assert summary["fff_bank_muon_tensors"] == 9
+    assert summary["fff_bank_adamw_tensors"] == 0
+    assert summary["fff_bank_muon_parameters"] > 0
+    assert summary["fff_bank_adamw_parameters"] == 0
 
 
 def test_muon_param_groups_reject_duplicate_parameter_aliases() -> None:

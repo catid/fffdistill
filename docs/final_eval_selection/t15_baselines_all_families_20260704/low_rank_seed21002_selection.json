@@ -1,0 +1,23 @@
+{
+  "best_val_accuracy": 0.926,
+  "case": "low_rank_seed21002",
+  "checkpoint_path": "outputs/scheduler_finetune_hpo/low_rank_baseline_validation_20260704_a1e311f_wave1/work/0/trials/trial_000001_low_rank_seed21002/student_best.pt",
+  "checkpoint_sha256": "59ceaabf9f742aaa051839988f3154577a10e792e7f45bcc8e78fd4655187dde",
+  "family": "low_rank",
+  "seed": 21002,
+  "selected_for_final_eval": true,
+  "selection_rule": "Selected every completed T15 validation baseline seed for final baseline comparison after validation-only baseline runs; no CIFAR-10 test metrics were used for selection.",
+  "selection_stage": "t15_baselines_all_families_20260704",
+  "source_trial_result": "outputs/scheduler_finetune_hpo/low_rank_baseline_validation_20260704_a1e311f_wave1/work/0/trials/trial_000001_low_rank_seed21002/trial_result.json",
+  "source_validation_summary": "docs/t15_missing_baseline_validation_summary.md",
+  "status": "succeeded",
+  "summary": {
+    "best_val_accuracy": 0.926,
+    "checkpoint_path": "outputs/scheduler_finetune_hpo/low_rank_baseline_validation_20260704_a1e311f_wave1/work/0/trials/trial_000001_low_rank_seed21002/student_best.pt",
+    "checkpoint_sha256": "59ceaabf9f742aaa051839988f3154577a10e792e7f45bcc8e78fd4655187dde",
+    "selected_for_final_eval": true,
+    "status": "succeeded",
+    "test_accessed": false
+  },
+  "test_accessed": false
+}

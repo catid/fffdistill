@@ -61,7 +61,10 @@ def test_build_fairness_rows_from_committed_docs_contains_required_baseline_evid
 
     assert len(rows) == expected_fairness_rows(Path("docs")) >= EXPECTED_FAIRNESS_ROWS
     assert by_method["dense_mamba3_teacher"]["split"] == "final_test"
-    assert by_method["official_fastfeedforward_fff"]["status"] == "shape_compatible_forward_tested"
+    assert (
+        by_method["official_fastfeedforward_fff"]["status"]
+        == "shape_budget_regression_harness_available"
+    )
     assert by_method["fff_student_stage_h_no_balance_cosine"]["split"] == "final_test"
     assert by_method["fff_student_stage_h_no_balance_cosine"]["status"] == "selected_full_test"
     assert by_method["fff_student_stage_h_no_balance_cosine"]["test_accessed"] == "true"

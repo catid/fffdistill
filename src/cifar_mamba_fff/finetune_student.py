@@ -199,6 +199,7 @@ class FineTuneTrainConfig:
     normuon_beta2: float = 0.93
     normuon_eps: float = 1e-10
     grad_clip_norm: float | None = None
+    fff_bank_muon: bool = False
 
     def validate(self) -> None:
         _positive_int("train.epochs", self.epochs)
@@ -249,6 +250,8 @@ class FineTuneTrainConfig:
             raise ValueError("train.normuon_beta2 must be in [0, 1)")
         if self.normuon_eps <= 0.0:
             raise ValueError("train.normuon_eps must be positive")
+        if not isinstance(self.fff_bank_muon, bool):
+            raise ValueError("train.fff_bank_muon must be a bool")
         if self.grad_clip_norm is not None:
             _finite_nonnegative("train.grad_clip_norm", self.grad_clip_norm)
             if self.grad_clip_norm == 0.0:
@@ -283,6 +286,7 @@ class FineTuneTrainConfig:
             normuon_beta2=self.normuon_beta2,
             normuon_eps=self.normuon_eps,
             grad_clip_norm=self.grad_clip_norm,
+            fff_bank_muon=self.fff_bank_muon,
         )
 
 

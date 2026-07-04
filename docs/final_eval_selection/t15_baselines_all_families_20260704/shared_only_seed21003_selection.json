@@ -1,0 +1,23 @@
+{
+  "best_val_accuracy": 0.9108,
+  "case": "shared_only_seed21003",
+  "checkpoint_path": "outputs/scheduler_finetune_hpo/shared_only_baseline_validation_20260704_a32f93f/foureyes/3/trials/trial_000002_shared_only_seed21003/student_best.pt",
+  "checkpoint_sha256": "fbfd2aaa8b93d56f5a4fbc45d5acc088a882563a39966fa4ccd64f834f1edd1e",
+  "family": "shared_only",
+  "seed": 21003,
+  "selected_for_final_eval": true,
+  "selection_rule": "Selected every completed T15 validation baseline seed for final baseline comparison after validation-only baseline runs; no CIFAR-10 test metrics were used for selection.",
+  "selection_stage": "t15_baselines_all_families_20260704",
+  "source_trial_result": "outputs/scheduler_finetune_hpo/shared_only_baseline_validation_20260704_a32f93f/foureyes/3/trials/trial_000002_shared_only_seed21003/trial_result.json",
+  "source_validation_summary": "docs/t15_missing_baseline_validation_summary.md",
+  "status": "succeeded",
+  "summary": {
+    "best_val_accuracy": 0.9108,
+    "checkpoint_path": "outputs/scheduler_finetune_hpo/shared_only_baseline_validation_20260704_a32f93f/foureyes/3/trials/trial_000002_shared_only_seed21003/student_best.pt",
+    "checkpoint_sha256": "fbfd2aaa8b93d56f5a4fbc45d5acc088a882563a39966fa4ccd64f834f1edd1e",
+    "selected_for_final_eval": true,
+    "status": "succeeded",
+    "test_accessed": false
+  },
+  "test_accessed": false
+}

@@ -1,0 +1,23 @@
+{
+  "best_val_accuracy": 0.9298,
+  "case": "smaller_dense_seed21001",
+  "checkpoint_path": "outputs/scheduler_finetune_hpo/smaller_dense_baseline_validation_20260704_a1e311f_wave0/foureyes/0/trials/trial_000000_smaller_dense_seed21001/student_best.pt",
+  "checkpoint_sha256": "8dbe42214ea9bf2b7fd2ae6dc308e3cb89e6b39691ce9aed842f140e73ef8c26",
+  "family": "smaller_dense",
+  "seed": 21001,
+  "selected_for_final_eval": true,
+  "selection_rule": "Selected every completed T15 validation baseline seed for final baseline comparison after validation-only baseline runs; no CIFAR-10 test metrics were used for selection.",
+  "selection_stage": "t15_baselines_all_families_20260704",
+  "source_trial_result": "outputs/scheduler_finetune_hpo/smaller_dense_baseline_validation_20260704_a1e311f_wave0/foureyes/0/trials/trial_000000_smaller_dense_seed21001/trial_result.json",
+  "source_validation_summary": "docs/t15_missing_baseline_validation_summary.md",
+  "status": "succeeded",
+  "summary": {
+    "best_val_accuracy": 0.9298,
+    "checkpoint_path": "outputs/scheduler_finetune_hpo/smaller_dense_baseline_validation_20260704_a1e311f_wave0/foureyes/0/trials/trial_000000_smaller_dense_seed21001/student_best.pt",
+    "checkpoint_sha256": "8dbe42214ea9bf2b7fd2ae6dc308e3cb89e6b39691ce9aed842f140e73ef8c26",
+    "selected_for_final_eval": true,
+    "status": "succeeded",
+    "test_accessed": false
+  },
+  "test_accessed": false
+}

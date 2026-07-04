@@ -368,13 +368,15 @@ def _baseline_rows(docs_dir: Path) -> list[dict[str, object]]:
         _row(
             method="official_fastfeedforward_fff",
             evidence=evidence,
-            split="shape_smoke",
-            status="shape_compatible_forward_tested",
+            split="shape_budget_harness",
+            status="shape_budget_regression_harness_available",
             test_accessed="false",
-            budget="CPU API/shape smoke only.",
+            budget="CPU deterministic shape/budget/regression harness only; no CIFAR-10 validation run.",
             fairness_note=(
-                "Installed fastfeedforward.FFF wrapper is tested where shape-compatible; "
-                "no matched-budget layerwise metric has been run yet."
+                "Installed fastfeedforward.FFF wrapper detects matched-budget leaf_width "
+                "where eval-compatible at depth >= 1 and reports layerwise MSE/cosine/"
+                "throughput for bounded activation tensors. No full-student validation "
+                "accuracy has been run yet."
             ),
         ),
     ]
