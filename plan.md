@@ -123,16 +123,21 @@ Current Stage A status:
 - `scripts/verify_env.py` requires nightly torch cu130, CUDA, official `Mamba3`,
   `is_mimo=True`, TileLang MIMO availability, and BF16 CUDA autocast forward/backward.
 - `scripts/run_tests.sh` includes the local CUDA environment gate before ruff/pytest.
-- Cluster inventory sees all 12 expected GPUs, but remote project venvs are not verified,
-  so long multi-machine jobs remain blocked until remote setup and `verify_env.py` pass.
-  Full cluster verification is strict by default; use `--allow-incomplete true` only to
-  write an honest partial inventory.
+- Cluster inventory sees all 12 expected GPUs, and remote project environments have passed
+  the bounded verification/scheduler gates needed for one-GPU smoke jobs. At the last T06
+  smoke checkpoint, `foureyes:2` and `foureyes:3` were intentionally excluded because
+  unrelated high-memory jobs were already occupying them.
 - Setup now uses pinned constraints/commits for the observed Python 3.12/cu130 Stage A
   environment; update the constraints file deliberately when changing dependency versions.
 - Completed Stage A bugfixes include FFF route-output empty-batch handling and no-grad
   LocoProp-S ridge refits.
-- Long experiments remain blocked until cluster verification, profiler sanity, GPU
-  scheduler smoke, and remaining filed follow-up bugs are handled or explicitly scoped.
+- Teacher HPO now has an opt-in CUDA BF16 kernel-smoke candidate prefilter. Parameter-valid
+  official Mamba-3 candidates that fail the optimized TileLang CUDA path are rejected
+  before they consume HPO trial slots. Broad HPO and pinned HPO smoke configs enable this
+  gate with a synthetic batch size of 1.
+- Long teacher HPO may start only after the current prefilter code is committed/pushed,
+  remotes are synced to that commit, current GPU occupancy is rechecked, and unavailable
+  slots are explicitly excluded.
 
 Stage B: teacher HPO with all usable GPUs, validation pruning, and final CIFAR-10 test only after selection.
 

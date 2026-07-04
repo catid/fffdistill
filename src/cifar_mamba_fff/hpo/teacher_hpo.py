@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import math
 import random
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, is_dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -16,6 +16,7 @@ from cifar_mamba_fff.train_teacher import (
     TeacherCandidateResult,
     TeacherRunConfig,
     TeacherTrainConfig,
+    build_teacher_model,
     evaluate_teacher_candidate,
     load_teacher_run_config,
     run_teacher_training,
@@ -34,6 +35,67 @@ class HpoCandidate:
 
 class HpoTrialPruned(RuntimeError):
     pass
+
+
+class CudaKernelSmokeUnavailable(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class CandidateFilterConfig:
+    cuda_kernel_smoke: bool = False
+    kernel_smoke_batch_size: int = 1
+
+    def validate(self) -> None:
+        if not isinstance(self.cuda_kernel_smoke, bool):
+            raise ValueError("candidate_filter.cuda_kernel_smoke must be a bool")
+        if (
+            isinstance(self.kernel_smoke_batch_size, bool)
+            or not isinstance(self.kernel_smoke_batch_size, int)
+            or self.kernel_smoke_batch_size <= 0
+        ):
+            raise ValueError("candidate_filter.kernel_smoke_batch_size must be a positive integer")
+
+
+def _parse_optional_bool(value: object, *, key: str, default: bool) -> bool:
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise ValueError(f"candidate_filter.{key} must be a bool")
+    return value
+
+
+def _parse_optional_positive_int(value: object, *, key: str, default: int) -> int:
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise ValueError(f"candidate_filter.{key} must be a positive integer")
+    return value
+
+
+def parse_candidate_filter_config(raw: Mapping[str, object]) -> CandidateFilterConfig:
+    value = raw.get("candidate_filter", {})
+    if value is None:
+        value = {}
+    if not isinstance(value, Mapping):
+        raise ValueError("candidate_filter must be a mapping")
+    unknown = sorted(set(value) - {"cuda_kernel_smoke", "kernel_smoke_batch_size"})
+    if unknown:
+        raise ValueError(f"candidate_filter contains unknown keys: {', '.join(unknown)}")
+    config = CandidateFilterConfig(
+        cuda_kernel_smoke=_parse_optional_bool(
+            value.get("cuda_kernel_smoke"),
+            key="cuda_kernel_smoke",
+            default=False,
+        ),
+        kernel_smoke_batch_size=_parse_optional_positive_int(
+            value.get("kernel_smoke_batch_size"),
+            key="kernel_smoke_batch_size",
+            default=1,
+        ),
+    )
+    config.validate()
+    return config
 
 
 def _resolve_hpo_seed(
@@ -178,6 +240,54 @@ def evaluate_hpo_candidate(
     return candidate_config, result
 
 
+def cuda_kernel_smoke_candidate(
+    run_config: TeacherRunConfig,
+    *,
+    batch_size: int,
+) -> TeacherCandidateResult:
+    if not torch.cuda.is_available():
+        raise CudaKernelSmokeUnavailable("candidate_filter.cuda_kernel_smoke requires CUDA")
+    device = torch.device("cuda")
+    model: torch.nn.Module | None = None
+    image: torch.Tensor | None = None
+    try:
+        torch.manual_seed(run_config.seed)
+        model, parameter_count = build_teacher_model(run_config.model, device=device, enforce_target_params=True)
+        model.train()
+        model.zero_grad(set_to_none=True)
+        image = torch.randn(batch_size, 3, 32, 32, device=device)
+        with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            logits = model(image)
+            expected_shape = (batch_size, run_config.model.num_classes)
+            if tuple(logits.shape) != expected_shape:
+                raise RuntimeError(
+                    f"teacher candidate smoke produced logits shape {tuple(logits.shape)}, "
+                    f"expected {expected_shape}"
+                )
+            loss = logits.float().square().mean()
+        if not bool(torch.isfinite(loss.detach()).all().item()):
+            raise FloatingPointError("non-finite teacher candidate smoke loss")
+        loss.backward()
+        torch.cuda.synchronize(device)
+        return TeacherCandidateResult(True, parameter_count, "accepted")
+    except CudaKernelSmokeUnavailable:
+        raise
+    except Exception as exc:
+        _cleanup_cuda_after_oom()
+        count: int | None = None
+        if model is not None:
+            count = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
+        return TeacherCandidateResult(
+            False,
+            count,
+            f"cuda_kernel_smoke_failed: {type(exc).__name__}: {exc}",
+        )
+    finally:
+        del image
+        del model
+        _cleanup_cuda_after_oom()
+
+
 def _locked_append_jsonl(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     lock = FileLock(str(path) + ".lock")
@@ -194,11 +304,20 @@ def sample_valid_hpo_candidates(
     max_attempts: int,
     rng: random.Random,
     event_log_path: Path | None = None,
+    candidate_filter: CandidateFilterConfig | None = None,
+    kernel_smoke_fn: Callable[[TeacherRunConfig], TeacherCandidateResult] | None = None,
 ) -> list[HpoCandidate]:
     if max_trials <= 0:
         raise ValueError("max_trials must be positive")
     if max_attempts < max_trials:
         raise ValueError("max_attempts must be >= max_trials")
+    filter_config = candidate_filter or CandidateFilterConfig()
+    if kernel_smoke_fn is None:
+        def kernel_smoke_fn(run_config: TeacherRunConfig) -> TeacherCandidateResult:
+            return cuda_kernel_smoke_candidate(
+                run_config,
+                batch_size=filter_config.kernel_smoke_batch_size,
+            )
 
     candidates: list[HpoCandidate] = []
     for attempt_index in range(max_attempts):
@@ -228,6 +347,33 @@ def sample_valid_hpo_candidates(
             seed=base_run.seed + trial_index,
             quick_smoke=quick_smoke,
         )
+        if filter_config.cuda_kernel_smoke:
+            try:
+                smoke_result = kernel_smoke_fn(run_config)
+            except CudaKernelSmokeUnavailable:
+                raise
+            except Exception as exc:
+                if _is_cuda_oom(exc):
+                    _cleanup_cuda_after_oom()
+                smoke_result = TeacherCandidateResult(
+                    False,
+                    result.parameter_count,
+                    f"cuda_kernel_smoke_failed: {type(exc).__name__}: {exc}",
+                )
+            if not smoke_result.accepted:
+                if event_log_path is not None:
+                    _locked_append_jsonl(
+                        event_log_path,
+                        {
+                            "event": "rejected_pretrial",
+                            "attempt_index": attempt_index,
+                            "parameter_count": smoke_result.parameter_count or result.parameter_count,
+                            "reason": smoke_result.reason,
+                            "model": _jsonable(candidate_model),
+                            "overrides": _jsonable(overrides),
+                        },
+                    )
+                continue
         candidates.append(
             HpoCandidate(
                 trial_index=trial_index,
@@ -252,6 +398,7 @@ def write_candidate_filter_smoke(
     base_run = load_teacher_run_config(base_config_path, quick_smoke=quick_smoke)
     hpo_config = load_yaml(hpo_config_path)
     search_space = _expect_mapping(hpo_config.get("search_space"), "search_space")
+    candidate_filter = parse_candidate_filter_config(hpo_config)
     hpo_seed = _resolve_hpo_seed(hpo_config, base_seed=base_run.seed, seed_override=seed)
     rng = random.Random(hpo_seed)
     output_path = output_dir / "teacher_hpo_candidate_filter.jsonl"
@@ -260,6 +407,17 @@ def write_candidate_filter_smoke(
     for trial_index in range(max_candidates):
         overrides = sample_teacher_overrides(search_space, rng=rng)
         candidate_config, result = evaluate_hpo_candidate(base_run.model, overrides)
+        if result.accepted and candidate_filter.cuda_kernel_smoke:
+            run_config = resolve_hpo_run_config(
+                _with_run_seed(base_run, hpo_seed),
+                overrides,
+                seed=hpo_seed + trial_index,
+                quick_smoke=quick_smoke,
+            )
+            result = cuda_kernel_smoke_candidate(
+                run_config,
+                batch_size=candidate_filter.kernel_smoke_batch_size,
+            )
         if result.accepted:
             accepted += 1
         else:
@@ -282,6 +440,7 @@ def write_candidate_filter_smoke(
         "rejected": rejected,
         "seed": hpo_seed,
         "quick_smoke": quick_smoke,
+        "candidate_filter": _jsonable(candidate_filter),
     }
     write_json(output_dir / "teacher_hpo_summary.json", summary)
     return summary
@@ -335,6 +494,7 @@ def run_teacher_hpo(
     base_run = load_teacher_run_config(base_config_path, quick_smoke=quick_smoke)
     hpo_config = load_yaml(hpo_config_path)
     search_space = _expect_mapping(hpo_config.get("search_space"), "search_space")
+    candidate_filter = parse_candidate_filter_config(hpo_config)
     prune_on = str(hpo_config.get("prune_on", "val_accuracy"))
     event_log_path = output_dir / "teacher_hpo_events.jsonl"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -349,6 +509,7 @@ def run_teacher_hpo(
         max_attempts=max_attempts,
         rng=rng,
         event_log_path=event_log_path,
+        candidate_filter=candidate_filter,
     )
     if not candidates:
         summary = {
@@ -367,9 +528,13 @@ def run_teacher_hpo(
             "best_val_accuracy": None,
             "seed": hpo_seed,
             "quick_smoke": quick_smoke,
+            "candidate_filter": _jsonable(candidate_filter),
         }
         write_json(output_dir / "teacher_hpo_summary.json", _jsonable(summary))
-        _locked_append_jsonl(event_log_path, {"event": "hpo_failed_zero_candidates", **summary})
+        _locked_append_jsonl(
+            event_log_path,
+            {"event": "hpo_failed_zero_candidates", **_jsonable(summary)},
+        )
         raise RuntimeError("teacher HPO produced zero valid candidates; refusing to report success")
 
     succeeded = 0
@@ -472,6 +637,7 @@ def run_teacher_hpo(
         "best_val_accuracy": best_metric,
         "seed": hpo_seed,
         "quick_smoke": quick_smoke,
+        "candidate_filter": _jsonable(candidate_filter),
     }
     write_json(output_dir / "teacher_hpo_summary.json", _jsonable(summary))
     if succeeded == 0:

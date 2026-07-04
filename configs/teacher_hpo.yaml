@@ -3,6 +3,9 @@ objective: val_accuracy
 direction: maximize
 max_trials: 120
 prune_on: val_accuracy
+candidate_filter:
+  cuda_kernel_smoke: true
+  kernel_smoke_batch_size: 1
 search_space:
   d_model: [160, 192, 224, 256, 288]
   depth: [8, 12, 16, 20, 24]

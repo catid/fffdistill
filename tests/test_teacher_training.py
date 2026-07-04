@@ -13,7 +13,11 @@ import cifar_mamba_fff.hpo.teacher_hpo as teacher_hpo
 import cifar_mamba_fff.train_teacher as train_teacher
 from cifar_mamba_fff.data import Cifar10DataConfig
 from cifar_mamba_fff.hpo.teacher_hpo import (
+    CandidateFilterConfig,
+    CudaKernelSmokeUnavailable,
+    cuda_kernel_smoke_candidate,
     evaluate_hpo_candidate,
+    parse_candidate_filter_config,
     resolve_hpo_run_config,
     run_teacher_hpo,
     sample_valid_hpo_candidates,
@@ -163,6 +167,31 @@ def test_hpo_candidate_filter_rejects_unknown_override_keys() -> None:
         evaluate_hpo_candidate(load_teacher_run_config("configs/teacher_default.yaml", quick_smoke=True).model, {"typo": 1})
 
 
+def test_hpo_candidate_filter_config_parses_strictly() -> None:
+    assert parse_candidate_filter_config({}) == CandidateFilterConfig()
+    assert parse_candidate_filter_config({"candidate_filter": None}) == CandidateFilterConfig()
+    assert parse_candidate_filter_config(
+        {"candidate_filter": {"cuda_kernel_smoke": True, "kernel_smoke_batch_size": 2}}
+    ) == CandidateFilterConfig(cuda_kernel_smoke=True, kernel_smoke_batch_size=2)
+
+    with pytest.raises(ValueError, match="must be a mapping"):
+        parse_candidate_filter_config({"candidate_filter": True})
+    with pytest.raises(ValueError, match="unknown keys"):
+        parse_candidate_filter_config({"candidate_filter": {"typo": True}})
+    with pytest.raises(ValueError, match="cuda_kernel_smoke must be a bool"):
+        parse_candidate_filter_config({"candidate_filter": {"cuda_kernel_smoke": "false"}})
+    with pytest.raises(ValueError, match="kernel_smoke_batch_size must be a positive integer"):
+        parse_candidate_filter_config({"candidate_filter": {"kernel_smoke_batch_size": 1.5}})
+
+
+def test_cuda_kernel_smoke_candidate_requires_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
+    run_config = load_teacher_run_config("configs/teacher_default.yaml", quick_smoke=True)
+    monkeypatch.setattr(teacher_hpo.torch.cuda, "is_available", lambda: False)
+
+    with pytest.raises(CudaKernelSmokeUnavailable, match="requires CUDA"):
+        cuda_kernel_smoke_candidate(run_config, batch_size=1)
+
+
 def test_hpo_resolve_train_overrides_rebuilds_data_config() -> None:
     base_run = load_teacher_run_config("configs/teacher_default.yaml", quick_smoke=True)
 
@@ -260,6 +289,105 @@ def test_hpo_valid_resampling_does_not_count_rejected_candidates(
         for line in (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     assert [event["event"] for event in rejected] == ["rejected_pretrial", "rejected_pretrial"]
+
+
+def test_hpo_kernel_smoke_rejection_does_not_consume_trial_slot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_run = load_teacher_run_config("configs/teacher_default.yaml", quick_smoke=True)
+    sampled = iter(
+        [
+            {"d_model": 224, "batch_size_per_gpu": 512},
+            {"d_model": 256, "batch_size_per_gpu": 1024},
+        ]
+    )
+
+    monkeypatch.setattr(teacher_hpo, "sample_teacher_overrides", lambda _search_space, *, rng: next(sampled))
+    monkeypatch.setattr(
+        teacher_hpo,
+        "evaluate_teacher_candidate",
+        lambda config: TeacherCandidateResult(True, 10_000_000, "accepted"),
+    )
+
+    def fake_kernel_smoke(run_config: TeacherRunConfig) -> TeacherCandidateResult:
+        if run_config.model.d_model == 224:
+            return TeacherCandidateResult(False, 10_000_000, "cuda_kernel_smoke_failed: synthetic")
+        return TeacherCandidateResult(True, 10_000_000, "accepted")
+
+    candidates = sample_valid_hpo_candidates(
+        base_run,
+        {},
+        quick_smoke=True,
+        max_trials=1,
+        max_attempts=2,
+        rng=teacher_hpo.random.Random(123),
+        event_log_path=tmp_path / "events.jsonl",
+        candidate_filter=CandidateFilterConfig(cuda_kernel_smoke=True, kernel_smoke_batch_size=1),
+        kernel_smoke_fn=fake_kernel_smoke,
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].trial_index == 0
+    assert candidates[0].attempt_index == 1
+    assert candidates[0].run_config.model.d_model == 256
+    assert candidates[0].run_config.data.batch_size == 1024
+    rejected = [
+        json.loads(line)
+        for line in (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert rejected[0]["event"] == "rejected_pretrial"
+    assert "cuda_kernel_smoke_failed" in rejected[0]["reason"]
+
+
+def test_hpo_kernel_smoke_oom_is_pretrial_rejection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_run = load_teacher_run_config("configs/teacher_default.yaml", quick_smoke=True)
+    sampled = iter([{"d_model": 224}, {"d_model": 224}])
+    cleanup_calls: list[str] = []
+
+    monkeypatch.setattr(teacher_hpo, "sample_teacher_overrides", lambda _search_space, *, rng: next(sampled))
+    monkeypatch.setattr(
+        teacher_hpo,
+        "evaluate_teacher_candidate",
+        lambda config: TeacherCandidateResult(True, 10_000_000, "accepted"),
+    )
+    monkeypatch.setattr(teacher_hpo.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(teacher_hpo.torch.cuda, "empty_cache", lambda: cleanup_calls.append("empty_cache"))
+    monkeypatch.setattr(teacher_hpo.torch.cuda, "ipc_collect", lambda: cleanup_calls.append("ipc_collect"))
+    smoke_calls = 0
+
+    def fake_kernel_smoke(_run_config: TeacherRunConfig) -> TeacherCandidateResult:
+        nonlocal smoke_calls
+        smoke_calls += 1
+        if smoke_calls == 1:
+            raise torch.cuda.OutOfMemoryError("CUDA out of memory. synthetic pretrial")
+        return TeacherCandidateResult(True, 10_000_000, "accepted")
+
+    candidates = sample_valid_hpo_candidates(
+        base_run,
+        {},
+        quick_smoke=True,
+        max_trials=1,
+        max_attempts=2,
+        rng=teacher_hpo.random.Random(123),
+        event_log_path=tmp_path / "events.jsonl",
+        candidate_filter=CandidateFilterConfig(cuda_kernel_smoke=True, kernel_smoke_batch_size=1),
+        kernel_smoke_fn=fake_kernel_smoke,
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].trial_index == 0
+    assert candidates[0].attempt_index == 1
+    assert cleanup_calls == ["empty_cache", "ipc_collect"]
+    rejected = [
+        json.loads(line)
+        for line in (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert rejected[0]["event"] == "rejected_pretrial"
+    assert "OutOfMemoryError" in rejected[0]["reason"]
 
 
 def test_hpo_runner_records_pruned_failed_and_successful_trials(
