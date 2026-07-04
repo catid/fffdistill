@@ -8,10 +8,10 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from .fairness import (
-    EXPECTED_FAIRNESS_ROWS,
     EXPECTED_TEST_ACCESS_ROWS,
     FAIRNESS_COLUMNS,
     build_fairness_rows,
+    expected_fairness_rows,
     validate_fairness_rows,
 )
 from .utils import bool_arg
@@ -673,10 +673,11 @@ def validate_final_report(report: Path = Path("docs/final_report.md")) -> None:
         raise FileNotFoundError(f"fairness CSV is missing: {fairness_csv}")
     with fairness_csv.open("r", encoding="utf-8", newline="") as handle:
         fairness_rows = list(csv.DictReader(handle))
-    validate_fairness_rows(fairness_rows)
-    if len(fairness_rows) != EXPECTED_FAIRNESS_ROWS:
+    expected_rows = expected_fairness_rows(report.parent)
+    validate_fairness_rows(fairness_rows, expected_rows=expected_rows)
+    if len(fairness_rows) != expected_rows:
         raise ValueError(
-            f"fairness CSV expected {EXPECTED_FAIRNESS_ROWS} rows, found {len(fairness_rows)}"
+            f"fairness CSV expected {expected_rows} rows, found {len(fairness_rows)}"
         )
     test_rows = [
         row

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import shutil
 from pathlib import Path
 
 import pytest
@@ -7,6 +9,7 @@ import pytest
 from cifar_mamba_fff.fairness import (
     EXPECTED_FAIRNESS_ROWS,
     build_fairness_rows,
+    expected_fairness_rows,
     validate_fairness_rows,
     write_fairness_reports,
 )
@@ -102,6 +105,104 @@ def test_write_fairness_reports_writes_markdown_and_csv(tmp_path: Path) -> None:
     csv_text = (tmp_path / "fairness.csv").read_text(encoding="utf-8")
     assert "dense_mamba3_teacher" in csv_text
     assert "matched_low_rank_linear" in csv_text
+
+
+def test_build_fairness_rows_uses_shared_only_family_when_present(tmp_path: Path) -> None:
+    docs_dir = tmp_path / "docs"
+    shutil.copytree(Path("docs"), docs_dir)
+    family_path = docs_dir / "t15_missing_baseline_validation_families.csv"
+    with family_path.open("a", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerow(
+            [
+                "shared_only",
+                "3",
+                "3",
+                "21001,21002,21003",
+                "0.812300",
+                "0.001000",
+                "4218.000000",
+                "false",
+                "shared_only_seed21002",
+                "21002",
+                "0.813000",
+                "outputs/scheduler_finetune_hpo/shared_only/student_best.pt",
+            ]
+        )
+
+    rows = build_fairness_rows(docs_dir)
+    by_method = {str(row["method"]): row for row in rows}
+
+    assert len(rows) == EXPECTED_FAIRNESS_ROWS
+    assert by_method["shared_only_rows_baseline"]["status"] == "completed"
+    assert by_method["shared_only_rows_baseline"]["split"] == "validation"
+    assert by_method["shared_only_rows_baseline"]["validation_accuracy"] == "0.812300"
+
+
+def test_build_fairness_rows_adds_optional_gc5_validation_rows(tmp_path: Path) -> None:
+    docs_dir = tmp_path / "docs"
+    shutil.copytree(Path("docs"), docs_dir)
+    gc5_path = docs_dir / "fff_gc5_optimizer_wsd_validation_families.csv"
+    with gc5_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle, lineterminator="\n")
+        writer.writerow(
+            [
+                "family",
+                "trials",
+                "seed_count",
+                "seeds",
+                "mean_best_val_accuracy",
+                "std_best_val_accuracy",
+                "mean_train_steps",
+                "test_accessed",
+                "best_case",
+                "best_seed",
+                "best_val_accuracy",
+                "checkpoint_path",
+            ]
+        )
+        writer.writerow(
+            [
+                "official_muon_cosine_lr_base",
+                "1",
+                "1",
+                "1337",
+                "0.914800",
+                "",
+                "4218.000000",
+                "false",
+                "official_muon_cosine_lr_base",
+                "1337",
+                "0.914800",
+                "outputs/scheduler_finetune_hpo/gc5/student_best.pt",
+            ]
+        )
+        writer.writerow(
+            [
+                "official_muon_wsd_lr_base",
+                "1",
+                "1",
+                "1337",
+                "0.902000",
+                "",
+                "4218.000000",
+                "false",
+                "official_muon_wsd_lr_base",
+                "1337",
+                "0.902000",
+                "outputs/scheduler_finetune_hpo/gc5_wsd/student_best.pt",
+            ]
+        )
+
+    rows = build_fairness_rows(docs_dir)
+    by_method = {str(row["method"]): row for row in rows}
+
+    assert expected_fairness_rows(docs_dir) == EXPECTED_FAIRNESS_ROWS + 2
+    assert len(rows) == EXPECTED_FAIRNESS_ROWS + 2
+    assert by_method["gc5_official_muon_cosine_lr_base"]["status"] == "completed"
+    assert by_method["gc5_official_muon_cosine_lr_base"]["split"] == "validation"
+    assert by_method["gc5_official_muon_cosine_lr_base"]["validation_accuracy"] == "0.914800"
+    assert by_method["gc5_official_muon_wsd_lr_base"]["test_accessed"] == "false"
 
 
 def test_build_fairness_rows_rejects_missing_sources(tmp_path: Path) -> None:

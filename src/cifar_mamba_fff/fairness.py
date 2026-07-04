@@ -37,6 +37,7 @@ EXPECTED_ROW_COUNTS = {
 }
 EXPECTED_FAIRNESS_ROWS = 29
 EXPECTED_TEST_ACCESS_ROWS = 2
+GC5_FAMILY_SUMMARY = "fff_gc5_optimizer_wsd_validation_families.csv"
 FFF_BANK_OPTIMIZER_CAVEAT = (
     "Current Muon grouping sends only hidden 2D matrix parameters to Muon; "
     "assembled FFF replacement banks such as route_weight, route_output, "
@@ -127,6 +128,14 @@ def _extract_backtick_float(text: str, pattern: str) -> str:
 
 def _row(**kwargs: object) -> dict[str, object]:
     return {column: kwargs.get(column, "") for column in FAIRNESS_COLUMNS}
+
+
+def expected_fairness_rows(docs_dir: Path = Path("docs")) -> int:
+    expected = EXPECTED_FAIRNESS_ROWS
+    gc5_path = docs_dir / GC5_FAMILY_SUMMARY
+    if gc5_path.exists():
+        expected += len(_read_csv(gc5_path))
+    return expected
 
 
 def _teacher_row(docs_dir: Path) -> dict[str, object]:
@@ -312,15 +321,6 @@ def _baseline_rows(docs_dir: Path) -> list[dict[str, object]]:
                 "no matched-budget layerwise metric has been run yet."
             ),
         ),
-        _row(
-            method="shared_only_rows_baseline",
-            evidence=str(docs_dir / "t13_stage_f_layerwise_summary.csv"),
-            split="not_run",
-            status="not_run",
-            test_accessed="false",
-            budget="Not executed as a matched full-layer baseline.",
-            fairness_note="FFF HPO includes shared rows, but a shared-only full baseline is not available.",
-        ),
     ]
     family_path = docs_dir / "t15_missing_baseline_validation_families.csv"
     baseline_methods = {
@@ -336,14 +336,32 @@ def _baseline_rows(docs_dir: Path) -> list[dict[str, object]]:
             "matched_smaller_dense_linear",
             "Matched smaller-dense Linear baseline using the same three-epoch validation budget.",
         ),
+        "shared_only": (
+            "shared_only_rows_baseline",
+            "Shared-only rows baseline using the same three-epoch validation budget.",
+        ),
     }
-    for family in _read_csv(
-        family_path,
-        expected_rows=EXPECTED_ROW_COUNTS[family_path.name],
-    ):
+    required_families = {"dense_copy", "low_rank", "smaller_dense"}
+    seen_families: set[str] = set()
+    family_rows = _read_csv(family_path)
+    has_shared_only = any(family.get("family", "") == "shared_only" for family in family_rows)
+    if not has_shared_only:
+        rows.append(
+            _row(
+                method="shared_only_rows_baseline",
+                evidence=str(docs_dir / "t13_stage_f_layerwise_summary.csv"),
+                split="not_run",
+                status="not_run",
+                test_accessed="false",
+                budget="Not executed as a matched full-layer baseline.",
+                fairness_note="FFF HPO includes shared rows, but a shared-only full baseline is not available.",
+            )
+        )
+    for family in family_rows:
         family_name = family.get("family", "")
         if family_name not in baseline_methods:
             raise ValueError(f"unexpected baseline family in {family_path}: {family_name!r}")
+        seen_families.add(family_name)
         method, note_prefix = baseline_methods[family_name]
         rows.append(
             _row(
@@ -366,7 +384,46 @@ def _baseline_rows(docs_dir: Path) -> list[dict[str, object]]:
                 ),
             )
         )
+    missing_required = sorted(required_families - seen_families)
+    if missing_required:
+        raise ValueError(f"{family_path} missing required baseline families: {missing_required}")
     return rows
+
+
+def _gc5_rows(docs_dir: Path) -> list[dict[str, object]]:
+    family_path = docs_dir / GC5_FAMILY_SUMMARY
+    if not family_path.exists():
+        return []
+    rows = _read_csv(family_path)
+    if not rows:
+        raise ValueError(f"{family_path} exists but has no optimizer validation rows")
+    out: list[dict[str, object]] = []
+    for family in rows:
+        family_name = family.get("family", "")
+        out.append(
+            _row(
+                method=f"gc5_{family_name}",
+                evidence=str(family_path),
+                split="validation",
+                status="completed",
+                test_accessed=_bool_text(family.get("test_accessed")),
+                validation_accuracy=_float_text(family.get("mean_best_val_accuracy")),
+                tokens_per_second="",
+                train_steps=_int_text(family.get("mean_train_steps")),
+                seeds=family.get("seeds", ""),
+                budget=(
+                    "GC5 matched-budget full-student fine-tune validation cell; "
+                    "same teacher, split, distillation artifact source, three epochs, and no CIFAR-10 test access."
+                ),
+                fairness_note=(
+                    f"Best case {family.get('best_case', '')} seed {family.get('best_seed', '')} "
+                    f"reached validation accuracy {_float_text(family.get('best_val_accuracy'))}. "
+                    "Optimizer family and LR schedule are encoded in the case/family name and reported "
+                    "separately from the two-step T19 smoke rows."
+                ),
+            )
+        )
+    return out
 
 
 def build_fairness_rows(docs_dir: Path = Path("docs")) -> list[dict[str, object]]:
@@ -375,7 +432,8 @@ def build_fairness_rows(docs_dir: Path = Path("docs")) -> list[dict[str, object]
     rows.extend(_t19_rows(docs_dir))
     rows.extend(_t14_rows(docs_dir))
     rows.extend(_baseline_rows(docs_dir))
-    validate_fairness_rows(rows)
+    rows.extend(_gc5_rows(docs_dir))
+    validate_fairness_rows(rows, expected_rows=expected_fairness_rows(docs_dir))
     return rows
 
 
