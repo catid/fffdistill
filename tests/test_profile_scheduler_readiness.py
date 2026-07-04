@@ -146,6 +146,38 @@ def test_scheduler_filters_unavailable_slots() -> None:
     assert [(job.machine, job.gpu_id) for job in jobs] == [("foureyes", 0), ("foureyes", 1)]
 
 
+def test_scheduler_distill_grid_offsets_use_queued_job_index_after_unavailable_slots() -> None:
+    machines = [
+        MachineSpec(
+            name="ripper",
+            host="ripper",
+            gpus=4,
+            role="remote",
+            workdir="/home/catid/fffdistill",
+        )
+    ]
+
+    jobs = build_dry_run_jobs(
+        machines,
+        quick_smoke=False,
+        dry_run=True,
+        job_kind="distill_hpo",
+        distill_teacher_checkpoint="checkpoints/teacher/best.pt",
+        unavailable_slots=parse_unavailable_slots(["ripper:1"]),
+        distill_grid_offset_base=3,
+    )
+
+    assert [(job.machine, job.gpu_id) for job in jobs] == [
+        ("ripper", 0),
+        ("ripper", 2),
+        ("ripper", 3),
+    ]
+    assert [job.metadata["distill_grid_offset"] for job in jobs] == [3, 4, 5]
+    assert "--grid-offset 3" in jobs[0].command
+    assert "--grid-offset 4" in jobs[1].command
+    assert "--grid-offset 5" in jobs[2].command
+
+
 def test_scheduler_hpo_jobs_bind_gpu_seed_and_unique_output_dir() -> None:
     machines = [
         MachineSpec(
@@ -234,6 +266,7 @@ def test_scheduler_distill_hpo_jobs_bind_gpu_seed_checkpoint_config_and_samples(
         assert "--sample-split val" in job.command
         assert "--max-sample-batches 3" in job.command
         assert f"--seed {7000 + gpu_id}" in job.command
+        assert f"--grid-offset {gpu_id}" in job.command
         assert f"--output-dir {expected_output_dir}" in job.command
         assert job.seed == 7000 + gpu_id
         assert job.metadata["job_kind"] == "distill_hpo"
@@ -243,6 +276,7 @@ def test_scheduler_distill_hpo_jobs_bind_gpu_seed_checkpoint_config_and_samples(
         assert job.metadata["distill_hpo_config"] == "configs/distill hpo.yaml"
         assert job.metadata["distill_sample_split"] == "val"
         assert job.metadata["distill_max_sample_batches"] == 3
+        assert job.metadata["distill_grid_offset"] == gpu_id
     assert len({job.output_dir for job in jobs}) == len(jobs)
     assert len({job.seed for job in jobs}) == len(jobs)
 
@@ -355,6 +389,7 @@ def test_scheduler_distill_hpo_command_quotes_and_uses_cuda_visible_device() -> 
     assert "--max-sample-batches 3" in command
     assert "--max-trials 4" in command
     assert "--max-attempts 9" in command
+    assert "--grid-offset 0" in command
     assert "--seed 2026" in command
 
 
@@ -544,6 +579,8 @@ def test_scheduler_main_threads_distill_hpo_args_and_requires_cifar_preflight(
     assert "--max-sample-batches 4" in queue_records[0]["command"]
     assert "--max-trials 2" in queue_records[0]["command"]
     assert "--max-attempts 7" in queue_records[0]["command"]
+    assert "--grid-offset 0" in queue_records[0]["command"]
+    assert queue_records[0]["metadata"]["distill_grid_offset"] == 0
     assert "recorded 1 GPU slots" in capsys.readouterr().out
 
 

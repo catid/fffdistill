@@ -295,6 +295,24 @@ def test_grid_sampler_respects_max_trials_truncation() -> None:
     assert [candidate.overrides["router_recipe"] for candidate in candidates] == STAGE_C_ROUTER_RECIPES[:3]
 
 
+def test_grid_sampler_respects_grid_offset() -> None:
+    candidates = sample_valid_distill_hpo_candidates(
+        _stage_c_router_search_space(),
+        max_trials=2,
+        max_attempts=7,
+        rng=random.Random(123),
+        sampler="grid",
+        grid_offset=3,
+    )
+
+    assert [candidate.trial_index for candidate in candidates] == [0, 1]
+    assert [candidate.attempt_index for candidate in candidates] == [3, 4]
+    assert [candidate.overrides["router_recipe"] for candidate in candidates] == [
+        "st_gumbel",
+        "utility_targeted_ste",
+    ]
+
+
 def test_grid_sampler_route_role_control_combinations_are_valid() -> None:
     candidates = sample_valid_distill_hpo_candidates(
         {

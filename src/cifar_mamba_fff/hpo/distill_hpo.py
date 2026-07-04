@@ -593,12 +593,15 @@ def sample_valid_distill_hpo_candidates(
     max_attempts: int,
     rng: random.Random,
     sampler: DistillHpoSampler = "random",
+    grid_offset: int = 0,
     validate_fn: Callable[[Mapping[str, object]], bool] | None = None,
 ) -> list[DistillHpoCandidate]:
     if max_trials <= 0:
         raise ValueError("max_trials must be positive")
     if max_attempts < max_trials:
         raise ValueError("max_attempts must be >= max_trials")
+    if grid_offset < 0:
+        raise ValueError("grid_offset must be non-negative")
     candidates: list[DistillHpoCandidate] = []
     if sampler == "random":
         for attempt_index in range(max_attempts):
@@ -619,6 +622,7 @@ def sample_valid_distill_hpo_candidates(
         raise ValueError("distill HPO sampler must be 'random' or 'grid'")
 
     seen: set[tuple[tuple[str, object], ...]] = set()
+    accepted_before_offset = 0
     for attempt_index, overrides in enumerate(iter_grid_distill_overrides(search_space)):
         if attempt_index >= max_attempts or len(candidates) >= max_trials:
             break
@@ -627,6 +631,9 @@ def sample_valid_distill_hpo_candidates(
             continue
         seen.add(identity)
         if validate_fn is not None and not validate_fn(overrides):
+            continue
+        if accepted_before_offset < grid_offset:
+            accepted_before_offset += 1
             continue
         candidates.append(
             DistillHpoCandidate(
@@ -756,6 +763,7 @@ def write_distill_hpo_trial_plan(
     max_attempts: int,
     seed: int,
     teacher_checkpoint: str | None = None,
+    grid_offset: int = 0,
 ) -> dict[str, object]:
     search_space = hpo_config.get("search_space")
     if not isinstance(search_space, Mapping):
@@ -767,6 +775,7 @@ def write_distill_hpo_trial_plan(
         max_attempts=max_attempts,
         rng=random.Random(seed),
         sampler=sampler,
+        grid_offset=grid_offset,
     )
     if not candidates:
         raise RuntimeError("distill HPO produced zero valid candidates")
@@ -796,6 +805,7 @@ def write_distill_hpo_trial_plan(
         "accepted_trials": len(candidates),
         "max_attempts": max_attempts,
         "sampler": sampler,
+        "grid_offset": grid_offset if sampler == "grid" else 0,
         "seed": seed,
         "teacher_checkpoint": teacher_checkpoint,
         "test_accessed": False,
@@ -862,6 +872,7 @@ def run_distill_hpo_trials(
     max_attempts: int,
     seed: int,
     teacher_checkpoint: str | None,
+    grid_offset: int = 0,
     quick_smoke: bool = False,
     sample_split: str = "train",
     max_sample_batches: int = 1,
@@ -877,6 +888,7 @@ def run_distill_hpo_trials(
         max_attempts=max_attempts,
         seed=seed,
         teacher_checkpoint=teacher_checkpoint,
+        grid_offset=grid_offset,
     )
     succeeded = 0
     failed_logic = 0
@@ -943,6 +955,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--max-trials", type=int, default=1)
     parser.add_argument("--max-attempts", type=int, default=32)
     parser.add_argument("--seed", type=int, default=1337)
+    parser.add_argument("--grid-offset", type=int, default=0)
     parser.add_argument("--teacher-checkpoint", default=None)
     parser.add_argument("--quick-smoke", type=bool_arg, default=False)
     parser.add_argument("--sample-split", choices=("train", "val"), default="train")
@@ -963,6 +976,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_attempts=args.max_attempts,
             seed=args.seed,
             teacher_checkpoint=args.teacher_checkpoint,
+            grid_offset=args.grid_offset,
             quick_smoke=args.quick_smoke,
             sample_split=args.sample_split,
             max_sample_batches=args.max_sample_batches,
@@ -978,6 +992,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         max_attempts=args.max_attempts,
         seed=args.seed,
         teacher_checkpoint=args.teacher_checkpoint,
+        grid_offset=args.grid_offset,
     )
     print(f"distill HPO plan written: {summary['accepted_trials']} trials")
     return 0

@@ -236,11 +236,14 @@ def build_distill_hpo_command(
     max_sample_batches: int = 1,
     max_trials: int = 1,
     max_attempts: int = 32,
+    grid_offset: int = 0,
 ) -> str:
     if sample_split not in {"train", "val"}:
         raise ValueError("sample_split must be train or val")
     if max_sample_batches <= 0:
         raise ValueError("max_sample_batches must be positive")
+    if grid_offset < 0:
+        raise ValueError("grid_offset must be non-negative")
     command = (
         f"PYTHONPATH=src CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES={gpu_id} "
         f"{quote(python_bin)} -m cifar_mamba_fff.hpo.distill_hpo "
@@ -253,6 +256,7 @@ def build_distill_hpo_command(
         f"--max-sample-batches {int(max_sample_batches)} "
         f"--max-trials {int(max_trials)} "
         f"--max-attempts {int(max_attempts)} "
+        f"--grid-offset {int(grid_offset)} "
         f"--seed {int(seed)}"
     )
     if teacher_checkpoint is not None:
@@ -275,6 +279,7 @@ def build_dry_run_jobs(
     distill_teacher_checkpoint: str | None = None,
     distill_sample_split: str = "train",
     distill_max_sample_batches: int = 1,
+    distill_grid_offset_base: int = 0,
     hpo_trials_per_job: int = 1,
     hpo_max_attempts_per_job: int = 32,
     max_train_steps: int | None = None,
@@ -292,6 +297,8 @@ def build_dry_run_jobs(
         raise ValueError("seed_base must be non-negative")
     if distill_max_sample_batches <= 0:
         raise ValueError("distill_max_sample_batches must be positive")
+    if distill_grid_offset_base < 0:
+        raise ValueError("distill_grid_offset_base must be non-negative")
     unavailable_slots = unavailable_slots or set()
     jobs: list[GpuJob] = []
     for idx, (machine, gpu_id) in enumerate(enumerate_slots(machines)):
@@ -300,6 +307,7 @@ def build_dry_run_jobs(
         if max_jobs is not None and len(jobs) >= max_jobs:
             break
         seed = seed_base + idx
+        queued_job_index = len(jobs)
         default_root = Path(
             "outputs/scheduler_hpo"
             if job_kind == "teacher_hpo"
@@ -340,6 +348,7 @@ def build_dry_run_jobs(
                 max_sample_batches=distill_max_sample_batches,
                 max_trials=hpo_trials_per_job,
                 max_attempts=hpo_max_attempts_per_job,
+                grid_offset=distill_grid_offset_base + queued_job_index,
             )
         else:
             command = build_train_teacher_command(
@@ -380,6 +389,9 @@ def build_dry_run_jobs(
                     if job_kind == "distill_hpo"
                     else None,
                     "distill_max_sample_batches": distill_max_sample_batches
+                    if job_kind == "distill_hpo"
+                    else None,
+                    "distill_grid_offset": distill_grid_offset_base + queued_job_index
                     if job_kind == "distill_hpo"
                     else None,
                 },
@@ -827,6 +839,15 @@ def main(argv: list[str] | None = None) -> int:
         help="CIFAR split used to sample teacher Linear activations for distillation HPO.",
     )
     parser.add_argument("--distill-max-sample-batches", type=int, default=1)
+    parser.add_argument(
+        "--distill-grid-offset-base",
+        type=int,
+        default=0,
+        help=(
+            "Base grid offset for distill_hpo jobs. Each queued job adds its zero-based "
+            "queued-job index so parallel grid sweeps cover distinct candidates."
+        ),
+    )
     parser.add_argument("--hpo-trials-per-job", type=int, default=1)
     parser.add_argument("--hpo-max-attempts-per-job", type=int, default=32)
     parser.add_argument(
@@ -900,6 +921,8 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("--hpo-max-attempts-per-job must be >= --hpo-trials-per-job")
     if args.distill_max_sample_batches <= 0:
         raise ValueError("--distill-max-sample-batches must be positive")
+    if args.distill_grid_offset_base < 0:
+        raise ValueError("--distill-grid-offset-base must be non-negative")
     if args.job_kind == "distill_hpo" and not args.quick_smoke and args.distill_teacher_checkpoint is None:
         raise RuntimeError("--distill-teacher-checkpoint is required for non-smoke distill_hpo")
     if not args.dry_run and not args.quick_smoke and not args.allow_long_jobs:
@@ -922,6 +945,7 @@ def main(argv: list[str] | None = None) -> int:
         distill_teacher_checkpoint=args.distill_teacher_checkpoint,
         distill_sample_split=args.distill_sample_split,
         distill_max_sample_batches=args.distill_max_sample_batches,
+        distill_grid_offset_base=args.distill_grid_offset_base,
         hpo_trials_per_job=args.hpo_trials_per_job,
         hpo_max_attempts_per_job=args.hpo_max_attempts_per_job,
         max_train_steps=args.max_train_steps,
