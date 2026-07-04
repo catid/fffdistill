@@ -9,8 +9,10 @@ from torch import nn
 
 import cifar_mamba_fff.distill_linears as distill_linears
 from cifar_mamba_fff.distill_linears import (
+    BalanceDistillConfig,
     LinearDistillConfig,
     RouterDistillConfig,
+    _balance_auxiliary_loss,
     _capture_autocast_context,
     _replacement_prediction,
     _router_auxiliary_loss,
@@ -154,6 +156,27 @@ def test_linear_distill_config_parses_capture_autocast_bool() -> None:
 
     with pytest.raises(ValueError, match="capture_autocast_bf16"):
         LinearDistillConfig.from_mapping({"capture_autocast_bf16": 1})
+
+
+def test_balance_distill_config_parses_hpo_aliases() -> None:
+    config = BalanceDistillConfig.from_mapping(
+        {
+            "balance_recipe": "split_minleaf_margin",
+            "balance_coeff": 0.003,
+            "min_leaf_tokens": 7,
+            "margin": 0.25,
+            "margin_coeff": 0.5,
+        }
+    )
+
+    assert config.recipe == "split_minleaf_margin"
+    assert config.coeff == pytest.approx(0.003)
+    assert config.min_leaf_tokens == 7
+    assert config.margin == pytest.approx(0.25)
+    assert config.margin_coeff == pytest.approx(0.5)
+
+    with pytest.raises(ValueError, match=r"balance\.recipe"):
+        BalanceDistillConfig.from_mapping({"recipe": "not_a_recipe"})
 
 
 def test_capture_autocast_context_uses_bf16_only_for_cuda(
@@ -406,6 +429,64 @@ def test_distill_linear_from_bfloat16_tensors_uses_fp32_losses(tmp_path) -> None
     assert all(isinstance(record["loss"], float) for record in metrics)
 
 
+def test_distill_linear_applies_balance_config_and_writes_metrics(tmp_path) -> None:
+    torch.manual_seed(15)
+    linear = nn.Linear(6, 4)
+    x = torch.randn(64, 6)
+    y = linear(x).detach()
+
+    result = distill_linear_from_tensors(
+        "layer",
+        linear,
+        x,
+        y,
+        fff_config={
+            "shared_rows": 8,
+            "depth": 2,
+            "route_rows": 1,
+            "leaf_rows": 2,
+            "activation": "gelu",
+            "hard_routing": True,
+            "route_row_role": "routing_only",
+            "route_rows_output_count": 0,
+        },
+        distill_config=LinearDistillConfig.from_mapping(
+            {
+                "steps": 2,
+                "lr": 0.01,
+                "batch_size": 16,
+                "max_capture_bytes_per_layer": None,
+            }
+        ),
+        router_config=RouterDistillConfig(recipe="vanilla_ste", loss_coeff=0.0001),
+        balance_config=BalanceDistillConfig.from_mapping(
+            {
+                "balance_recipe": "split_minleaf_margin",
+                "balance_coeff": 0.01,
+                "min_leaf_tokens": 4,
+                "margin": 0.2,
+                "margin_coeff": 0.25,
+            }
+        ),
+        output_dir=tmp_path,
+    )
+
+    assert torch.isfinite(torch.tensor(result.final_loss))
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "layer_metrics.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    final_balance = records[-1]["balance"]
+    assert final_balance["recipe"] == "split_minleaf_margin"
+    assert final_balance["enabled"] is True
+    assert final_balance["coeff"] == pytest.approx(0.01)
+    assert final_balance["min_leaf_tokens"] == 4
+    assert final_balance["min_leaf_occupancy"] == pytest.approx(4 / 64)
+    assert final_balance["loss"] >= 0.0
+    assert final_balance["weighted_loss"] >= 0.0
+    assert set(final_balance["components"]) == {"split", "min_leaf", "margin"}
+
+
 def test_hard_routing_without_route_output_or_router_loss_is_rejected(tmp_path) -> None:
     linear = nn.Linear(6, 4)
     x = torch.randn(32, 6)
@@ -431,6 +512,75 @@ def test_hard_routing_without_route_output_or_router_loss_is_rejected(tmp_path) 
             ),
             output_dir=tmp_path,
         )
+
+
+def test_balance_loss_can_train_hard_routing_without_router_aux(tmp_path) -> None:
+    torch.manual_seed(17)
+    linear = nn.Linear(6, 4)
+    x = torch.randn(32, 6)
+    y = linear(x).detach()
+
+    result = distill_linear_from_tensors(
+        "layer",
+        linear,
+        x,
+        y,
+        fff_config={
+            "shared_rows": 4,
+            "depth": 1,
+            "route_rows": 1,
+            "leaf_rows": 1,
+            "hard_routing": True,
+            "route_row_role": "routing_only",
+            "route_rows_output_count": 0,
+        },
+        distill_config=LinearDistillConfig.from_mapping(
+            {"steps": 1, "batch_size": 8, "max_capture_bytes_per_layer": None}
+        ),
+        router_config=RouterDistillConfig(recipe="none", loss_coeff=0.0),
+        balance_config=BalanceDistillConfig(recipe="split", coeff=0.01),
+        output_dir=tmp_path,
+    )
+
+    assert torch.isfinite(torch.tensor(result.final_loss))
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "layer_metrics.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert records[-1]["router"]["recipe"] == "none"
+    assert records[-1]["balance"]["recipe"] == "split"
+    assert records[-1]["balance"]["enabled"] is True
+
+
+def test_main_loss_router_recipe_without_aux_coeff_passes_guard(tmp_path) -> None:
+    torch.manual_seed(18)
+    linear = nn.Linear(6, 4)
+    x = torch.randn(32, 6)
+    y = linear(x).detach()
+
+    result = distill_linear_from_tensors(
+        "layer",
+        linear,
+        x,
+        y,
+        fff_config={
+            "shared_rows": 4,
+            "depth": 1,
+            "route_rows": 1,
+            "leaf_rows": 1,
+            "hard_routing": True,
+            "route_row_role": "routing_only",
+            "route_rows_output_count": 0,
+        },
+        distill_config=LinearDistillConfig.from_mapping(
+            {"steps": 1, "batch_size": 8, "max_capture_bytes_per_layer": None}
+        ),
+        router_config=RouterDistillConfig(recipe="vanilla_ste", loss_coeff=0.0),
+        balance_config=BalanceDistillConfig(recipe="none", coeff=0.0),
+        output_dir=tmp_path,
+    )
+
+    assert torch.isfinite(torch.tensor(result.final_loss))
 
 
 @pytest.mark.parametrize(
@@ -516,6 +666,45 @@ def test_router_auxiliary_recipes_send_gradients_to_route_weights(recipe: str) -
     assert diagnostics["loss"] >= 0.0
     assert "entropy_mean" in diagnostics
     assert "dead_leaves" in diagnostics
+    assert layer.route_weight.grad is not None
+    assert torch.isfinite(layer.route_weight.grad).all()
+    assert layer.route_weight.grad.abs().sum() > 0.0
+
+
+def test_balance_auxiliary_loss_sends_gradients_to_route_weights() -> None:
+    torch.manual_seed(16)
+    layer = FFFLinear(
+        6,
+        4,
+        depth=2,
+        shared_rows=2,
+        route_rows=1,
+        leaf_rows=2,
+        hard_routing=True,
+        route_row_role="routing_only",
+        route_rows_output_count=0,
+        bias=False,
+    )
+    x = torch.randn(32, 6)
+
+    loss, diagnostics = _balance_auxiliary_loss(
+        layer,
+        x,
+        BalanceDistillConfig(
+            recipe="split_minleaf_uniform",
+            coeff=1.0,
+            min_leaf_tokens=4,
+        ),
+        total_tokens=64,
+    )
+    loss.backward()
+
+    assert torch.isfinite(loss.detach())
+    assert diagnostics["recipe"] == "split_minleaf_uniform"
+    assert diagnostics["loss"] >= 0.0
+    assert diagnostics["weighted_loss"] >= 0.0
+    assert diagnostics["min_leaf_occupancy"] == pytest.approx(4 / 64)
+    assert set(diagnostics["components"]) == {"split", "min_leaf", "uniform_leaf"}
     assert layer.route_weight.grad is not None
     assert torch.isfinite(layer.route_weight.grad).all()
     assert layer.route_weight.grad.abs().sum() > 0.0

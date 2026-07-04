@@ -4,6 +4,8 @@ import argparse
 import copy
 import math
 import random
+import subprocess
+import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -97,6 +99,9 @@ class DistillHpoCandidate:
             "attempt_index": self.attempt_index,
             "overrides": self.overrides,
         }
+
+
+DistillTrialRunner = Callable[..., dict[str, object]]
 
 
 def _sample_loguniform(rng: random.Random, bounds: Sequence[object]) -> float:
@@ -589,6 +594,136 @@ def write_distill_hpo_trial_plan(
     return summary
 
 
+def run_distill_trial_command(
+    *,
+    config_path: Path,
+    output_dir: Path,
+    teacher_checkpoint: str | None,
+    quick_smoke: bool,
+    sample_split: str = "train",
+    max_sample_batches: int = 1,
+) -> dict[str, object]:
+    command = [
+        sys.executable,
+        "-m",
+        "cifar_mamba_fff.distill_linears",
+        "--config",
+        str(config_path),
+        "--output-dir",
+        str(output_dir),
+        "--quick-smoke",
+        str(quick_smoke).lower(),
+        "--sample-split",
+        sample_split,
+        "--max-sample-batches",
+        str(max_sample_batches),
+    ]
+    if teacher_checkpoint is not None:
+        command.extend(["--checkpoint", teacher_checkpoint])
+
+    completed = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    summary_path = output_dir / "distill_summary.json"
+    payload: dict[str, object] = {
+        "status": "succeeded" if completed.returncode == 0 else "failed_logic",
+        "returncode": completed.returncode,
+        "command": command,
+        "stdout": completed.stdout[-8192:],
+        "stderr": completed.stderr[-8192:],
+        "summary_path": str(summary_path) if summary_path.exists() else None,
+        "test_accessed": False,
+    }
+    if summary_path.exists():
+        payload["summary"] = load_yaml(summary_path)
+    return payload
+
+
+def run_distill_hpo_trials(
+    *,
+    base_config: Mapping[str, object],
+    hpo_config: Mapping[str, object],
+    output_dir: Path,
+    max_trials: int,
+    max_attempts: int,
+    seed: int,
+    teacher_checkpoint: str | None,
+    quick_smoke: bool = False,
+    sample_split: str = "train",
+    max_sample_batches: int = 1,
+    trial_runner: DistillTrialRunner = run_distill_trial_command,
+) -> dict[str, object]:
+    if not quick_smoke and teacher_checkpoint is None:
+        raise RuntimeError("teacher_checkpoint is required for executable distill HPO")
+    plan = write_distill_hpo_trial_plan(
+        base_config=base_config,
+        hpo_config=hpo_config,
+        output_dir=output_dir,
+        max_trials=max_trials,
+        max_attempts=max_attempts,
+        seed=seed,
+        teacher_checkpoint=teacher_checkpoint,
+    )
+    succeeded = 0
+    failed_logic = 0
+    trial_results: list[dict[str, object]] = []
+    for trial in plan["trials"]:
+        if not isinstance(trial, Mapping):
+            raise ValueError("distill HPO trial records must be mappings")
+        trial_index = int(trial["trial_index"])
+        trial_dir = output_dir / "trials" / f"trial_{trial_index:06d}"
+        config_path = trial_dir / "distill_config.yaml"
+        try:
+            runner_result = trial_runner(
+                config_path=config_path,
+                output_dir=trial_dir,
+                teacher_checkpoint=teacher_checkpoint,
+                quick_smoke=quick_smoke,
+                sample_split=sample_split,
+                max_sample_batches=max_sample_batches,
+            )
+        except Exception as exc:
+            runner_result = {
+                "status": "failed_logic",
+                "returncode": None,
+                "reason": f"{type(exc).__name__}: {exc}",
+                "test_accessed": False,
+            }
+        status = str(runner_result.get("status", "failed_logic"))
+        if status == "succeeded":
+            succeeded += 1
+        else:
+            failed_logic += 1
+        record = {
+            **dict(trial),
+            "status": status,
+            "result": runner_result,
+            "test_accessed": bool(runner_result.get("test_accessed", False)),
+        }
+        write_json(trial_dir / "trial_result.json", record)
+        trial_results.append(record)
+
+    summary = {
+        **{key: value for key, value in plan.items() if key != "trials"},
+        "mode": "distill_hpo_execute",
+        "status": "completed" if succeeded > 0 else "failed_zero_successes",
+        "succeeded": succeeded,
+        "failed_logic": failed_logic,
+        "quick_smoke": quick_smoke,
+        "sample_split": sample_split,
+        "max_sample_batches": max_sample_batches,
+        "test_accessed": any(bool(result["test_accessed"]) for result in trial_results),
+        "trials": trial_results,
+    }
+    write_json(output_dir / "distill_hpo_summary.json", summary)
+    if succeeded == 0:
+        raise RuntimeError("distill HPO completed with zero successful trials")
+    return summary
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-config", default="configs/fff_distill_default.yaml")
@@ -598,17 +733,32 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--max-attempts", type=int, default=32)
     parser.add_argument("--seed", type=int, default=1337)
     parser.add_argument("--teacher-checkpoint", default=None)
+    parser.add_argument("--quick-smoke", type=bool_arg, default=False)
+    parser.add_argument("--sample-split", choices=("train", "val"), default="train")
+    parser.add_argument("--max-sample-batches", type=int, default=1)
     parser.add_argument(
         "--execute-trials",
         type=bool_arg,
         default=False,
-        help="Reserved for the post-T06 execution path; currently only dry-run planning is supported.",
+        help="Execute planned trials instead of only materializing configs.",
     )
     args = parser.parse_args(argv)
     if args.execute_trials:
-        raise RuntimeError(
-            "distill HPO execution is gated on T06; use this entrypoint to materialize trial configs"
+        summary = run_distill_hpo_trials(
+            base_config=load_yaml(args.base_config),
+            hpo_config=load_yaml(args.hpo_config),
+            output_dir=Path(args.output_dir),
+            max_trials=args.max_trials,
+            max_attempts=args.max_attempts,
+            seed=args.seed,
+            teacher_checkpoint=args.teacher_checkpoint,
+            quick_smoke=args.quick_smoke,
+            sample_split=args.sample_split,
+            max_sample_batches=args.max_sample_batches,
+            trial_runner=run_distill_trial_command,
         )
+        print(f"distill HPO executed: {summary['succeeded']} succeeded")
+        return 0
     summary = write_distill_hpo_trial_plan(
         base_config=load_yaml(args.base_config),
         hpo_config=load_yaml(args.hpo_config),

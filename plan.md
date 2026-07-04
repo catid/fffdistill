@@ -144,6 +144,13 @@ Stage B: teacher HPO with all usable GPUs, validation pruning, and final CIFAR-1
 
 Stage C: STE/router smoke tests on one representative middle Linear layer.
 
+- Layerwise distillation now has CPU-tested executable HPO orchestration: dry-run planning
+  remains available without a teacher checkpoint, while `--execute-trials true` records
+  per-trial configs/results and requires a selected teacher checkpoint for non-smoke runs.
+- Balance HPO knobs are active in layerwise distillation. `balance.recipe/coeff`,
+  min-leaf occupancy, uniform leaf balance, and margin regularization are parsed, added to
+  the training loss, and logged in layer metrics.
+
 Stage D: single-layer architecture sweep.
 
 Stage E: representative-layer sweep.

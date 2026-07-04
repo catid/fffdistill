@@ -14,7 +14,12 @@ from torch import nn
 
 from .data import build_cifar10_loaders
 from .evaluate_teacher import run_config_from_checkpoint, selected_val_accuracy
-from .losses.balance import split_balance_loss
+from .losses.balance import (
+    min_leaf_occupancy_loss,
+    route_margin_loss,
+    split_balance_loss,
+    uniform_leaf_balance_loss,
+)
 from .losses.distill import distillation_loss
 from .losses.router_ste import (
     clipped_ste,
@@ -64,6 +69,20 @@ ROUTER_RECIPES: tuple[str, ...] = (
     "utility_targeted_ste",
     "hard_em_utility_ste",
     "expert_choice_imitation",
+)
+BalanceRecipe = Literal[
+    "none",
+    "split",
+    "split_minleaf",
+    "split_minleaf_uniform",
+    "split_minleaf_margin",
+]
+BALANCE_RECIPES: tuple[str, ...] = (
+    "none",
+    "split",
+    "split_minleaf",
+    "split_minleaf_uniform",
+    "split_minleaf_margin",
 )
 MAIN_LOSS_ROUTER_RECIPES: tuple[str, ...] = (
     "no_ste_soft_router",
@@ -218,6 +237,48 @@ class RouterDistillConfig:
             raise ValueError(
                 "router.expert_choice_capacity_factor must be a positive finite value"
             )
+
+
+@dataclass(frozen=True)
+class BalanceDistillConfig:
+    recipe: BalanceRecipe = "none"
+    coeff: float = 0.0
+    min_leaf_tokens: int = 0
+    margin: float = 1.0
+    margin_coeff: float = 1.0
+
+    @classmethod
+    def from_mapping(cls, raw: dict[str, Any] | None) -> BalanceDistillConfig:
+        if raw is None:
+            return cls()
+        if not isinstance(raw, dict):
+            raise ValueError("balance config must be a mapping")
+        recipe = str(raw.get("recipe", raw.get("balance_recipe", cls.recipe)))
+        config = cls(
+            recipe=recipe,  # type: ignore[arg-type]
+            coeff=float(raw.get("coeff", raw.get("balance_coeff", cls.coeff))),
+            min_leaf_tokens=int(raw.get("min_leaf_tokens", cls.min_leaf_tokens)),
+            margin=float(raw.get("margin", cls.margin)),
+            margin_coeff=float(raw.get("margin_coeff", cls.margin_coeff)),
+        )
+        config.validate()
+        return config
+
+    @property
+    def enabled(self) -> bool:
+        return self.recipe != "none" and self.coeff > 0.0
+
+    def validate(self) -> None:
+        if self.recipe not in BALANCE_RECIPES:
+            raise ValueError(f"balance.recipe must be one of: {', '.join(BALANCE_RECIPES)}")
+        if self.coeff < 0.0 or not math.isfinite(self.coeff):
+            raise ValueError("balance.coeff must be a non-negative finite value")
+        if self.min_leaf_tokens < 0:
+            raise ValueError("balance.min_leaf_tokens must be non-negative")
+        if self.margin < 0.0 or not math.isfinite(self.margin):
+            raise ValueError("balance.margin must be a non-negative finite value")
+        if self.margin_coeff < 0.0 or not math.isfinite(self.margin_coeff):
+            raise ValueError("balance.margin_coeff must be a non-negative finite value")
 
 
 @dataclass(frozen=True)
@@ -686,16 +747,87 @@ def _router_auxiliary_loss(
     return raw_loss * config.loss_coeff, diagnostics
 
 
-def _guard_router_training(layer: FFFLinear, config: RouterDistillConfig) -> None:
+def _balance_auxiliary_loss(
+    layer: FFFLinear,
+    x: torch.Tensor,
+    config: BalanceDistillConfig,
+    *,
+    total_tokens: int,
+) -> tuple[torch.Tensor, dict[str, object]]:
+    zero = x.new_zeros(())
+    diagnostics: dict[str, object] = {
+        "recipe": config.recipe,
+        "coeff": config.coeff,
+        "enabled": config.enabled,
+        "loss": 0.0,
+        "weighted_loss": 0.0,
+        "min_leaf_tokens": config.min_leaf_tokens,
+        "min_leaf_occupancy": 0.0,
+        "margin": config.margin,
+        "margin_coeff": config.margin_coeff,
+        "components": {},
+    }
+    if not config.enabled:
+        return zero, diagnostics
+    if total_tokens <= 0:
+        raise ValueError("total_tokens must be positive for balance loss")
+
+    branch_logits = _full_branch_logits(layer, x).float()
+    branch_probs = branch_logits.softmax(dim=-1)
+    leaf_probs = _leaf_probs_from_branch_routes(layer, branch_probs.to(dtype=x.dtype)).float()
+    min_leaf_occupancy = float(config.min_leaf_tokens) / float(total_tokens)
+
+    components: dict[str, torch.Tensor] = {
+        "split": split_balance_loss(branch_probs, pair_probs=True),
+    }
+    if config.recipe in {
+        "split_minleaf",
+        "split_minleaf_uniform",
+        "split_minleaf_margin",
+    }:
+        components["min_leaf"] = min_leaf_occupancy_loss(
+            leaf_probs,
+            min_occupancy=min_leaf_occupancy,
+        )
+    if config.recipe == "split_minleaf_uniform":
+        components["uniform_leaf"] = uniform_leaf_balance_loss(leaf_probs)
+    if config.recipe == "split_minleaf_margin":
+        components["margin"] = route_margin_loss(
+            branch_logits,
+            target_margin=config.margin,
+        ) * config.margin_coeff
+
+    raw_loss = sum(components.values(), start=zero)
+    weighted_loss = raw_loss * config.coeff
+    component_values = {
+        key: float(value.detach().float().item()) for key, value in components.items()
+    }
+    diagnostics.update(
+        {
+            "loss": float(raw_loss.detach().float().item()),
+            "weighted_loss": float(weighted_loss.detach().float().item()),
+            "min_leaf_occupancy": min_leaf_occupancy,
+            "components": component_values,
+        }
+    )
+    return weighted_loss, diagnostics
+
+
+def _guard_router_training(
+    layer: FFFLinear,
+    router_config: RouterDistillConfig,
+    balance_config: BalanceDistillConfig,
+) -> None:
     diagnostics = layer.diagnostics()
     if (
         layer.config.hard_routing
         and not bool(diagnostics["route_output_contributes"])
-        and config.recipe == "none"
+        and router_config.recipe == "none"
+        and not balance_config.enabled
     ):
         raise ValueError(
             "hard-routed FFFLinear without route output contribution needs a positive "
-            "router recipe; otherwise route parameters are not trained"
+            "router or balance recipe; otherwise route parameters are not trained"
         )
 
 
@@ -719,6 +851,7 @@ def distill_linear_from_tensors(
     fff_config: dict[str, Any],
     distill_config: LinearDistillConfig,
     router_config: RouterDistillConfig | None = None,
+    balance_config: BalanceDistillConfig | None = None,
     output_dir: Path,
 ) -> LayerDistillResult:
     if x.ndim != 2 or x.shape[1] != linear.in_features:
@@ -739,7 +872,8 @@ def distill_linear_from_tensors(
     )
     replacement.train()
     router_config = router_config or RouterDistillConfig()
-    _guard_router_training(replacement, router_config)
+    balance_config = balance_config or BalanceDistillConfig()
+    _guard_router_training(replacement, router_config, balance_config)
     optimizer = torch.optim.AdamW(replacement.parameters(), lr=distill_config.lr)
     metrics_path = output_dir / "layer_metrics.jsonl"
 
@@ -753,7 +887,13 @@ def distill_linear_from_tensors(
             variance_weight=distill_config.variance_weight,
         )
         router_loss, _ = _router_auxiliary_loss(replacement, batch_x, batch_y, router_config)
-        return main_loss + router_loss
+        balance_loss, _ = _balance_auxiliary_loss(
+            replacement,
+            batch_x,
+            balance_config,
+            total_tokens=x_train.shape[0],
+        )
+        return main_loss + router_loss + balance_loss
 
     with torch.no_grad():
         initial_loss_tensor = compute_loss(x_train, y_train)
@@ -778,6 +918,12 @@ def distill_linear_from_tensors(
                 x_train[: distill_config.batch_size],
                 y_train[: distill_config.batch_size],
                 router_config,
+            )[1],
+            "balance": _balance_auxiliary_loss(
+                replacement,
+                x_train[: distill_config.batch_size],
+                balance_config,
+                total_tokens=x_train.shape[0],
             )[1],
         },
     )
@@ -832,6 +978,12 @@ def distill_linear_from_tensors(
                 y_train[: distill_config.batch_size],
                 router_config,
             )[1],
+            "balance": _balance_auxiliary_loss(
+                replacement,
+                x_train[: distill_config.batch_size],
+                balance_config,
+                total_tokens=x_train.shape[0],
+            )[1],
             "replacement_path": result.replacement_path,
         },
     )
@@ -849,6 +1001,7 @@ def run_layerwise_distillation(
 ) -> list[LayerDistillResult]:
     distill_config = LinearDistillConfig.from_mapping(config.get("distill"))
     router_config = RouterDistillConfig.from_mapping(config.get("router"))
+    balance_config = BalanceDistillConfig.from_mapping(config.get("balance"))
     raw_fff_config = config.get("fff") or {}
     if not isinstance(raw_fff_config, dict):
         raise ValueError("fff config must be a mapping")
@@ -890,6 +1043,7 @@ def run_layerwise_distillation(
             fff_config=fff_config,
             distill_config=distill_config,
             router_config=router_config,
+            balance_config=balance_config,
             output_dir=output_dir,
         )
         results.append(

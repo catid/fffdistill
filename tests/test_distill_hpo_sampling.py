@@ -11,6 +11,7 @@ import cifar_mamba_fff.hpo.distill_hpo as distill_hpo
 from cifar_mamba_fff.hpo.distill_hpo import (
     apply_distill_hpo_overrides,
     canonicalize_distill_route_overrides,
+    run_distill_hpo_trials,
     sample_distill_overrides,
     sample_valid_distill_hpo_candidates,
     write_distill_hpo_trial_plan,
@@ -325,6 +326,106 @@ def test_distill_hpo_trial_plan_writes_configs_without_test_access(tmp_path) -> 
     written_summary = json.loads((tmp_path / "distill_hpo_summary.json").read_text(encoding="utf-8"))
     assert written_summary["accepted_trials"] == 3
     assert written_summary["test_accessed"] is False
+
+
+def test_distill_hpo_execute_runs_trials_and_records_mixed_results(tmp_path) -> None:
+    base = load_yaml("configs/fff_distill_default.yaml")
+    hpo_config = load_yaml("configs/fff_distill_hpo.yaml")
+    calls: list[dict[str, object]] = []
+
+    def fake_runner(**kwargs: object) -> dict[str, object]:
+        calls.append(dict(kwargs))
+        output_dir = kwargs["output_dir"]
+        assert hasattr(output_dir, "name")
+        trial_index = int(output_dir.name.rsplit("_", maxsplit=1)[1])  # type: ignore[union-attr]
+        if trial_index == 1:
+            return {"status": "failed_logic", "reason": "synthetic", "test_accessed": False}
+        return {
+            "status": "succeeded",
+            "returncode": 0,
+            "distill_mse": 0.1,
+            "test_accessed": False,
+        }
+
+    summary = run_distill_hpo_trials(
+        base_config=base,
+        hpo_config=hpo_config,
+        output_dir=tmp_path,
+        max_trials=2,
+        max_attempts=16,
+        seed=123,
+        teacher_checkpoint="/tmp/teacher_best.pt",
+        trial_runner=fake_runner,
+    )
+
+    assert summary["mode"] == "distill_hpo_execute"
+    assert summary["status"] == "completed"
+    assert summary["succeeded"] == 1
+    assert summary["failed_logic"] == 1
+    assert summary["test_accessed"] is False
+    assert len(calls) == 2
+    assert calls[0]["teacher_checkpoint"] == "/tmp/teacher_best.pt"
+    assert calls[0]["quick_smoke"] is False
+    first_result = json.loads((tmp_path / "trials" / "trial_000000" / "trial_result.json").read_text())
+    second_result = json.loads((tmp_path / "trials" / "trial_000001" / "trial_result.json").read_text())
+    assert first_result["status"] == "succeeded"
+    assert second_result["status"] == "failed_logic"
+
+
+def test_distill_hpo_execute_requires_teacher_checkpoint_for_non_smoke(tmp_path) -> None:
+    with pytest.raises(RuntimeError, match="teacher_checkpoint is required"):
+        run_distill_hpo_trials(
+            base_config=load_yaml("configs/fff_distill_default.yaml"),
+            hpo_config=load_yaml("configs/fff_distill_hpo.yaml"),
+            output_dir=tmp_path,
+            max_trials=1,
+            max_attempts=16,
+            seed=123,
+            teacher_checkpoint=None,
+            quick_smoke=False,
+            trial_runner=lambda **kwargs: pytest.fail("runner should not be called"),
+        )
+
+
+def test_distill_hpo_cli_execute_uses_runner_hook(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    output_dir = tmp_path / "execute"
+    calls: list[dict[str, object]] = []
+
+    def fake_runner(**kwargs: object) -> dict[str, object]:
+        calls.append(dict(kwargs))
+        return {"status": "succeeded", "returncode": 0, "test_accessed": False}
+
+    monkeypatch.setattr(distill_hpo, "run_distill_trial_command", fake_runner)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "distill_hpo",
+            "--base-config",
+            "configs/fff_distill_default.yaml",
+            "--hpo-config",
+            "configs/fff_distill_hpo.yaml",
+            "--output-dir",
+            str(output_dir),
+            "--max-trials",
+            "1",
+            "--max-attempts",
+            "16",
+            "--execute-trials",
+            "true",
+            "--quick-smoke",
+            "true",
+        ],
+    )
+
+    assert distill_hpo_main() == 0
+    summary = json.loads((output_dir / "distill_hpo_summary.json").read_text(encoding="utf-8"))
+    assert summary["mode"] == "distill_hpo_execute"
+    assert summary["succeeded"] == 1
+    assert summary["test_accessed"] is False
+    assert calls[0]["quick_smoke"] is True
+    assert calls[0]["teacher_checkpoint"] is None
 
 
 def test_distill_hpo_cli_materializes_dry_run_plan(
