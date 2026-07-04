@@ -2,15 +2,29 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from shlex import quote
+from typing import Any
 
-from .cluster import MachineSpec, load_machines
+from .cluster import MachineSpec, load_machines, read_remote_text, run_remote, write_remote_text
 from .utils import bool_arg, git_commit
 
 DEFAULT_PYTHON_BIN = ".venv/bin/python"
+DEFAULT_SMOKE_MODE = "metadata"
+COLLECTED_ARTIFACT_NAMES = (
+    "status.json",
+    "stdout.log",
+    "stderr.log",
+    "exit_code.txt",
+    "heartbeat.txt",
+    "run_context.json",
+    "metrics_summary.json",
+    "metrics.jsonl",
+)
 
 
 class JobStatus(StrEnum):
@@ -45,6 +59,74 @@ class GpuJob:
         }
 
 
+@dataclass(frozen=True)
+class DetachedJobFiles:
+    output_dir: Path
+    script: Path
+    status: Path
+    stdout: Path
+    stderr: Path
+    pid: Path
+    exit_code: Path
+    heartbeat: Path
+
+    def record(self) -> dict[str, str]:
+        return {
+            "output_dir": str(self.output_dir),
+            "script": str(self.script),
+            "status": str(self.status),
+            "stdout": str(self.stdout),
+            "stderr": str(self.stderr),
+            "pid": str(self.pid),
+            "exit_code": str(self.exit_code),
+            "heartbeat": str(self.heartbeat),
+        }
+
+
+@dataclass(frozen=True)
+class LaunchResult:
+    ok: bool
+    status: JobStatus
+    job: GpuJob
+    files: DetachedJobFiles
+    launch_stdout: str
+    launch_stderr: str
+
+
+@dataclass(frozen=True)
+class PreflightResult:
+    machine: str
+    ok: bool
+    returncode: int | None
+    commit: str | None
+    stdout: str
+    stderr: str
+
+
+def _utc_now() -> str:
+    return datetime.now(UTC).isoformat()
+
+
+def _relative_path(path: Path, *, field_name: str) -> Path:
+    if path.is_absolute():
+        raise ValueError(f"{field_name} must be relative to the repository workdir")
+    return path
+
+
+def detached_job_files(job: GpuJob) -> DetachedJobFiles:
+    output_dir = _relative_path(job.output_dir, field_name="job.output_dir")
+    return DetachedJobFiles(
+        output_dir=output_dir,
+        script=output_dir / "launch.sh",
+        status=output_dir / "status.json",
+        stdout=output_dir / "stdout.log",
+        stderr=output_dir / "stderr.log",
+        pid=output_dir / "pid.txt",
+        exit_code=output_dir / "exit_code.txt",
+        heartbeat=output_dir / "heartbeat.txt",
+    )
+
+
 def enumerate_slots(machines: list[MachineSpec]) -> list[tuple[str, int]]:
     return [(machine.name, gpu_id) for machine in machines for gpu_id in range(machine.gpus)]
 
@@ -76,11 +158,13 @@ def build_train_teacher_command(
     output_dir: Path,
     python_bin: str = DEFAULT_PYTHON_BIN,
     quick_smoke: bool = True,
+    smoke_mode: str = DEFAULT_SMOKE_MODE,
 ) -> str:
     return (
         f"PYTHONPATH=src CUDA_VISIBLE_DEVICES={gpu_id} {quote(python_bin)} "
         "-m cifar_mamba_fff.train_teacher "
         f"--quick-smoke {str(quick_smoke).lower()} "
+        f"--smoke-mode {quote(smoke_mode)} "
         f"--output-dir {quote(str(output_dir))}"
     )
 
@@ -91,13 +175,17 @@ def build_dry_run_jobs(
     quick_smoke: bool,
     dry_run: bool,
     python_bin: str = DEFAULT_PYTHON_BIN,
+    smoke_mode: str = DEFAULT_SMOKE_MODE,
     unavailable_slots: set[tuple[str, int]] | None = None,
+    max_jobs: int | None = None,
 ) -> list[GpuJob]:
     unavailable_slots = unavailable_slots or set()
     jobs: list[GpuJob] = []
     for idx, (machine, gpu_id) in enumerate(enumerate_slots(machines)):
         if (machine, gpu_id) in unavailable_slots:
             continue
+        if max_jobs is not None and len(jobs) >= max_jobs:
+            break
         output_dir = Path("outputs/scheduler_smoke") / machine / str(gpu_id)
         jobs.append(
             GpuJob(
@@ -106,6 +194,7 @@ def build_dry_run_jobs(
                     output_dir=output_dir,
                     python_bin=python_bin,
                     quick_smoke=quick_smoke,
+                    smoke_mode=smoke_mode,
                 ),
                 output_dir=output_dir,
                 machine=machine,
@@ -114,6 +203,7 @@ def build_dry_run_jobs(
                 metadata={
                     "quick_smoke": quick_smoke,
                     "dry_run": dry_run,
+                    "smoke_mode": smoke_mode,
                     "cuda_visible_devices": str(gpu_id),
                     "python_bin": python_bin,
                     "output_dir": str(output_dir),
@@ -130,12 +220,277 @@ def write_queue(path: Path, jobs: list[GpuJob]) -> None:
             handle.write(json.dumps(job.record(), sort_keys=True) + "\n")
 
 
+def preflight_machine(
+    spec: MachineSpec,
+    *,
+    python_bin: str = DEFAULT_PYTHON_BIN,
+    expected_commit: str | None = None,
+    timeout_s: int = 20,
+) -> PreflightResult:
+    command = " && ".join(
+        [
+            "test -d .git",
+            "git rev-parse HEAD",
+            f"test -x {quote(python_bin)}",
+            f"{quote(python_bin)} --version",
+        ]
+    )
+    result = run_remote(spec, command, timeout_s=timeout_s)
+    stdout = str(result["stdout"])
+    commit = stdout.splitlines()[0].strip() if stdout.splitlines() else None
+    ok = bool(result["ok"])
+    stderr = str(result["stderr"])
+    if expected_commit is not None and commit != expected_commit:
+        ok = False
+        stderr = (
+            stderr.rstrip()
+            + f"\nremote commit mismatch: expected {expected_commit}, got {commit}"
+        ).strip()
+    return PreflightResult(
+        machine=spec.name,
+        ok=ok,
+        returncode=result["returncode"],
+        commit=commit,
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+
+def _job_static_metadata(job: GpuJob, files: DetachedJobFiles) -> dict[str, object]:
+    return {
+        "command": job.command,
+        "output_dir": str(job.output_dir),
+        "machine": job.machine,
+        "gpu_id": job.gpu_id,
+        "seed": job.seed,
+        "metadata": job.metadata,
+        "git_commit": git_commit(),
+        "files": files.record(),
+    }
+
+
+def render_detached_launch_script(job: GpuJob) -> str:
+    files = detached_job_files(job)
+    static_metadata = json.dumps(_job_static_metadata(job, files), sort_keys=True)
+    return "\n".join(
+        [
+            "#!/usr/bin/env bash",
+            "set +e",
+            "set +u",
+            "set +o pipefail",
+            f"OUT_DIR={quote(str(files.output_dir))}",
+            f"COMMAND={quote(job.command)}",
+            f"STATIC_METADATA={quote(static_metadata)}",
+            "export OUT_DIR STATIC_METADATA",
+            'mkdir -p "$OUT_DIR"',
+            'printf "%s\\n" "$$" > "$OUT_DIR/pid.txt"',
+            "write_status() {",
+            '  JOB_STATUS="$1" JOB_RETURN_CODE="$2" UPDATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+            "python3 - <<'PY'",
+            "import json",
+            "import os",
+            "from pathlib import Path",
+            "out_dir = Path(os.environ['OUT_DIR'])",
+            "payload = json.loads(os.environ['STATIC_METADATA'])",
+            "return_code = os.environ['JOB_RETURN_CODE']",
+            "payload.update({",
+            "    'status': os.environ['JOB_STATUS'],",
+            "    'returncode': None if return_code == '' else int(return_code),",
+            "    'updated_at': os.environ['UPDATED_AT'],",
+            "})",
+            "pid_path = out_dir / 'pid.txt'",
+            "if pid_path.exists():",
+            "    payload['pid'] = int(pid_path.read_text(encoding='utf-8').strip())",
+            "(out_dir / 'status.json').write_text(json.dumps(payload, indent=2, sort_keys=True) + '\\n', encoding='utf-8')",
+            "(out_dir / 'heartbeat.txt').write_text(os.environ['UPDATED_AT'] + '\\n', encoding='utf-8')",
+            "PY",
+            "}",
+            'write_status "running" ""',
+            'bash -lc "$COMMAND" > "$OUT_DIR/stdout.log" 2> "$OUT_DIR/stderr.log"',
+            "rc=$?",
+            'printf "%s\\n" "$rc" > "$OUT_DIR/exit_code.txt"',
+            'if [ "$rc" -eq 0 ]; then',
+            '  final_status="succeeded"',
+            'elif [ "$rc" -eq 126 ] || [ "$rc" -eq 127 ]; then',
+            '  final_status="failed_infra"',
+            "else",
+            '  final_status="failed_logic"',
+            "fi",
+            'write_status "$final_status" "$rc"',
+            'exit "$rc"',
+            "",
+        ]
+    )
+
+
+def launch_detached_job(spec: MachineSpec, job: GpuJob, *, timeout_s: int = 20) -> LaunchResult:
+    files = detached_job_files(job)
+    script = render_detached_launch_script(job)
+    write_result = write_remote_text(spec, files.script, script, executable=True, timeout_s=timeout_s)
+    if not write_result["ok"]:
+        job.status = JobStatus.FAILED_INFRA
+        return LaunchResult(
+            ok=False,
+            status=job.status,
+            job=job,
+            files=files,
+            launch_stdout=str(write_result["stdout"]),
+            launch_stderr=str(write_result["stderr"]),
+        )
+
+    launch_command = f"nohup bash {quote(str(files.script))} >/dev/null 2>&1 & echo $!"
+    launch_result = run_remote(spec, launch_command, timeout_s=timeout_s)
+    if not launch_result["ok"]:
+        job.status = JobStatus.FAILED_INFRA
+    else:
+        job.status = JobStatus.RUNNING
+    return LaunchResult(
+        ok=bool(launch_result["ok"]),
+        status=job.status,
+        job=job,
+        files=files,
+        launch_stdout=str(launch_result["stdout"]),
+        launch_stderr=str(launch_result["stderr"]),
+    )
+
+
+def read_detached_job_status(
+    spec: MachineSpec,
+    job: GpuJob,
+    *,
+    timeout_s: int = 20,
+) -> dict[str, Any]:
+    files = detached_job_files(job)
+    result = read_remote_text(spec, files.status, timeout_s=timeout_s)
+    if not result["ok"]:
+        if job.status == JobStatus.RUNNING and result["returncode"] == 44:
+            return {
+                "status": JobStatus.RUNNING,
+                "returncode": None,
+                "stderr": "status file not written yet",
+                "updated_at": _utc_now(),
+                "files": files.record(),
+            }
+        job.status = JobStatus.FAILED_INFRA
+        return {
+            "status": JobStatus.FAILED_INFRA,
+            "returncode": result["returncode"],
+            "stderr": result["stderr"],
+            "updated_at": _utc_now(),
+            "files": files.record(),
+        }
+    payload = json.loads(str(result["stdout"]))
+    status = JobStatus(str(payload["status"]))
+    job.status = status
+    return payload
+
+
+def launch_detached_jobs(
+    machines: list[MachineSpec],
+    jobs: list[GpuJob],
+    *,
+    timeout_s: int = 20,
+) -> list[LaunchResult]:
+    by_name = {machine.name: machine for machine in machines}
+    results: list[LaunchResult] = []
+    for job in jobs:
+        if job.machine is None:
+            raise ValueError("job.machine is required for detached launch")
+        try:
+            spec = by_name[job.machine]
+        except KeyError as exc:
+            raise ValueError(f"unknown job machine: {job.machine}") from exc
+        results.append(launch_detached_job(spec, job, timeout_s=timeout_s))
+    return results
+
+
+def collect_detached_job_artifacts(
+    spec: MachineSpec,
+    job: GpuJob,
+    *,
+    local_root: Path,
+    timeout_s: int = 20,
+    max_bytes: int = 1_048_576,
+) -> dict[str, Any]:
+    files = detached_job_files(job)
+    destination = local_root / str(job.machine) / str(job.gpu_id)
+    destination.mkdir(parents=True, exist_ok=True)
+    collected: dict[str, Any] = {
+        "machine": job.machine,
+        "gpu_id": job.gpu_id,
+        "source_output_dir": str(files.output_dir),
+        "local_output_dir": str(destination),
+        "files": {},
+    }
+    for artifact_name in COLLECTED_ARTIFACT_NAMES:
+        relative_path = files.output_dir / artifact_name
+        result = read_remote_text(
+            spec,
+            relative_path,
+            max_bytes=max_bytes,
+            timeout_s=timeout_s,
+        )
+        record = {
+            "source": str(relative_path),
+            "ok": bool(result["ok"]),
+            "returncode": result["returncode"],
+            "stderr": str(result["stderr"]),
+        }
+        if result["ok"]:
+            target = destination / artifact_name
+            target.write_text(str(result["stdout"]), encoding="utf-8")
+            record["local_path"] = str(target)
+        collected["files"][artifact_name] = record
+    return collected
+
+
+def wait_for_jobs(
+    machines: list[MachineSpec],
+    jobs: list[GpuJob],
+    *,
+    timeout_s: float,
+    poll_interval_s: float,
+) -> list[dict[str, Any]]:
+    by_name = {machine.name: machine for machine in machines}
+    deadline = time.monotonic() + timeout_s
+    latest: dict[tuple[str | None, int | None], dict[str, Any]] = {}
+    terminal = {
+        JobStatus.SUCCEEDED,
+        JobStatus.FAILED_INFRA,
+        JobStatus.FAILED_LOGIC,
+        JobStatus.CANCELLED,
+    }
+    while True:
+        all_terminal = True
+        for job in jobs:
+            if job.machine is None:
+                raise ValueError("job.machine is required for status polling")
+            key = (job.machine, job.gpu_id)
+            if job.status in terminal:
+                continue
+            status = read_detached_job_status(by_name[job.machine], job)
+            latest[key] = status
+            if JobStatus(str(status["status"])) not in terminal:
+                all_terminal = False
+        if all_terminal or time.monotonic() >= deadline:
+            break
+        time.sleep(poll_interval_s)
+    return [latest.get((job.machine, job.gpu_id), job.record()) for job in jobs]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--machines", default="configs/machines.yaml")
     parser.add_argument("--queue-out", default="outputs/job_queue.jsonl")
     parser.add_argument("--quick-smoke", type=bool_arg, default=True)
+    parser.add_argument(
+        "--smoke-mode",
+        choices=("metadata", "train"),
+        default=DEFAULT_SMOKE_MODE,
+        help="Use metadata for scheduler readiness; train requires CIFAR/CUDA smoke gate.",
+    )
     parser.add_argument("--python-bin", default=DEFAULT_PYTHON_BIN)
+    parser.add_argument("--max-jobs", type=int, default=None)
     parser.add_argument(
         "--unavailable-slot",
         action="append",
@@ -146,9 +501,39 @@ def main() -> int:
         "--dry-run",
         type=bool_arg,
         default=True,
-        help="Only materialize queue metadata. Real remote launch is implemented after env gates pass.",
+        help="Only materialize queue metadata.",
+    )
+    parser.add_argument(
+        "--allow-long-jobs",
+        type=bool_arg,
+        default=False,
+        help="Permit non-smoke launches. Keep false until environment, profiler, and GPU gates pass.",
+    )
+    parser.add_argument("--wait", type=bool_arg, default=True)
+    parser.add_argument("--launch-timeout-s", type=int, default=20)
+    parser.add_argument("--wait-timeout-s", type=float, default=120.0)
+    parser.add_argument("--poll-interval-s", type=float, default=1.0)
+    parser.add_argument("--preflight", type=bool_arg, default=True)
+    parser.add_argument(
+        "--expected-commit",
+        default=git_commit(),
+        help="Require remote workdirs to match this git commit before launch. Use 'any' to disable.",
+    )
+    parser.add_argument(
+        "--collect-root",
+        default="outputs/scheduler_collected",
+        help="Local directory where small logs/status/metrics are copied from each launched job.",
+    )
+    parser.add_argument(
+        "--launch-results-out",
+        default="outputs/scheduler_launch_results.jsonl",
+        help="JSONL launch/status records for detached launches.",
     )
     args = parser.parse_args()
+    if args.max_jobs is not None and args.max_jobs <= 0:
+        raise ValueError("--max-jobs must be positive when set")
+    if not args.dry_run and not args.quick_smoke and not args.allow_long_jobs:
+        raise RuntimeError("refusing non-smoke scheduler launch without --allow-long-jobs true")
 
     machines = load_machines(args.machines)
     unavailable_slots = parse_unavailable_slots(args.unavailable_slot)
@@ -157,12 +542,104 @@ def main() -> int:
         quick_smoke=args.quick_smoke,
         dry_run=args.dry_run,
         python_bin=args.python_bin,
+        smoke_mode=args.smoke_mode,
         unavailable_slots=unavailable_slots,
+        max_jobs=args.max_jobs,
     )
     write_queue(Path(args.queue_out), jobs)
     print(f"recorded {len(jobs)} GPU slots in {args.queue_out}")
     if not args.dry_run:
-        raise RuntimeError("real scheduler launch is blocked until verify_env and verify_cluster pass")
+        launchable_jobs = list(jobs)
+        skipped_results: list[dict[str, Any]] = []
+        if args.preflight:
+            specs_by_name = {machine.name: machine for machine in machines}
+            machines_with_jobs = sorted({str(job.machine) for job in jobs if job.machine is not None})
+            preflight_by_machine = {
+                machine_name: preflight_machine(
+                    specs_by_name[machine_name],
+                    python_bin=args.python_bin,
+                    expected_commit=None
+                    if args.expected_commit == "any"
+                    else str(args.expected_commit),
+                    timeout_s=args.launch_timeout_s,
+                )
+                for machine_name in machines_with_jobs
+            }
+            launchable_jobs = []
+            for job in jobs:
+                if job.machine is None:
+                    raise ValueError("job.machine is required for detached launch")
+                preflight = preflight_by_machine[str(job.machine)]
+                if preflight.ok:
+                    launchable_jobs.append(job)
+                    continue
+                job.status = JobStatus.FAILED_INFRA
+                skipped_results.append(
+                    {
+                        "ok": False,
+                        "status": JobStatus.FAILED_INFRA,
+                        "machine": job.machine,
+                        "gpu_id": job.gpu_id,
+                        "output_dir": str(job.output_dir),
+                        "preflight": {
+                            "returncode": preflight.returncode,
+                            "commit": preflight.commit,
+                            "stdout": preflight.stdout.strip(),
+                            "stderr": preflight.stderr.strip(),
+                        },
+                    }
+                )
+        launch_results = launch_detached_jobs(
+            machines,
+            launchable_jobs,
+            timeout_s=args.launch_timeout_s,
+        )
+        Path(args.launch_results_out).parent.mkdir(parents=True, exist_ok=True)
+        with Path(args.launch_results_out).open("w", encoding="utf-8") as handle:
+            for skipped in skipped_results:
+                handle.write(json.dumps(skipped, sort_keys=True) + "\n")
+            for result in launch_results:
+                handle.write(
+                    json.dumps(
+                        {
+                            "ok": result.ok,
+                            "status": result.status,
+                            "machine": result.job.machine,
+                            "gpu_id": result.job.gpu_id,
+                            "output_dir": str(result.job.output_dir),
+                            "launch_stdout": result.launch_stdout.strip(),
+                            "launch_stderr": result.launch_stderr.strip(),
+                            "files": result.files.record(),
+                        },
+                        sort_keys=True,
+                    )
+                    + "\n"
+                )
+            if args.wait:
+                for status in wait_for_jobs(
+                    machines,
+                    launchable_jobs,
+                    timeout_s=args.wait_timeout_s,
+                    poll_interval_s=args.poll_interval_s,
+                ):
+                    handle.write(json.dumps(status, sort_keys=True) + "\n")
+                specs_by_name = {machine.name: machine for machine in machines}
+                for job in launchable_jobs:
+                    artifacts = collect_detached_job_artifacts(
+                        specs_by_name[str(job.machine)],
+                        job,
+                        local_root=Path(args.collect_root),
+                        timeout_s=args.launch_timeout_s,
+                    )
+                    handle.write(
+                        json.dumps(
+                            {"status": "artifacts_collected", **artifacts},
+                            sort_keys=True,
+                        )
+                        + "\n"
+                    )
+        write_queue(Path(args.queue_out), jobs)
+        print(f"launch/status records written to {args.launch_results_out}")
     return 0
 
 

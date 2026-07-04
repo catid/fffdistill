@@ -1,16 +1,23 @@
 from __future__ import annotations
 
 import json
+import sys
+import time
 from pathlib import Path
+from shlex import quote
 
 import torch
 
 from cifar_mamba_fff.benchmark_fff import _build_parser, _run_benchmark
 from cifar_mamba_fff.cluster import MachineSpec
 from cifar_mamba_fff.gpu_scheduler import (
+    GpuJob,
+    JobStatus,
     build_dry_run_jobs,
     build_train_teacher_command,
+    launch_detached_job,
     parse_unavailable_slots,
+    read_detached_job_status,
     write_queue,
 )
 from cifar_mamba_fff.profile import time_cuda_callable
@@ -150,3 +157,86 @@ def test_scheduler_command_quotes_paths_with_spaces() -> None:
 
     assert "'.venv with spaces/bin/python'" in command
     assert "--output-dir 'outputs/scheduler smoke/work gpu0'" in command
+
+
+def _wait_for_terminal_status(
+    spec: MachineSpec,
+    job: GpuJob,
+    *,
+    timeout_s: float = 5.0,
+) -> dict[str, object]:
+    deadline = time.monotonic() + timeout_s
+    terminal = {
+        JobStatus.SUCCEEDED.value,
+        JobStatus.FAILED_INFRA.value,
+        JobStatus.FAILED_LOGIC.value,
+        JobStatus.CANCELLED.value,
+    }
+    while time.monotonic() < deadline:
+        status = read_detached_job_status(spec, job)
+        if str(status["status"]) in terminal:
+            return status
+        time.sleep(0.05)
+    raise AssertionError(f"job did not reach terminal status: {job.record()}")
+
+
+def test_detached_local_job_records_success_sidecars(tmp_path) -> None:
+    spec = MachineSpec(
+        name="local",
+        host="localhost",
+        gpus=1,
+        role="local",
+        workdir=str(tmp_path),
+    )
+    command = f"{quote(sys.executable)} -c {quote('print(\"detached-ok\")')}"
+    job = GpuJob(
+        command=command,
+        output_dir=Path("job_success"),
+        machine="local",
+        gpu_id=0,
+        seed=123,
+        metadata={"purpose": "unit-test"},
+    )
+
+    launch = launch_detached_job(spec, job)
+    assert launch.ok is True
+    assert launch.status == JobStatus.RUNNING
+
+    status = _wait_for_terminal_status(spec, job)
+
+    assert status["status"] == JobStatus.SUCCEEDED.value
+    assert status["returncode"] == 0
+    assert status["machine"] == "local"
+    assert status["gpu_id"] == 0
+    assert (tmp_path / "job_success" / "stdout.log").read_text(encoding="utf-8").strip() == "detached-ok"
+    assert (tmp_path / "job_success" / "stderr.log").exists()
+    assert (tmp_path / "job_success" / "pid.txt").exists()
+    assert (tmp_path / "job_success" / "heartbeat.txt").exists()
+    assert (tmp_path / "job_success" / "exit_code.txt").read_text(encoding="utf-8").strip() == "0"
+
+
+def test_detached_local_job_classifies_nonzero_as_logic_failure(tmp_path) -> None:
+    spec = MachineSpec(
+        name="local",
+        host="localhost",
+        gpus=1,
+        role="local",
+        workdir=str(tmp_path),
+    )
+    command = f"{quote(sys.executable)} -c {quote('raise SystemExit(3)')}"
+    job = GpuJob(
+        command=command,
+        output_dir=Path("job_logic_failure"),
+        machine="local",
+        gpu_id=0,
+        seed=123,
+    )
+
+    launch = launch_detached_job(spec, job)
+    assert launch.ok is True
+
+    status = _wait_for_terminal_status(spec, job)
+
+    assert status["status"] == JobStatus.FAILED_LOGIC.value
+    assert status["returncode"] == 3
+    assert (tmp_path / "job_logic_failure" / "exit_code.txt").read_text(encoding="utf-8").strip() == "3"
