@@ -6,7 +6,7 @@ import math
 import random
 import sys
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from pathlib import Path
 from typing import Literal
@@ -538,6 +538,7 @@ def run_teacher_training(
     max_train_steps: int | None = None,
     max_val_steps: int | None = None,
     save_checkpoint: bool = False,
+    epoch_callback: Callable[[dict[str, object]], None] | None = None,
 ) -> dict[str, object]:
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for BF16 official Mamba-3 teacher training")
@@ -588,6 +589,8 @@ def run_teacher_training(
             **val_metrics,
         }
         append_jsonl(metrics_path, metrics)
+        if epoch_callback is not None:
+            epoch_callback(metrics)
         if save_checkpoint and val_metrics["val_accuracy"] >= best_val_accuracy:
             torch.save(
                 {

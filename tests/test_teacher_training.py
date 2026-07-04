@@ -12,7 +12,12 @@ import torch
 import cifar_mamba_fff.hpo.teacher_hpo as teacher_hpo
 import cifar_mamba_fff.train_teacher as train_teacher
 from cifar_mamba_fff.data import Cifar10DataConfig
-from cifar_mamba_fff.hpo.teacher_hpo import evaluate_hpo_candidate
+from cifar_mamba_fff.hpo.teacher_hpo import (
+    evaluate_hpo_candidate,
+    resolve_hpo_run_config,
+    run_teacher_hpo,
+    sample_valid_hpo_candidates,
+)
 from cifar_mamba_fff.models.mamba3_cifar import Mamba3CifarConfig
 from cifar_mamba_fff.train_teacher import (
     TeacherCandidateResult,
@@ -143,6 +148,162 @@ def test_hpo_candidate_filter_rejects_out_of_band_sampled_configs_without_mamba(
 def test_hpo_candidate_filter_rejects_unknown_override_keys() -> None:
     with pytest.raises(ValueError, match="unknown keys"):
         evaluate_hpo_candidate(load_teacher_run_config("configs/teacher_default.yaml", quick_smoke=True).model, {"typo": 1})
+
+
+def test_hpo_resolve_train_overrides_rebuilds_data_config() -> None:
+    base_run = load_teacher_run_config("configs/teacher_default.yaml", quick_smoke=True)
+
+    run_config = resolve_hpo_run_config(
+        base_run,
+        {
+            "batch_size_per_gpu": 1024,
+            "num_workers": 0,
+            "label_smoothing": 0.05,
+            "mixup": 0.4,
+            "cutmix": 0.5,
+            "schedule": "wsd",
+            "lr_muon": 0.03,
+        },
+        seed=9001,
+        quick_smoke=True,
+    )
+
+    assert run_config.seed == 9001
+    assert run_config.train.batch_size_per_gpu == 1024
+    assert run_config.train.schedule == "wsd"
+    assert run_config.train.lr_muon == pytest.approx(0.03)
+    assert run_config.data.batch_size == 1024
+    assert run_config.data.num_workers == 0
+    assert run_config.data.seed == 9001
+    assert run_config.data.label_smoothing == pytest.approx(0.05)
+    assert run_config.data.mixup == pytest.approx(0.4)
+    assert run_config.data.cutmix == pytest.approx(0.5)
+    assert run_config.data.use_test is False
+
+
+def test_hpo_valid_resampling_does_not_count_rejected_candidates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_run = load_teacher_run_config("configs/teacher_default.yaml", quick_smoke=True)
+    sampled = iter(
+        [
+            {"d_model": 160},
+            {"d_model": 224, "batch_size_per_gpu": 512},
+            {"d_model": 288, "bidirectional": True},
+            {"d_model": 224, "depth": 18, "batch_size_per_gpu": 1024},
+        ]
+    )
+
+    def fake_sample(_search_space, *, rng):
+        del rng
+        return next(sampled)
+
+    def fake_evaluate(config: Mamba3CifarConfig) -> TeacherCandidateResult:
+        accepted = config.d_model == 224
+        return TeacherCandidateResult(
+            accepted=accepted,
+            parameter_count=10_000_000 if accepted else 20_000_000,
+            reason="accepted" if accepted else "outside target parameter range",
+        )
+
+    monkeypatch.setattr(teacher_hpo, "sample_teacher_overrides", fake_sample)
+    monkeypatch.setattr(teacher_hpo, "evaluate_teacher_candidate", fake_evaluate)
+
+    candidates = sample_valid_hpo_candidates(
+        base_run,
+        {},
+        quick_smoke=True,
+        max_trials=2,
+        max_attempts=4,
+        rng=teacher_hpo.random.Random(123),
+        event_log_path=tmp_path / "events.jsonl",
+    )
+
+    assert [candidate.trial_index for candidate in candidates] == [0, 1]
+    assert [candidate.attempt_index for candidate in candidates] == [1, 3]
+    assert candidates[1].run_config.data.batch_size == 1024
+    rejected = [
+        json.loads(line)
+        for line in (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [event["event"] for event in rejected] == ["rejected_pretrial", "rejected_pretrial"]
+
+
+def test_hpo_runner_records_pruned_failed_and_successful_trials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_config = tmp_path / "teacher.yaml"
+    hpo_config = tmp_path / "hpo.yaml"
+    base_config.write_text(Path("configs/teacher_default.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+    hpo_config.write_text(
+        "prune_on: val_accuracy\nsearch_space:\n  d_model: [224]\n  depth: [18]\n",
+        encoding="utf-8",
+    )
+
+    sampled = iter([{"d_model": 224}, {"d_model": 224}, {"d_model": 224}])
+
+    def fake_sample(_search_space, *, rng):
+        del rng
+        return next(sampled)
+
+    monkeypatch.setattr(teacher_hpo, "sample_teacher_overrides", fake_sample)
+    monkeypatch.setattr(
+        teacher_hpo,
+        "evaluate_teacher_candidate",
+        lambda config: TeacherCandidateResult(True, 10_000_000, "accepted"),
+    )
+
+    def fake_training_fn(
+        run_config,
+        *,
+        output_dir,
+        quick_smoke,
+        max_train_steps,
+        max_val_steps,
+        save_checkpoint,
+        epoch_callback,
+    ):
+        del run_config, quick_smoke, max_train_steps, max_val_steps, save_checkpoint
+        output_dir.mkdir(parents=True, exist_ok=True)
+        trial_index = int(output_dir.name.rsplit("_", maxsplit=1)[1])
+        if trial_index == 0:
+            assert epoch_callback is not None
+            epoch_callback({"epoch": 0, "val_accuracy": 0.1})
+            raise AssertionError("prune callback should raise")
+        if trial_index == 1:
+            raise RuntimeError("synthetic failure")
+        assert epoch_callback is not None
+        epoch_callback({"epoch": 0, "val_accuracy": 0.9})
+        return {"best_val_accuracy": 0.9, "train_steps_total": 1}
+
+    summary = run_teacher_hpo(
+        base_config_path=base_config,
+        hpo_config_path=hpo_config,
+        output_dir=tmp_path / "hpo",
+        quick_smoke=True,
+        max_trials=3,
+        max_attempts=3,
+        prune_min_value=0.5,
+        training_fn=fake_training_fn,
+    )
+
+    assert summary["accepted_trials"] == 3
+    assert summary["pruned"] == 1
+    assert summary["failed_logic"] == 1
+    assert summary["succeeded"] == 1
+    assert summary["best_trial"] == 2
+    statuses = [
+        json.loads((tmp_path / "hpo" / "trials" / f"trial_{index:06d}" / "trial_summary.json").read_text(encoding="utf-8"))["status"]
+        for index in range(3)
+    ]
+    assert statuses == ["pruned", "failed_logic", "succeeded"]
+    events = [
+        json.loads(line)["event"]
+        for line in (tmp_path / "hpo" / "teacher_hpo_events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert "trial_pruned" in events
 
 
 def test_scheduler_supports_cosine_and_wsd() -> None:
