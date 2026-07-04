@@ -1,14 +1,29 @@
 from __future__ import annotations
 
 import argparse
+import math
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 
+from .losses.balance import split_balance_loss
 from .losses.distill import distillation_loss
+from .losses.router_ste import (
+    clipped_ste,
+    expert_choice_imitation,
+    hard_em_utility_ste,
+    no_ste_soft_router,
+    router_recipe_diagnostics,
+    sigmoid_surrogate_ste,
+    st_gumbel,
+    utility_targeted_ce,
+    utility_targeted_ste,
+    vanilla_ste,
+)
 from .models.fff_linear import FFFLinear
 from .models.replacement import (
     DEFAULT_LINEAR_CAPTURE_MAX_BYTES,
@@ -22,6 +37,29 @@ from .models.replacement import (
     select_progressive_reports,
 )
 from .utils import RunContext, append_jsonl, bool_arg, load_yaml, write_json
+
+RouterRecipe = Literal[
+    "none",
+    "no_ste_soft_router",
+    "vanilla_ste",
+    "clipped_ste",
+    "sigmoid_surrogate_ste",
+    "st_gumbel",
+    "utility_targeted_ste",
+    "hard_em_utility_ste",
+    "expert_choice_imitation",
+]
+ROUTER_RECIPES: tuple[str, ...] = (
+    "none",
+    "no_ste_soft_router",
+    "vanilla_ste",
+    "clipped_ste",
+    "sigmoid_surrogate_ste",
+    "st_gumbel",
+    "utility_targeted_ste",
+    "hard_em_utility_ste",
+    "expert_choice_imitation",
+)
 
 
 @dataclass(frozen=True)
@@ -91,6 +129,65 @@ class LinearDistillConfig:
             and self.max_capture_bytes_per_layer < 0
         ):
             raise ValueError("distill.max_capture_bytes_per_layer must be non-negative or null")
+
+
+@dataclass(frozen=True)
+class RouterDistillConfig:
+    recipe: RouterRecipe = "none"
+    loss_coeff: float = 0.0
+    temperature: float = 1.0
+    utility_temperature: float = 1.0
+    clip: float = 1.0
+    expert_choice_capacity_factor: float = 1.25
+
+    @classmethod
+    def from_mapping(cls, raw: dict[str, Any] | None) -> RouterDistillConfig:
+        if raw is None:
+            return cls()
+        if not isinstance(raw, dict):
+            raise ValueError("router config must be a mapping")
+        recipe = str(raw.get("recipe", "none"))
+        default_loss_coeff = 0.0 if recipe == "none" else 1.0e-3
+        config = cls(
+            recipe=recipe,  # type: ignore[arg-type]
+            loss_coeff=float(raw.get("loss_coeff", default_loss_coeff)),
+            temperature=float(raw.get("temperature", raw.get("tau", cls.temperature))),
+            utility_temperature=float(
+                raw.get("utility_temperature", cls.utility_temperature)
+            ),
+            clip=float(raw.get("clip", cls.clip)),
+            expert_choice_capacity_factor=float(
+                raw.get(
+                    "expert_choice_capacity_factor",
+                    raw.get("capacity_factor", cls.expert_choice_capacity_factor),
+                )
+            ),
+        )
+        config.validate()
+        return config
+
+    @property
+    def enabled(self) -> bool:
+        return self.recipe != "none" and self.loss_coeff > 0.0
+
+    def validate(self) -> None:
+        if self.recipe not in ROUTER_RECIPES:
+            raise ValueError(f"router.recipe must be one of: {', '.join(ROUTER_RECIPES)}")
+        if self.loss_coeff < 0.0 or not math.isfinite(self.loss_coeff):
+            raise ValueError("router.loss_coeff must be a non-negative finite value")
+        if self.temperature <= 0.0 or not math.isfinite(self.temperature):
+            raise ValueError("router.temperature must be a positive finite value")
+        if self.utility_temperature <= 0.0 or not math.isfinite(self.utility_temperature):
+            raise ValueError("router.utility_temperature must be a positive finite value")
+        if self.clip <= 0.0 or not math.isfinite(self.clip):
+            raise ValueError("router.clip must be a positive finite value")
+        if (
+            self.expert_choice_capacity_factor <= 0.0
+            or not math.isfinite(self.expert_choice_capacity_factor)
+        ):
+            raise ValueError(
+                "router.expert_choice_capacity_factor must be a positive finite value"
+            )
 
 
 @dataclass(frozen=True)
@@ -170,6 +267,194 @@ def _diagnostics_record(layer: FFFLinear, x: torch.Tensor) -> dict[str, object]:
     return diagnostics
 
 
+def _float_diagnostics(values: dict[str, torch.Tensor]) -> dict[str, object]:
+    converted: dict[str, object] = {}
+    for key, value in values.items():
+        detached = value.detach().float().cpu()
+        if detached.ndim == 0:
+            converted[key] = float(detached.item())
+        else:
+            converted[key] = [float(item) for item in detached.reshape(-1).tolist()]
+    return converted
+
+
+def _full_branch_logits(layer: FFFLinear, x: torch.Tensor) -> torch.Tensor:
+    route_preacts = torch.einsum("ni,mri->nmr", x, layer.route_weight) + layer.route_bias
+    return layer._branch_logits(route_preacts)
+
+
+def _leaf_teacher_utility(layer: FFFLinear, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    flat = x.float()
+    target = y.float()
+    leaf_values = layer._activation(
+        torch.einsum("ni,lri->nlr", flat, layer.leaf_weight[: layer.leaves].float())
+        + layer.leaf_bias[: layer.leaves].float()
+    )
+    leaf_outputs = torch.einsum(
+        "nlr,lro->nlo",
+        leaf_values,
+        layer.leaf_output[: layer.leaves].float(),
+    )
+    shared = leaf_outputs.new_zeros(flat.shape[0], layer.out_features)
+    if layer.shared_rows > 0:
+        if layer.shared_weight is None or layer.shared_bias is None or layer.shared_output is None:
+            raise RuntimeError("shared rows are partially initialized")
+        shared_values = layer._activation(
+            F.linear(flat, layer.shared_weight.float(), layer.shared_bias.float())
+        )
+        shared = shared + shared_values @ layer.shared_output.float()
+    if layer.bias is not None:
+        shared = shared + layer.bias.float()
+    squared_error = (leaf_outputs + shared[:, None, :] - target[:, None, :]).square().mean(dim=-1)
+    return -squared_error.detach()
+
+
+def _branch_utility_from_leaf_utility(layer: FFFLinear, leaf_utility: torch.Tensor) -> torch.Tensor:
+    branch_utilities: list[torch.Tensor] = []
+    for node_idx in range(layer.internal_nodes):
+        depth_idx = math.floor(math.log2(node_idx + 1))
+        level_offset = (1 << depth_idx) - 1
+        position = node_idx - level_offset
+        descendant_count = 1 << (layer.depth - depth_idx - 1)
+        left_start = (position * 2) * descendant_count
+        right_start = (position * 2 + 1) * descendant_count
+        left = leaf_utility[:, left_start : left_start + descendant_count].max(dim=1).values
+        right = leaf_utility[:, right_start : right_start + descendant_count].max(dim=1).values
+        branch_utilities.append(torch.stack((left, right), dim=-1))
+    return torch.stack(branch_utilities, dim=1)
+
+
+def _leaf_occupancy_stats(route_info: Any, *, leaves: int) -> dict[str, object]:
+    leaf_ids = route_info.leaf_ids.reshape(-1).detach().cpu()
+    counts = torch.bincount(leaf_ids, minlength=leaves).float()
+    return {
+        "dead_leaves": int((counts == 0).sum().item()),
+        "leaf_tokens_p10": float(torch.quantile(counts, 0.10).item()),
+        "leaf_tokens_p50": float(torch.quantile(counts, 0.50).item()),
+        "leaf_tokens_p90": float(torch.quantile(counts, 0.90).item()),
+    }
+
+
+def _router_auxiliary_loss(
+    layer: FFFLinear,
+    x: torch.Tensor,
+    y: torch.Tensor,
+    config: RouterDistillConfig,
+) -> tuple[torch.Tensor, dict[str, object]]:
+    zero = x.new_zeros(())
+    if not config.enabled:
+        return zero, {"recipe": config.recipe, "loss": 0.0, "loss_coeff": config.loss_coeff}
+
+    branch_logits = _full_branch_logits(layer, x).float()
+    route_info = layer.route(x, hard=True)
+    utility: torch.Tensor | None = None
+    loss_name = "split_balance_loss"
+
+    if config.recipe == "no_ste_soft_router":
+        routed = no_ste_soft_router(branch_logits, temperature=config.temperature)
+        raw_loss = split_balance_loss(routed, pair_probs=True)
+    elif config.recipe == "vanilla_ste":
+        routed = vanilla_ste(branch_logits, temperature=config.temperature)
+        raw_loss = split_balance_loss(routed, pair_probs=True)
+    elif config.recipe == "clipped_ste":
+        routed = clipped_ste(branch_logits, clip=config.clip)
+        raw_loss = split_balance_loss(routed, pair_probs=True)
+    elif config.recipe == "sigmoid_surrogate_ste":
+        routed = sigmoid_surrogate_ste(branch_logits, temperature=config.temperature)
+        raw_loss = split_balance_loss(routed, pair_probs=True)
+    elif config.recipe == "st_gumbel":
+        routed = st_gumbel(
+            branch_logits,
+            tau=config.temperature,
+            hard=True,
+            training=layer.training,
+        )
+        raw_loss = split_balance_loss(routed, pair_probs=True)
+    else:
+        utility = _branch_utility_from_leaf_utility(layer, _leaf_teacher_utility(layer, x, y))
+        flat_logits = branch_logits.reshape(-1, 2)
+        flat_utility = utility.reshape(-1, 2)
+        if config.recipe == "utility_targeted_ste":
+            routed, _ = utility_targeted_ste(
+                branch_logits,
+                utility,
+                temperature=config.temperature,
+                utility_temperature=config.utility_temperature,
+                return_diagnostics=True,
+            )
+            raw_loss = utility_targeted_ce(
+                flat_logits,
+                flat_utility,
+                temperature=config.temperature,
+            )
+            loss_name = "utility_targeted_ce"
+        elif config.recipe == "hard_em_utility_ste":
+            routed, _, _ = hard_em_utility_ste(
+                branch_logits,
+                utility,
+                temperature=config.temperature,
+                return_targets=True,
+                return_diagnostics=True,
+            )
+            raw_loss = utility_targeted_ce(
+                flat_logits,
+                flat_utility,
+                temperature=config.temperature,
+            )
+            loss_name = "hard_em_route_ce"
+        elif config.recipe == "expert_choice_imitation":
+            routed = no_ste_soft_router(branch_logits, temperature=config.temperature)
+            capacity = max(
+                1,
+                math.ceil(
+                    flat_logits.shape[0]
+                    / float(flat_logits.shape[1])
+                    * config.expert_choice_capacity_factor
+                ),
+            )
+            raw_loss = expert_choice_imitation(
+                flat_logits,
+                flat_utility,
+                capacity=capacity,
+                temperature=config.temperature,
+            )
+            loss_name = "expert_choice_bce"
+        else:
+            raise RuntimeError(f"validated router recipe became invalid: {config.recipe}")
+
+    diagnostics = _float_diagnostics(
+        router_recipe_diagnostics(
+            routed,
+            logits=branch_logits,
+            utility=utility,
+            dim=-1,
+        )
+    )
+    diagnostics.update(
+        {
+            "recipe": config.recipe,
+            "loss_name": loss_name,
+            "loss": float(raw_loss.detach().float().item()),
+            "loss_coeff": config.loss_coeff,
+            **_leaf_occupancy_stats(route_info, leaves=layer.leaves),
+        }
+    )
+    return raw_loss * config.loss_coeff, diagnostics
+
+
+def _guard_router_training(layer: FFFLinear, config: RouterDistillConfig) -> None:
+    diagnostics = layer.diagnostics()
+    if (
+        layer.config.hard_routing
+        and not bool(diagnostics["route_output_contributes"])
+        and not config.enabled
+    ):
+        raise ValueError(
+            "hard-routed FFFLinear without route output contribution needs a positive "
+            "router auxiliary recipe; otherwise route parameters are not trained"
+        )
+
+
 def _batch_indices(total: int, batch_size: int, *, device: torch.device) -> torch.Tensor:
     return torch.randperm(total, device=device)[: min(batch_size, total)]
 
@@ -182,6 +467,7 @@ def distill_linear_from_tensors(
     *,
     fff_config: dict[str, Any],
     distill_config: LinearDistillConfig,
+    router_config: RouterDistillConfig | None = None,
     output_dir: Path,
 ) -> LayerDistillResult:
     if x.ndim != 2 or x.shape[1] != linear.in_features:
@@ -201,18 +487,22 @@ def distill_linear_from_tensors(
         dtype=torch.float32,
     )
     replacement.train()
+    router_config = router_config or RouterDistillConfig()
+    _guard_router_training(replacement, router_config)
     optimizer = torch.optim.AdamW(replacement.parameters(), lr=distill_config.lr)
     metrics_path = output_dir / "layer_metrics.jsonl"
 
     def compute_loss(batch_x: torch.Tensor, batch_y: torch.Tensor) -> torch.Tensor:
         pred = replacement(batch_x)
-        return distillation_loss(
+        main_loss = distillation_loss(
             pred,
             batch_y,
             normalized_mse_weight=distill_config.normalized_mse_weight,
             cosine_weight=distill_config.cosine_weight,
             variance_weight=distill_config.variance_weight,
         )
+        router_loss, _ = _router_auxiliary_loss(replacement, batch_x, batch_y, router_config)
+        return main_loss + router_loss
 
     with torch.no_grad():
         initial_loss_tensor = compute_loss(x_train, y_train)
@@ -232,6 +522,12 @@ def distill_linear_from_tensors(
             "normalized_mse": float(initial_mse.item()),
             "tokens": int(x_train.shape[0]),
             "diagnostics": _diagnostics_record(replacement, x_train[: distill_config.batch_size]),
+            "router": _router_auxiliary_loss(
+                replacement,
+                x_train[: distill_config.batch_size],
+                y_train[: distill_config.batch_size],
+                router_config,
+            )[1],
         },
     )
 
@@ -279,6 +575,12 @@ def distill_linear_from_tensors(
             "normalized_mse": result.final_normalized_mse,
             "tokens": result.captured_tokens,
             "diagnostics": _diagnostics_record(replacement, x_train[: distill_config.batch_size]),
+            "router": _router_auxiliary_loss(
+                replacement,
+                x_train[: distill_config.batch_size],
+                y_train[: distill_config.batch_size],
+                router_config,
+            )[1],
             "replacement_path": result.replacement_path,
         },
     )
@@ -293,6 +595,7 @@ def run_layerwise_distillation(
     output_dir: Path,
 ) -> list[LayerDistillResult]:
     distill_config = LinearDistillConfig.from_mapping(config.get("distill"))
+    router_config = RouterDistillConfig.from_mapping(config.get("router"))
     raw_fff_config = config.get("fff") or {}
     if not isinstance(raw_fff_config, dict):
         raise ValueError("fff config must be a mapping")
@@ -327,6 +630,7 @@ def run_layerwise_distillation(
             y,
             fff_config=fff_config,
             distill_config=distill_config,
+            router_config=router_config,
             output_dir=output_dir,
         )
         results.append(
