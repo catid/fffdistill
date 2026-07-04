@@ -9,6 +9,9 @@ from torch import nn
 
 from .fff_linear import FFFLinear
 
+DEFAULT_LINEAR_CAPTURE_MAX_TOKENS = 8192
+DEFAULT_LINEAR_CAPTURE_MAX_BYTES = 64 * 1024 * 1024
+
 
 @dataclass(frozen=True)
 class LinearReport:
@@ -95,23 +98,80 @@ def linear_reports_as_log_records(reports: Iterable[LinearReport]) -> list[dict[
 def _flatten_feature_tensor(tensor: torch.Tensor, features: int) -> torch.Tensor:
     if tensor.shape[-1] != features:
         raise RuntimeError(f"expected last dimension {features}, got {tensor.shape[-1]}")
-    return tensor.detach().reshape(-1, features).cpu()
+    return tensor.detach().reshape(-1, features)
+
+
+def _tensor_nbytes(tensor: torch.Tensor) -> int:
+    return tensor.numel() * tensor.element_size()
+
+
+def _validate_capture_limit(name: str, value: int | None) -> None:
+    if value is not None and value < 0:
+        raise ValueError(f"{name} must be non-negative or None")
+
+
+def _validate_capture_bounds(max_tokens: int | None, max_bytes: int | None) -> None:
+    _validate_capture_limit("max_tokens", max_tokens)
+    _validate_capture_limit("max_bytes", max_bytes)
+    if max_tokens is None and max_bytes is None:
+        raise ValueError("at least one of max_tokens or max_bytes must be set")
 
 
 class LinearCapture:
-    def __init__(self, module: nn.Linear) -> None:
+    def __init__(
+        self,
+        module: nn.Linear,
+        *,
+        max_tokens: int | None = DEFAULT_LINEAR_CAPTURE_MAX_TOKENS,
+        max_bytes: int | None = DEFAULT_LINEAR_CAPTURE_MAX_BYTES,
+    ) -> None:
+        _validate_capture_bounds(max_tokens, max_bytes)
         self.in_features = module.in_features
         self.out_features = module.out_features
+        self.max_tokens = max_tokens
+        self.max_bytes = max_bytes
         self.inputs: list[torch.Tensor] = []
         self.outputs: list[torch.Tensor] = []
+        self.observed_tokens = 0
+        self.captured_tokens = 0
+        self.dropped_tokens = 0
+        self.captured_bytes = 0
         self._handle = module.register_forward_hook(self._hook)
         self._closed = False
 
     def _hook(self, _module: nn.Module, inputs: tuple[torch.Tensor, ...], output: torch.Tensor) -> None:
         x = _flatten_feature_tensor(inputs[0], self.in_features)
         y = _flatten_feature_tensor(output, self.out_features)
-        self.inputs.append(x)
-        self.outputs.append(y)
+        if x.shape[0] != y.shape[0]:
+            raise RuntimeError(f"input/output token count mismatch: {x.shape[0]} != {y.shape[0]}")
+
+        token_count = x.shape[0]
+        if token_count == 0:
+            return
+
+        self.observed_tokens += token_count
+        capture_tokens = self._available_tokens(token_count, x, y)
+        self.dropped_tokens += token_count - capture_tokens
+        if capture_tokens == 0:
+            return
+
+        x_capture = x[:capture_tokens].to(device="cpu", copy=True)
+        y_capture = y[:capture_tokens].to(device="cpu", copy=True)
+        self.inputs.append(x_capture)
+        self.outputs.append(y_capture)
+        self.captured_tokens += capture_tokens
+        self.captured_bytes += _tensor_nbytes(x_capture) + _tensor_nbytes(y_capture)
+
+    def _available_tokens(self, requested_tokens: int, x: torch.Tensor, y: torch.Tensor) -> int:
+        available = requested_tokens
+        if self.max_tokens is not None:
+            available = min(available, max(0, self.max_tokens - self.captured_tokens))
+        if self.max_bytes is not None:
+            remaining_bytes = max(0, self.max_bytes - self.captured_bytes)
+            bytes_per_token = self.in_features * x.element_size() + self.out_features * y.element_size()
+            byte_limited_tokens = available if bytes_per_token == 0 else remaining_bytes // bytes_per_token
+            available = min(available, byte_limited_tokens)
+        return max(0, available)
 
     def close(self) -> None:
         if self._closed:
@@ -126,7 +186,15 @@ class LinearCapture:
 
 
 class LinearCaptureSet:
-    def __init__(self, model: nn.Module, reports: Iterable[LinearReport]) -> None:
+    def __init__(
+        self,
+        model: nn.Module,
+        reports: Iterable[LinearReport],
+        *,
+        max_tokens_per_layer: int | None = DEFAULT_LINEAR_CAPTURE_MAX_TOKENS,
+        max_bytes_per_layer: int | None = DEFAULT_LINEAR_CAPTURE_MAX_BYTES,
+    ) -> None:
+        _validate_capture_bounds(max_tokens_per_layer, max_bytes_per_layer)
         modules = dict(model.named_modules())
         self.captures: dict[str, LinearCapture] = {}
         try:
@@ -136,7 +204,11 @@ class LinearCaptureSet:
                 module = modules.get(report.name)
                 if not isinstance(module, nn.Linear):
                     raise KeyError(f"{report.name!r} is not an nn.Linear in the model")
-                self.captures[report.name] = LinearCapture(module)
+                self.captures[report.name] = LinearCapture(
+                    module,
+                    max_tokens=max_tokens_per_layer,
+                    max_bytes=max_bytes_per_layer,
+                )
         except Exception:
             self.close()
             raise

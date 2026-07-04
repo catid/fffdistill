@@ -11,15 +11,21 @@ from torch import Tensor
 Reduction = Literal["mean", "sum", "none"]
 
 
-def _require_tensor(name: str, value: Tensor) -> None:
+def _require_tensor(name: str, value: Tensor, *, validate_finite: bool = False) -> None:
     if not isinstance(value, Tensor):
         raise TypeError(f"{name} must be a torch.Tensor")
     if not value.is_floating_point():
         raise TypeError(f"{name} must be a floating point tensor")
     if value.numel() == 0:
         raise ValueError(f"{name} must be non-empty")
-    if not torch.isfinite(value).all().item():
+    if validate_finite and not torch.isfinite(value).all().item():
         raise ValueError(f"{name} must contain only finite values")
+
+
+def validate_finite_tensor(name: str, value: Tensor) -> None:
+    """Debug validation helper for periodic fail-fast checks outside hot paths."""
+
+    _require_tensor(name, value, validate_finite=True)
 
 
 def _reduce(values: Tensor, reduction: Reduction) -> Tensor:
@@ -205,6 +211,8 @@ def route_entropy_loss(
     dim: int = -1,
     eps: float = 1e-8,
     reduction: Reduction = "mean",
+    validate_probabilities: bool = False,
+    validate_finite: bool = False,
 ) -> Tensor:
     """Return route entropy along ``dim``.
 
@@ -212,7 +220,7 @@ def route_entropy_loss(
     high entropy can subtract it from their objective.
     """
 
-    _require_tensor("values", values)
+    _require_tensor("values", values, validate_finite=validate_finite)
     dim = _normalize_dim(values.ndim, dim)
     if values.shape[dim] < 2:
         raise ValueError("entropy dimension must contain at least two routes")
@@ -223,7 +231,7 @@ def route_entropy_loss(
         log_probs = F.log_softmax(values, dim=dim)
         probs = log_probs.exp()
     else:
-        if (values < 0).any().item():
+        if validate_probabilities and (values < 0).any().item():
             raise ValueError("probabilities must be non-negative")
         probs = values.clamp_min(eps)
         probs = probs / probs.sum(dim=dim, keepdim=True).clamp_min(eps)
@@ -240,6 +248,8 @@ def route_entropy(
     dim: int = -1,
     eps: float = 1e-8,
     reduction: Reduction = "mean",
+    validate_probabilities: bool = False,
+    validate_finite: bool = False,
 ) -> Tensor:
     """Alias for :func:`route_entropy_loss`."""
 
@@ -249,6 +259,8 @@ def route_entropy(
         dim=dim,
         eps=eps,
         reduction=reduction,
+        validate_probabilities=validate_probabilities,
+        validate_finite=validate_finite,
     )
 
 

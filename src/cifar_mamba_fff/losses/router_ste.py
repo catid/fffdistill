@@ -12,15 +12,21 @@ from torch import Tensor
 Reduction = Literal["mean", "sum", "none"]
 
 
-def _require_tensor(name: str, value: Tensor) -> None:
+def _require_tensor(name: str, value: Tensor, *, validate_finite: bool = False) -> None:
     if not isinstance(value, Tensor):
         raise TypeError(f"{name} must be a torch.Tensor")
     if not value.is_floating_point():
         raise TypeError(f"{name} must be a floating point tensor")
     if value.numel() == 0:
         raise ValueError(f"{name} must be non-empty")
-    if not torch.isfinite(value).all().item():
+    if validate_finite and not torch.isfinite(value).all().item():
         raise ValueError(f"{name} must contain only finite values")
+
+
+def validate_finite_tensor(name: str, value: Tensor) -> None:
+    """Debug validation helper for periodic fail-fast checks outside hot paths."""
+
+    _require_tensor(name, value, validate_finite=True)
 
 
 def _normalize_dim(ndim: int, dim: int) -> int:
@@ -95,17 +101,20 @@ def router_recipe_diagnostics(
     utility: Tensor | None = None,
     dim: int = -1,
     eps: float = 1e-8,
+    detach: bool = True,
+    validate_finite: bool = False,
 ) -> dict[str, Tensor]:
     """Return finite summary diagnostics for soft or hard router outputs."""
 
-    _require_tensor("route_values", route_values)
+    _require_tensor("route_values", route_values, validate_finite=validate_finite)
     dim = _normalize_dim(route_values.ndim, dim)
     if route_values.shape[dim] < 2:
         raise ValueError("route dimension must contain at least two choices")
     if eps <= 0.0:
         raise ValueError("eps must be positive")
 
-    flat_routes = _flatten_router_dim(route_values, dim=dim)
+    diagnostic_routes = route_values.detach() if detach else route_values
+    flat_routes = _flatten_router_dim(diagnostic_routes, dim=dim)
     nonnegative = flat_routes.clamp_min(0.0)
     mass = nonnegative.sum(dim=-1, keepdim=True).clamp_min(eps)
     probs = nonnegative / mass
@@ -125,18 +134,20 @@ def router_recipe_diagnostics(
     }
 
     if logits is not None:
-        _require_tensor("logits", logits)
+        _require_tensor("logits", logits, validate_finite=validate_finite)
         if logits.shape != route_values.shape:
             raise ValueError("logits and route_values must have the same shape")
-        flat_logits = _flatten_router_dim(logits, dim=dim)
+        diagnostic_logits = logits.detach() if detach else logits
+        flat_logits = _flatten_router_dim(diagnostic_logits, dim=dim)
         top2 = flat_logits.topk(k=2, dim=-1).values
         diagnostics["logit_margin_mean"] = (top2[:, 0] - top2[:, 1]).mean()
 
     if utility is not None:
-        _require_tensor("utility", utility)
+        _require_tensor("utility", utility, validate_finite=validate_finite)
         if utility.shape != route_values.shape:
             raise ValueError("utility and route_values must have the same shape")
-        flat_utility = _flatten_router_dim(utility, dim=dim)
+        diagnostic_utility = utility.detach() if detach else utility
+        flat_utility = _flatten_router_dim(diagnostic_utility, dim=dim)
         diagnostics["selected_utility_mean"] = (probs * flat_utility).sum(dim=-1).mean()
 
     return diagnostics
@@ -587,9 +598,9 @@ def hard_concrete_row_gates(
 
     l0_penalty = _reduce(expected_l0, reduction) * l0_weight
     diagnostics = {
-        "active_fraction": (gates > 0.0).to(dtype=gates.dtype).mean(),
-        "expected_active_rows": expected_l0.sum(),
-        "mean_expected_l0": expected_l0.mean(),
+        "active_fraction": (gates.detach() > 0.0).to(dtype=gates.dtype).mean(),
+        "expected_active_rows": expected_l0.detach().sum(),
+        "mean_expected_l0": expected_l0.detach().mean(),
         "l0_penalty": l0_penalty,
     }
     return gates, expected_l0, diagnostics

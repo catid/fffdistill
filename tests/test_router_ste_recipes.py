@@ -25,6 +25,7 @@ from cifar_mamba_fff.losses.router_ste import (
     st_gumbel,
     utility_targeted_ce,
     utility_targeted_ste,
+    validate_finite_tensor,
     vanilla_ste,
 )
 
@@ -160,6 +161,7 @@ def test_utility_targeted_ste_routes_to_utility_and_keeps_router_gradients() -> 
     _assert_one_hot(routed.detach())
     torch.testing.assert_close(routed.detach().argmax(dim=-1), utility.argmax(dim=-1))
     _assert_finite_diagnostics(diagnostics)
+    assert all(not value.requires_grad for value in diagnostics.values())
     assert torch.count_nonzero(diagnostics["expert_usage"]) == 3
 
     (routed * weights).sum().backward()
@@ -203,6 +205,7 @@ def test_hard_em_utility_ste_returns_non_degenerate_assignments_and_gradients() 
     torch.testing.assert_close(targets, torch.tensor([1, 0, 2]))
     assert targets.unique().numel() == 3
     _assert_finite_diagnostics(diagnostics)
+    assert all(not value.requires_grad for value in diagnostics.values())
 
     (routed * weights).sum().backward()
     assert router_logits.grad is not None
@@ -309,6 +312,10 @@ def test_hard_concrete_row_gates_are_deterministic_in_eval_with_finite_diagnosti
     assert torch.all(gates_a <= 1.0)
     assert expected_a[0] < expected_a[1] < expected_a[2] < expected_a[3]
     _assert_finite_diagnostics(diagnostics)
+    for name, value in diagnostics.items():
+        if name != "l0_penalty":
+            assert not value.requires_grad
+    assert diagnostics["l0_penalty"].requires_grad
 
     diagnostics["l0_penalty"].backward()
     assert log_alpha.grad is not None
@@ -337,3 +344,12 @@ def test_router_helpers_fail_fast_on_invalid_shapes() -> None:
         expert_choice_imitation(torch.randn(2, 3), torch.randn(2, 4), capacity=1)
     with pytest.raises(ValueError, match="l0_weight"):
         hard_concrete_row_gates(torch.randn(3), l0_weight=-1.0)
+
+
+def test_router_debug_finite_validation_is_explicit() -> None:
+    bad = torch.tensor([[0.5, float("nan")]])
+
+    with pytest.raises(ValueError, match="finite"):
+        validate_finite_tensor("bad", bad)
+    with pytest.raises(ValueError, match="finite"):
+        router_recipe_diagnostics(bad, validate_finite=True)

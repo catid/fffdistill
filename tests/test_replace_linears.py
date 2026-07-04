@@ -45,6 +45,67 @@ def test_linear_capture_flattens_leading_dims() -> None:
     assert y_cap.shape == (6, 7)
 
 
+def test_linear_capture_respects_token_limit_without_unbounded_appends() -> None:
+    layer = nn.Linear(3, 2, bias=False)
+    capture = LinearCapture(layer, max_tokens=5, max_bytes=None)
+
+    for _ in range(3):
+        layer(torch.randn(2, 3))
+    chunks_at_limit = len(capture.inputs)
+    layer(torch.randn(2, 3))
+
+    capture.close()
+    x_cap, y_cap = capture.tensors()
+
+    assert x_cap.shape == (5, 3)
+    assert y_cap.shape == (5, 2)
+    assert chunks_at_limit == 3
+    assert len(capture.inputs) == chunks_at_limit
+    assert capture.observed_tokens == 8
+    assert capture.captured_tokens == 5
+    assert capture.dropped_tokens == 3
+
+
+def test_linear_capture_respects_byte_limit() -> None:
+    layer = nn.Linear(3, 2, bias=False)
+    capture = LinearCapture(layer, max_tokens=None, max_bytes=45)
+
+    layer(torch.randn(4, 3))
+
+    capture.close()
+    x_cap, y_cap = capture.tensors()
+
+    assert x_cap.shape == (2, 3)
+    assert y_cap.shape == (2, 2)
+    assert capture.observed_tokens == 4
+    assert capture.captured_tokens == 2
+    assert capture.dropped_tokens == 2
+    assert capture.captured_bytes == 40
+
+
+def test_linear_capture_skips_empty_forwards_without_appending() -> None:
+    layer = nn.Linear(3, 2)
+    capture = LinearCapture(layer, max_tokens=2, max_bytes=None)
+
+    for _ in range(5):
+        layer(torch.randn(0, 3))
+
+    capture.close()
+    assert capture.inputs == []
+    assert capture.outputs == []
+    assert capture.observed_tokens == 0
+    assert capture.captured_tokens == 0
+    with pytest.raises(RuntimeError, match="no tensors captured"):
+        capture.tensors()
+
+
+def test_linear_capture_requires_at_least_one_bound() -> None:
+    layer = nn.Linear(3, 2)
+
+    with pytest.raises(ValueError, match="at least one"):
+        LinearCapture(layer, max_tokens=None, max_bytes=None)
+
+
 def test_discovery_log_records_include_included_and_skipped_reasons() -> None:
     model = nn.Sequential(nn.Linear(4, 4, bias=False), nn.Linear(4, 8))
     reports = discover_linear_layers(model, min_in_features=5, min_out_features=6)
@@ -86,6 +147,43 @@ def test_linear_capture_set_collects_only_included_layers() -> None:
     x_cap, y_cap = captures.tensors("0")
     assert x_cap.shape == (8, 5)
     assert y_cap.shape == (8, 7)
+
+
+def test_linear_capture_set_threads_per_layer_bounds() -> None:
+    model = nn.Sequential(nn.Linear(3, 3), nn.Linear(3, 2))
+    reports = discover_linear_layers(model, min_in_features=3, min_out_features=2)
+
+    with LinearCaptureSet(
+        model,
+        reports,
+        max_tokens_per_layer=3,
+        max_bytes_per_layer=None,
+    ) as captures:
+        model(torch.randn(5, 3))
+
+    assert set(captures.captures) == {"0", "1"}
+    for capture in captures.captures.values():
+        assert capture.observed_tokens == 5
+        assert capture.captured_tokens == 3
+        assert capture.dropped_tokens == 2
+        assert len(capture.inputs) == 1
+
+    x_cap, y_cap = captures.tensors("1")
+    assert x_cap.shape == (3, 3)
+    assert y_cap.shape == (3, 2)
+
+
+def test_linear_capture_set_requires_at_least_one_bound() -> None:
+    model = nn.Sequential(nn.Linear(3, 2))
+    reports = discover_linear_layers(model, min_in_features=3, min_out_features=2)
+
+    with pytest.raises(ValueError, match="at least one"):
+        LinearCaptureSet(
+            model,
+            reports,
+            max_tokens_per_layer=None,
+            max_bytes_per_layer=None,
+        )
 
 
 def test_make_fff_replacement_preserves_linear_interface_shape_dtype_and_bias() -> None:

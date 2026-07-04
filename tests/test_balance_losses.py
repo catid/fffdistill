@@ -16,6 +16,7 @@ from cifar_mamba_fff.losses.balance import (
     split_balance_loss,
     uniform_leaf_balance_loss,
     usage_cap_penalty,
+    validate_finite_tensor,
 )
 
 
@@ -146,8 +147,18 @@ def test_balance_losses_fail_fast_on_invalid_shapes() -> None:
         route_margin_loss(torch.randn(2, 3))
     with pytest.raises(ValueError, match="dim"):
         route_entropy_loss(torch.randn(2, 2), dim=3)
+    entropy = route_entropy_loss(torch.tensor([[0.5, -0.1]]), from_logits=False)
+    assert torch.isfinite(entropy)
     with pytest.raises(ValueError, match="non-negative"):
-        route_entropy_loss(torch.tensor([[0.5, -0.1]]), from_logits=False)
+        route_entropy_loss(
+            torch.tensor([[0.5, -0.1]]),
+            from_logits=False,
+            validate_probabilities=True,
+        )
+    with pytest.raises(ValueError, match="finite"):
+        validate_finite_tensor("bad", torch.tensor([float("nan")]))
+    with pytest.raises(ValueError, match="finite"):
+        route_entropy_loss(torch.tensor([[0.5, float("nan")]]), validate_finite=True)
     with pytest.raises(ValueError, match="same shape"):
         master_fallback_usage_cap_penalty(
             torch.ones(2),
