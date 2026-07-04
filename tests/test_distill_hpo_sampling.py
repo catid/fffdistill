@@ -671,6 +671,21 @@ def test_distill_hpo_trial_plan_writes_configs_without_test_access(tmp_path) -> 
     assert written_summary["test_accessed"] is False
 
 
+def test_stage_f_train_eval_shards_cover_all_eligible_layers_once() -> None:
+    config = load_yaml("configs/fff_distill_stage_f_train_eval_layer_shards.yaml")
+    search_space = config["search_space"]
+    shards = search_space["include_indices"]
+    flattened = [index for shard in shards for index in shard]
+
+    assert config["max_trials"] == 12
+    assert len(shards) == 12
+    assert sorted(flattened) == list(range(64))
+    assert len(flattened) == len(set(flattened))
+    assert search_space["router_recipe"] == ["vanilla_ste"]
+    assert search_space["route_row_role"] == ["split_routing_output"]
+    assert search_space["locoprop_refit"] == ["every_500"]
+
+
 def test_distill_hpo_generated_config_still_rejects_real_unknown_keys(tmp_path) -> None:
     base = load_yaml("configs/fff_distill_default.yaml")
     hpo_config = {
