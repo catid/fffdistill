@@ -61,6 +61,22 @@ The teacher is a roughly 10M-parameter official Mamba-3 CIFAR-10 model trained f
 - T24 LocoProp-S ridge refit no-grad/default non-differentiable solve bugfix.
 - T25 CUDA BF16 grouped-vs-naive FFF regression coverage.
 - T26 remote setup and `verify_env.py` on all GPU machines.
+- T27 row-plus-column sparse activation and alternative sublinear baselines.
+
+## Current Original-Plan Gap Tasks
+
+The 2026-07-04 audit found that the repository has strong smoke, validation, and one selected Stage H final-test result, but several original-plan requirements remain open as follow-up work:
+
+- `fff-i6e`: run validation-selected full-student final-test router-family comparisons.
+- `fff-dza`: run full-student route-output ablations with active-FLOP accounting.
+- `fff-bbx`: final-evaluate validation-selected dense-copy, low-rank, smaller-dense, shared-only, and related required baselines.
+- `fff-5sa`: run the official `fastfeedforward` matched-budget baseline where shape-compatible.
+- `fff-ytn`: run multi-seed matched-budget optimizer/WSD selection and final evaluation.
+- `fff-v9q`: evaluate a bank-specific Muon grouping or explicit optimizer policy for 3D FFF replacement banks.
+- `fff-rcs`: generate full-student Pareto source data for accuracy, active rows/FLOPs, and throughput after the comparison tasks complete.
+- `fff-o3w`: recollect or regenerate pre-hardening remote summaries from full logs, or keep them explicitly provenance-limited.
+- `fff-u2p`: formalize remote git sync or hardened rsync fallback for cluster jobs.
+- `fff-6rw`: evaluate row-plus-column sparse activation and checkerboard MoE/sublinear baselines.
 
 ## Optimizer Plan Amendment
 
@@ -148,6 +164,14 @@ Route-row contribution ablation:
 - partial/budget-matched: a reasonable count or fraction contributes when multiple route/path rows are available, chosen so active rows/FLOPs can be compared fairly against leaf/shared-row alternatives.
 
 Reports must include the number of active contributing route rows, active-row/FLOP budget, MSE, accuracy, throughput, and route diagnostics.
+
+Sparse row/column activation ablation:
+
+- Evaluate FFF row activation against methods that sparsify both input rows and output columns, with matched active-FLOP, active-row, parameter, and training-token budgets where possible.
+- Compare custom FFF against alternative sublinear baselines such as token-choice MoE, expert-choice MoE, and checkerboard-style sparse row-and-column activation where a token activates a sparse set of rows and a sparse set of output columns/blocks.
+- Include variants where the router selects row experts only, column experts only, and coupled row/column blocks; include a checkerboard MoE baseline that activates sparse row banks and sparse column banks jointly.
+- Keep the same official Mamba-3 teacher, CIFAR-10 split policy, distillation token budget, optimizer/schedule budget, validation-selection protocol, and test-access rules as the FFF experiments.
+- Report local distillation MSE/cosine, validation accuracy after replacement or assembled-student fine-tune, selected final-test accuracy only after validation selection, active rows, active columns, active FLOPs, stored rows/columns, throughput, GPU utilization, router/load balance, dead experts/leaves, and fairness budget notes.
 
 Current T20 status:
 
