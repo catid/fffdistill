@@ -164,6 +164,41 @@ def test_cuda_bf16_grouped_matches_naive_across_route_roles(
     )
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required for autocast coverage")
+@pytest.mark.skipif(
+    torch.cuda.is_available() and not torch.cuda.is_bf16_supported(),
+    reason="CUDA BF16 is not supported by this device",
+)
+@pytest.mark.parametrize("mode", ["grouped", "naive"])
+def test_cuda_bf16_autocast_matches_linear_output_dtype_without_casting_parameters(
+    mode: str,
+) -> None:
+    torch.manual_seed(111)
+    layer = FFFLinear(
+        8,
+        4,
+        depth=2,
+        shared_rows=1,
+        route_rows=1,
+        leaf_rows=2,
+        hard_routing=True,
+        route_row_role="shared_routing_and_output",
+        route_rows_output_count=1,
+        bias=True,
+        device="cuda",
+        dtype=torch.float32,
+    )
+    x = torch.randn(5, 8, device="cuda", dtype=torch.float32)
+
+    y_no_autocast = layer(x, implementation=mode)
+    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        y_autocast = layer(x, implementation=mode)
+
+    assert y_no_autocast.dtype == torch.float32
+    assert y_autocast.dtype == torch.bfloat16
+    assert {param.dtype for param in layer.parameters()} == {torch.float32}
+
+
 def test_grouped_matches_naive_for_high_rank_input() -> None:
     torch.manual_seed(11)
     layer = FFFLinear(

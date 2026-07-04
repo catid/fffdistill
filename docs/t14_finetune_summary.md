@@ -1,6 +1,8 @@
 # T14 End-to-End KD Fine-Tuning Summary
 
-Status: implementation complete, real FFF end-to-end KD fine-tuning blocked by an official Mamba-3 TileLang backward failure. No CIFAR-10 test data was accessed.
+Status: implementation complete; the assembled-FFF BF16 CUDA KD path is unblocked by
+the `FFFLinear` autocast fix. No CIFAR-10 test data was accessed by T14 smoke or HPO
+artifacts.
 
 ## Implemented
 
@@ -24,8 +26,10 @@ Status: implementation complete, real FFF end-to-end KD fine-tuning blocked by a
 ## Verification Gates
 
 - `bash scripts/run_tests.sh` passed after the initial T14 implementation: environment verification, ruff, and 324 pytest tests.
-- Focused FFF equivalence after the grouped leak-path fix: `73 passed`.
-- Focused T14 tests: `8 passed`.
+- Focused FFF/T14 regression gate after the autocast and HPO-command fixes:
+  `pytest -q tests/test_finetune_student.py tests/test_fff_grouped_matches_naive.py`
+  passed with `44 passed`.
+- Focused ruff gate passed for the changed T14/FFF files.
 - CIFAR-10 test access: false for every T14 smoke/HPO artifact.
 
 ## FFF Runtime Bug Fixed
@@ -43,7 +47,7 @@ Fix:
 - Grouped-vs-naive tests pass after the fix.
 - Fine-tune default batch size was reduced to 32, and fine-tune HPO now searches `[8, 16, 32, 64]`.
 
-## Blocking Official Mamba-3 Issue
+## Resolved Official Mamba-3 TileLang Smoke Failure
 
 After the FFF memory fix, batch-32 end-to-end KD smoke reaches backward and fails inside the official Mamba-3 TileLang MIMO backward:
 
@@ -72,6 +76,21 @@ Key evidence:
 - Installed-package diagnostics lowering official `mamba_mimo_bwd_combined(..., bb_threads=256)` to 128, 64, and 32 lowered the requested shared memory slightly but did not make the kernel launch valid.
 - Overriding Mamba `chunk_size=8` is not viable for this shape; the official TileLang forward compile fails its GEMM warp partition check.
 
+Root cause:
+- Assembled FFF students keep FP32 trainable parameters and rely on CUDA BF16 autocast,
+  matching the teacher precision contract.
+- Dense `nn.Linear` returns BF16 under CUDA BF16 autocast, but `FFFLinear` could return
+  FP32 because its output accumulation and final bias addition used FP32 tensors.
+- Feeding FP32 activations into official Mamba-3 selected the FP32 TileLang backward
+  specialization, which requested too much dynamic shared memory for the target GPUs.
+
+Fix:
+- `FFFLinear` now keeps parameters unchanged but casts only the public forward output to
+  the active autocast dtype when device autocast is enabled.
+- Without autocast, FP32 inputs and FP32 parameters still produce FP32 outputs.
+- Regression coverage verifies grouped and naive FFF outputs return BF16 under CUDA BF16
+  autocast while parameters remain FP32.
+
 No substitute architecture, optimizer, CPU path, or fake Mamba path was used.
 
 ## Smoke Artifacts
@@ -82,7 +101,20 @@ No substitute architecture, optimizer, CPU path, or fake Mamba path was used.
 | `outputs/t14_finetune_smoke_20260704_b32` | batch 32 after FFF memory fix | failed official Mamba TileLang backward shared-memory setting | false |
 | `outputs/t14_finetune_smoke_20260704_b32_nobalance` | same, balance hooks disabled | same Mamba TileLang backward failure | false |
 | `outputs/t14_finetune_smoke_20260704_b32_nobalance_contig` | same, FFF outputs forced contiguous | same Mamba TileLang backward failure | false |
+| `outputs/t14_finetune_smoke_autocast_fix_train_nobalance_real` | batch-32 assembled FFF KD, one train step + one val step, no balance | succeeded; 64/64 linears replaced, official Muon+AdamW, no test access | false |
+| `outputs/t14_finetune_hpo_autocast_fix_train_nobalance_real` | fine-tune HPO wrapper, one train-mode trial, one train step + one val step, no balance | succeeded; wrapper launched `--smoke-mode train`, metrics summary written | false |
+| `outputs/t14_finetune_smoke_autocast_fix_train_balance_globalcap` | batch-32 assembled FFF KD, one train step + one val step, default balance enabled | succeeded; `train_steps_total=1`, 64/64 linears replaced, official Muon+AdamW | false |
+
+## Additional Safety Fix
+
+- The fine-tune HPO wrapper previously launched metadata smoke for every trial, even when
+  `quick_smoke=false`. Real HPO now launches `--smoke-mode train`; metadata mode remains
+  only for quick-smoke entrypoint checks.
+- `--max-train-steps` previously capped steps per epoch. It now caps total train steps
+  globally, preventing a bounded smoke from accidentally running one step for every epoch.
 
 ## Limitation
 
-T14 cannot honestly report validation or final-test fine-tuned FFF student accuracy until the official Mamba-3 TileLang backward issue is fixed for FFF-replaced `in_proj` modules. The implemented trainer is therefore a reproducible blocked path, not a successful Stage G result.
+T14 smoke and validation-path execution are unblocked, but this summary does not claim
+final CIFAR-10 test accuracy. Final test evaluation must remain reserved for
+validation-selected checkpoints in the final report.

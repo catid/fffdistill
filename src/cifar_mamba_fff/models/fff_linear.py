@@ -179,6 +179,24 @@ def _validate_route_output_controls(
         raise ValueError("routing_only conflicts with non-zero route row output controls")
 
 
+def _active_autocast_dtype(device_type: str) -> torch.dtype | None:
+    try:
+        enabled = torch.is_autocast_enabled(device_type)
+    except TypeError:  # pragma: no cover - compatibility with older torch APIs
+        enabled = device_type == "cuda" and torch.is_autocast_enabled()
+    if not enabled:
+        return None
+
+    try:
+        return torch.get_autocast_dtype(device_type)
+    except (AttributeError, TypeError):  # pragma: no cover - compatibility fallback
+        if device_type == "cuda":
+            return torch.get_autocast_gpu_dtype()
+        if device_type == "cpu":
+            return torch.get_autocast_cpu_dtype()
+        return None
+
+
 class FFFLinear(nn.Module):
     """Binary-tree Fast Feedforward linear approximation.
 
@@ -492,7 +510,7 @@ class FFFLinear(nn.Module):
 
         if self.bias is not None:
             out = out + self.bias
-        return out.reshape(*leading_shape, self.out_features).contiguous()
+        return self._finalize_forward_output(out, leading_shape, x)
 
     def forward_naive(self, x: Tensor) -> Tensor:
         flat, leading_shape = self._flatten_input(x)
@@ -535,7 +553,7 @@ class FFFLinear(nn.Module):
             outputs.append(out)
 
         out_flat = torch.stack(outputs, dim=0) if outputs else flat.new_empty(0, self.out_features)
-        return out_flat.reshape(*leading_shape, self.out_features).contiguous()
+        return self._finalize_forward_output(out_flat, leading_shape, x)
 
     def route(self, x: Tensor, *, hard: bool | None = None) -> FFFRouteInfo:
         flat, leading_shape = self._flatten_input(x)
@@ -642,6 +660,17 @@ class FFFLinear(nn.Module):
         if x.ndim < 1 or x.shape[-1] != self.in_features:
             raise ValueError(f"x must have shape [..., {self.in_features}]")
         return x.reshape(-1, self.in_features), x.shape[:-1]
+
+    def _finalize_forward_output(
+        self,
+        out: Tensor,
+        leading_shape: torch.Size,
+        original_input: Tensor,
+    ) -> Tensor:
+        target_dtype = _active_autocast_dtype(original_input.device.type)
+        if target_dtype is not None and out.dtype != target_dtype:
+            out = out.to(dtype=target_dtype)
+        return out.reshape(*leading_shape, self.out_features).contiguous()
 
     def _route_flat(self, flat: Tensor, *, hard: bool) -> _FlatRouteInfo:
         route_preacts = (

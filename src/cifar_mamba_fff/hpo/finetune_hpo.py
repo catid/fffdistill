@@ -155,6 +155,7 @@ def run_finetune_trial_command(
     max_train_steps: int | None,
     max_val_steps: int | None,
 ) -> dict[str, object]:
+    smoke_mode = "metadata" if quick_smoke else "train"
     command = [
         sys.executable,
         "-m",
@@ -166,7 +167,7 @@ def run_finetune_trial_command(
         "--quick-smoke",
         str(quick_smoke).lower(),
         "--smoke-mode",
-        "metadata",
+        smoke_mode,
     ]
     if max_train_steps is not None:
         command.extend(["--max-train-steps", str(max_train_steps)])

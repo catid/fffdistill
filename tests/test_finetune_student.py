@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,7 @@ import torch
 from torch import nn
 
 from cifar_mamba_fff.finetune_student import (
+    _reached_train_step_limit,
     assemble_fff_student_from_artifacts,
     kd_loss,
     load_finetune_run_config,
@@ -15,6 +17,7 @@ from cifar_mamba_fff.finetune_student import (
 )
 from cifar_mamba_fff.hpo.finetune_hpo import (
     run_finetune_hpo_trials,
+    run_finetune_trial_command,
     write_finetune_hpo_trial_plan,
 )
 from cifar_mamba_fff.models.replacement import make_fff_replacement
@@ -97,6 +100,13 @@ def test_kd_loss_is_finite_and_nonnegative() -> None:
 
     assert torch.isfinite(loss)
     assert float(loss.item()) >= 0.0
+
+
+def test_global_train_step_limit_boundary() -> None:
+    assert _reached_train_step_limit(0, None) is False
+    assert _reached_train_step_limit(0, 1) is False
+    assert _reached_train_step_limit(1, 1) is True
+    assert _reached_train_step_limit(2, 1) is True
 
 
 def test_assemble_fff_student_from_artifacts_loads_strict_state(tmp_path: Path) -> None:
@@ -237,3 +247,42 @@ def test_finetune_hpo_rejects_test_accessed_trial(tmp_path: Path) -> None:
             max_trials=1,
             trial_runner=fake_runner,
         )
+
+
+def test_finetune_hpo_command_runs_training_for_non_smoke_trials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[list[str]] = []
+
+    def fake_run(
+        command: list[str],
+        *,
+        check: bool,
+        capture_output: bool,
+        text: bool,
+    ) -> subprocess.CompletedProcess[str]:
+        commands.append(command)
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+
+    run_finetune_trial_command(
+        config_path=tmp_path / "config.yaml",
+        output_dir=tmp_path / "trial",
+        quick_smoke=False,
+        max_train_steps=1,
+        max_val_steps=1,
+    )
+    run_finetune_trial_command(
+        config_path=tmp_path / "config.yaml",
+        output_dir=tmp_path / "smoke",
+        quick_smoke=True,
+        max_train_steps=1,
+        max_val_steps=1,
+    )
+
+    assert commands[0][commands[0].index("--smoke-mode") + 1] == "train"
+    assert commands[0][commands[0].index("--quick-smoke") + 1] == "false"
+    assert commands[1][commands[1].index("--smoke-mode") + 1] == "metadata"
+    assert commands[1][commands[1].index("--quick-smoke") + 1] == "true"

@@ -910,12 +910,14 @@ def run_finetune_training(
     epochs = 1 if quick_smoke else run_config.train.epochs
     try:
         for epoch in range(epochs):
+            if _reached_train_step_limit(total_train_steps, train_step_limit):
+                break
             epoch_start = time.perf_counter()
             train_metrics: dict[str, float] | None = None
             epoch_train_images_seen = 0
             epoch_train_elapsed_seconds = 0.0
-            for step, batch in enumerate(train_loader):
-                if train_step_limit is not None and step >= train_step_limit:
+            for batch in train_loader:
+                if _reached_train_step_limit(total_train_steps, train_step_limit):
                     break
                 train_step_start = time.perf_counter()
                 train_metrics = _fine_tune_step(
@@ -1049,6 +1051,10 @@ def _context_for_smoke(smoke_mode: str) -> AbstractContextManager[None]:
     if smoke_mode == "metadata":
         return nullcontext()
     return nullcontext()
+
+
+def _reached_train_step_limit(total_train_steps: int, train_step_limit: int | None) -> bool:
+    return train_step_limit is not None and total_train_steps >= train_step_limit
 
 
 def main(argv: Sequence[str] | None = None) -> int:
