@@ -60,3 +60,11 @@ Further suspected bugs, fixes, tests, and residual risks will be appended during
 - Representative FFF profiling should not always run the slow Python-loop naive path. `benchmark_fff.py` now skips naive by default, includes it automatically for quick smoke, and exposes `--include-naive true` for explicit grouped-vs-naive correctness/timing runs.
 - Router STE helpers still perform finite validation, but duplicated validation inside utility-targeted and hard-EM call chains was removed by using already validated tensors directly for softmax/argmax. Before long training, T16/T18 should still check whether per-step recipe utilities force unwanted CUDA synchronizations.
 - Re-ran `bash scripts/run_tests.sh` after these fixes: environment verification passed, ruff passed, and 148 pytest tests passed. The only warnings were the known upstream TVM/TileLang duplicate-field warnings during Mamba import.
+
+## Teacher Wrapper Review
+
+- Independent review flagged that the default depth-18 CIFAR teacher stacked raw official `Mamba3` mixers without residual/pre-norm structure, while `teacher_default.yaml` already exposed `drop_path`. This would be a bad HPO target before long teacher runs.
+- The teacher now wraps official `Mamba3` mixers with upstream `mamba_ssm.modules.block.Block`, keeps the official mixer implementation intact, carries the upstream `(hidden_states, residual)` stream through the stack, and applies final `hidden_states + residual` before the final norm.
+- `Mamba3CifarConfig` now validates `drop_path`, `norm_epsilon`, and `residual_in_fp32`; stochastic depth is applied outside the mixer with a linear per-layer schedule from 0 to the configured maximum.
+- Default teacher parameter count is now 10,063,142, still inside the required 9M-11M target.
+- Verification: `tests/test_mamba3_teacher_shapes.py` covers config validation, residual Block usage, drop-path schedule, default parameter count, CUDA BF16 autocast shape/backward with FP32 parameters, and CUDA BF16 bidirectional shape. Full `bash scripts/run_tests.sh` passed with environment verification, ruff, and 159 pytest tests.
