@@ -1,6 +1,6 @@
 # T20 Route-Row Output Contribution Ablation
 
-Status: implementation/config/report scaffold complete; real distillation metrics pending teacher and layerwise distillation stages.
+Status: validation-split single-layer route-output ablation complete; full student accuracy remains downstream T14/T15 work.
 
 ## Semantics
 
@@ -10,43 +10,40 @@ Status: implementation/config/report scaffold complete; real distillation metric
 - `shared_routing_and_output`: the same route rows are used for branch scoring and output contribution.
 - `split_routing_output`: routing rows score branches, and separate `route_result_rows` contribute along the visited path.
 
-Reports distinguish the configured request (`route_rows_contribute`) from effective
-nonzero contribution (`route_output_contributes`). They also report physical
-`stored_rows` separately from effective selected row counts:
-`effective_stored_rows`, `effective_trainable_rows`,
-`stored_route_output_rows`, `effective_route_output_rows`, and
-`unused_route_output_rows`. `unused_stored_route_output_rows` is nonzero only
-when separate split-role route-result rows are physically allocated but not
-selected. Partial shared-role cases keep the physical route rows for routing
-while only selected route-output vectors count as effective route-output rows.
-Split-role kernels evaluate only the selected result rows per visited node, so
-active-row, effective-row, and throughput metadata match the selected ablation
-case rather than the maximum stored `route_result_rows`.
+Reports distinguish the configured request (`route_rows_contribute`) from effective nonzero contribution (`route_output_contributes`). Physical `stored_rows` are reported separately from `effective_stored_rows`, `effective_trainable_rows`, `stored_route_output_rows`, `effective_route_output_rows`, `unused_route_output_rows`, and `unused_stored_route_output_rows`.
 
-## Named Cases
+## Run Evidence
 
-The reproducible named-case config is `configs/fff_route_output_ablation.yaml`.
+- Named-case config: `configs/fff_distill_t20_route_output_cases.yaml`
+- Base config: `configs/fff_distill_stage_f.yaml`
+- Teacher checkpoint: `checkpoints/teacher/ripper0_val9418_test9399_teacher_best.pt`
+- Layer: eligible index `32`, `blocks.8.forward_block.mixer.mixer.in_proj`
+- Data access: CIFAR-10 validation split only; every trial reports `test_accessed=false`.
+- Runs: local offsets 0-1 in `t20_route_output_cases_20260704_092832`; remote offsets 2-6 in `t20_route_output_cases_remote_20260704_092948`.
+- Scheduler result: 7/7 final named cases succeeded at git commit `9265ec0bf80db186315ce3bc3301ffe82b8932ee`. The first mixed local/remote launch had five infrastructure failures because remote workdirs were still at the Stage F commit; remotes were synced and only missing offsets were rerun successfully.
+- Excluded slots: `ripper:1` and `foureyes:0` remained excluded because pre-launch checks showed persistent 100% GPU utilization with negligible memory and no visible compute PID.
+- Validation accuracy evaluation: after copying ignored `fff_state.pt` artifacts locally from scheduler outputs/remotes, each one-layer replacement was loaded into the selected teacher and evaluated on the full CIFAR-10 validation split (`val_steps=10`), with `test_accessed=false`.
 
-| Case | route_rows_contribute | route_row_role | route_rows_output_count | route_rows_output_fraction | route_result_rows | route_output_rows_per_node | Metrics |
-| --- | --- | --- | --- | --- | ---: | ---: | --- |
-| none_routing_only | false | routing_only | 0 | null | 0 | 0 | pending |
-| shared_one_per_node | true | shared_routing_and_output | 1 | null | 0 | 1 | pending |
-| shared_all | true | shared_routing_and_output | all | null | 0 | 2 | pending |
-| shared_half_fraction | true | shared_routing_and_output | all | 0.5 | 0 | 1 | pending |
-| split_one_per_node | true | split_routing_output | 1 | null | 2 | 1 | pending |
-| split_all | true | split_routing_output | all | null | 2 | 2 | pending |
-| split_half_fraction | true | split_routing_output | all | 0.5 | 2 | 1 | pending |
+## Results
+
+| Case | Role | Output rows/node | Active rows/token | Effective stored rows | Final NMSE | Cosine | Tokens/s | Dead leaves | Validation accuracy |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| `none_routing_only` | `routing_only` | 0 | 108.0 | 232 | 0.300582 | 0.853248 | 36521.3 | 11 | 0.9404 |
+| `shared_one_per_node` | `shared_routing_and_output` | 1 | 113.0 | 232 | 0.293318 | 0.857536 | 29078.7 | 13 | 0.9406 |
+| `shared_all` | `shared_routing_and_output` | 2 | 118.0 | 232 | 0.287133 | 0.860755 | 28094.1 | 15 | 0.9404 |
+| `shared_half_fraction` | `shared_routing_and_output` | 1 | 113.0 | 232 | 0.293337 | 0.857533 | 28063.3 | 13 | 0.9404 |
+| `split_one_per_node` | `split_routing_output` | 1 | 113.0 | 263 | 0.292199 | 0.857408 | 34295.6 | 17 | 0.9396 |
+| `split_all` | `split_routing_output` | 2 | 118.0 | 294 | 0.284449 | 0.861225 | 28240.1 | 17 | 0.9398 |
+| `split_half_fraction` | `split_routing_output` | 1 | 113.0 | 263 | 0.292116 | 0.857402 | 37399.5 | 16 | 0.9396 |
+
+## Observations
+
+- Best local MSE in this one-layer run: `split_all` with NMSE `0.284449` and cosine `0.861225`.
+- Fastest case: `split_half_fraction` at `37399.5` tokens/s.
+- Route-output contribution improved local MSE over `none_routing_only` for every contributing case. `split_all` was the best quality point at this short budget, while the one-row split/shared cases were close and cheaper in active rows.
+- This ablation uses a single representative layer and short validation-split token budget. It is suitable for route-output design ranking, not final model accuracy claims.
+- `validation_accuracy_after_replacement` is single-layer replacement accuracy on the full 5k CIFAR-10 validation split (`10` batches at batch size `512`) with CIFAR-10 test disabled. Full assembled-student validation and final-test accuracy remain T14/T15 work.
 
 ## Required Result Columns
 
-When layerwise distillation and fine-tuning runs are available, report:
-
-- validation MSE and cosine similarity;
-- validation accuracy and final-test accuracy only after validation selection;
-- throughput and GPU utilization;
-- active rows per token and estimated active FLOPs;
-- stored rows, effective stored/trainable rows, unused route-output rows,
-  unused stored route-output rows, and parameter count;
-- route entropy, dead leaves, and leaf occupancy percentiles;
-- route-row role, count, fraction, route-result rows, requested contribution, and
-  effective nonzero route-output contribution.
+The committed CSV `docs/t20_route_row_output_ablation_results.csv` includes route contribution flags, route-row role/count/fraction, active rows, stored/effective rows, unused rows, MSE/cosine, throughput, route entropy, dead leaves, leaf occupancy, LocoProp before/after MSE, validation accuracy, validation loss, and validation steps.

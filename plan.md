@@ -111,6 +111,24 @@ Route-row contribution ablation:
 
 Reports must include the number of active contributing route rows, active-row/FLOP budget, MSE, accuracy, throughput, and route diagnostics.
 
+Current T20 status:
+
+- Route-output named-case config `configs/fff_distill_t20_route_output_cases.yaml` covers
+  `none_routing_only`, shared one/all/half, and split one/all/half route-output cases.
+- T20 run `t20_route_output_cases_20260704_092832` completed local offsets 0-1. The first
+  mixed local/remote launch exposed stale remote commits and failed remote preflight
+  honestly; after `scripts/sync_repo_remote.sh all`, rerun
+  `t20_route_output_cases_remote_20260704_092948` completed offsets 2-6 on synced remotes.
+- Final T20 evidence covers all seven named cases, all on CIFAR-10 validation split only,
+  all with `test_accessed=false`, at commit `9265ec0bf80db186315ce3bc3301ffe82b8932ee`.
+  Single-layer validation accuracy was measured by loading each ignored FFF state into the
+  selected teacher and evaluating the full 5k validation split with test disabled.
+- In the eligible-index-32 one-layer ablation, route-output contribution improved local
+  MSE over `none_routing_only` for every contributing case. `split_all` had the best local
+  NMSE (`0.284449`), while `split_half_fraction` was fastest (`37399.5` tokens/s). See
+  `docs/t20_route_row_output_ablation.md` and
+  `docs/t20_route_row_output_ablation_results.csv`.
+
 ## Experiment Stages
 
 Stage A: environment and bugfix gates.
