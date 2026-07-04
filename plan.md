@@ -169,12 +169,46 @@ Stage C: STE/router smoke tests on one representative middle Linear layer.
   builds a fixed-route/fixed-activation local basis, solves a ridge problem in FP32,
   blends solved output vectors back into the FFF layer, and logs solve telemetry plus
   before/after MSE.
+- Stage C router recipe smoke was rerun after fixing distributed grid offsets. Run
+  `distill_stage_c_router_offsets_20260704_090349` covered each of the seven configured
+  router recipes exactly once, used train-split activation samples only, and reported
+  `test_accessed=false`. The earlier `distill_stage_c_router_20260704_085938` wave is
+  invalid for router comparison because every slot ran the first grid candidate.
 
 Stage D: single-layer architecture sweep.
 
+- Stage D architecture sweep run `distill_stage_d_arch_20260704_090730` completed 10/10
+  validation-split trials without CIFAR-10 test access. The best short-run local recipe
+  was `vanilla_ste` with `split_routing_output`, `shared_unrouted_frac=0.2`,
+  `route_rows=1`, `leaf_rows=4`, `depth=5`, `route_rows_output_count=all`,
+  `route_rows_output_fraction=0.5`, and LocoProp-S enabled. See
+  `docs/t13_stage_d_arch_summary.md`.
+
 Stage E: representative-layer sweep.
 
+- Stage E representative-layer run `distill_stage_e_layers_20260704_091514` applied the
+  Stage D recipe to eligible indices `[0]`, `[32]`, and `[60]` on the validation split.
+  All records report `test_accessed=false`. The recipe transferred well to the early and
+  late `in_proj` examples, while the middle layer remained harder. See
+  `docs/t13_stage_e_layer_summary.md`.
+
 Stage F: full layerwise distillation HPO.
+
+- Stage F run `distill_stage_f_shards_20260704_091746` sharded all 64 eligible Linear
+  layers exactly once across 10 one-GPU jobs on `work`, `ripper`, `foureyes`, and `ai`.
+  Jobs succeeded 10/10, covered indices `0..63` with no missing/duplicate layers, and
+  every artifact reports `test_accessed=false`. `ripper:1` and `foureyes:0` were
+  intentionally excluded because pre-launch checks showed persistent anomalous 100%
+  utilization with negligible memory and no visible compute PID.
+- Stage F is validation-split layerwise evidence, not final student accuracy. Mean final
+  normalized MSE across eligible Linear layers was `0.288707`, mean cosine similarity was
+  `0.807726`, and mean measured distillation throughput was `42752.8` tokens/s. LocoProp-S
+  succeeded and decreased or preserved local MSE for every layer. Late and middle
+  `out_proj` layers remain the hardest and need additional recipe/budget tuning before
+  final student claims. See `docs/t13_stage_f_layerwise_summary.md`.
+- Fairness limitation to handle in T15/T18: Stage F trial configs retain the base
+  distillation seed even though scheduler status metadata records per-slot launch seeds.
+  Future multi-seed comparisons must explicitly vary and report training seeds.
 
 Stage G: end-to-end KD fine-tuning.
 
