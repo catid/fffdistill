@@ -6,7 +6,9 @@ import torch
 
 from cifar_mamba_fff import distributed as distributed_module
 from cifar_mamba_fff.distributed import (
+    DistributedContext,
     _build_parser,
+    _resolve_device,
     _run_benchmark,
     current_context,
     distributed_available,
@@ -47,6 +49,34 @@ def test_init_distributed_auto_backend_uses_gloo_for_cpu(monkeypatch) -> None:
 
     assert init_distributed_if_needed("auto", device=torch.device("cpu")) is True
     assert calls == ["gloo"]
+
+
+def test_implicit_cuda_device_is_mapped_to_index(monkeypatch) -> None:
+    calls: list[torch.device] = []
+    monkeypatch.setattr(distributed_module.torch.cuda, "set_device", calls.append)
+    context = DistributedContext(rank=2, local_rank=1, world_size=4, distributed=True)
+
+    single = _resolve_device(torch.device("cuda"), strategy="single", context=context)
+    ddp = _resolve_device(torch.device("cuda"), strategy="ddp", context=context)
+
+    assert single == torch.device("cuda", 0)
+    assert ddp == torch.device("cuda", 1)
+    assert calls == [torch.device("cuda", 0), torch.device("cuda", 1)]
+
+
+def test_explicit_cuda_index_is_rejected_for_multi_process_ddp(monkeypatch) -> None:
+    calls: list[torch.device] = []
+    monkeypatch.setattr(distributed_module.torch.cuda, "set_device", calls.append)
+    context = DistributedContext(rank=0, local_rank=0, world_size=2, distributed=True)
+
+    try:
+        _resolve_device(torch.device("cuda", 0), strategy="ddp", context=context)
+    except ValueError as exc:
+        assert "Use --device auto or --device cuda" in str(exc)
+    else:
+        raise AssertionError("explicit cuda index should be rejected for multi-process DDP")
+
+    assert calls == []
 
 
 def test_synthetic_single_process_benchmark_writes_jsonl(tmp_path, monkeypatch) -> None:

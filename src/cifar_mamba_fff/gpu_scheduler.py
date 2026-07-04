@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import subprocess
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -124,6 +125,8 @@ class PreflightResult:
     expected_commit: str | None = None
     local_commit: str = ""
     remote_commit: str | None = None
+    local_clean: bool | None = None
+    remote_clean: bool | None = None
     stdout: str = ""
     stderr: str = ""
 
@@ -136,6 +139,8 @@ class PreflightResult:
             "expected_commit": self.expected_commit,
             "local_commit": self.local_commit,
             "remote_commit": self.remote_commit,
+            "local_clean": self.local_clean,
+            "remote_clean": self.remote_clean,
             "stdout": self.stdout.strip(),
             "stderr": self.stderr.strip(),
         }
@@ -143,6 +148,20 @@ class PreflightResult:
 
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat()
+
+
+def _git_worktree_clean() -> bool:
+    checks = (
+        ("git", "diff", "--quiet"),
+        ("git", "diff", "--cached", "--quiet"),
+        ("git", "ls-files", "--others", "--exclude-standard"),
+    )
+    for command in checks[:2]:
+        completed = subprocess.run(command, check=False, capture_output=True, text=True)
+        if completed.returncode != 0:
+            return False
+    completed = subprocess.run(checks[2], check=False, capture_output=True, text=True)
+    return completed.returncode == 0 and not completed.stdout.strip()
 
 
 def _relative_path(path: Path, *, field_name: str) -> Path:
@@ -455,9 +474,17 @@ def preflight_machine(
     data_dir: str | Path = "data/cifar10",
     timeout_s: int = 20,
 ) -> PreflightResult:
+    local_clean = _git_worktree_clean()
     commands = [
         "test -d .git",
         "git rev-parse HEAD",
+        "git diff --quiet || { echo 'remote worktree has unstaged changes' >&2; exit 121; }",
+        "git diff --cached --quiet || { echo 'remote worktree has staged changes' >&2; exit 121; }",
+        (
+            "test -z \"$(git ls-files --others --exclude-standard)\" || "
+            "{ echo 'remote worktree has untracked non-ignored files' >&2; "
+            "git ls-files --others --exclude-standard >&2; exit 121; }"
+        ),
         f"test -x {quote(python_bin)}",
         f"{quote(python_bin)} --version",
     ]
@@ -475,12 +502,16 @@ def preflight_machine(
     local_commit = git_commit()
     ok = bool(result["ok"])
     stderr = str(result["stderr"])
+    remote_clean = result["returncode"] != 121
     if expected_commit is not None and commit != expected_commit:
         ok = False
         stderr = (
             stderr.rstrip()
             + f"\nremote commit/config mismatch: expected {expected_commit}, got {commit}"
         ).strip()
+    if not local_clean:
+        ok = False
+        stderr = (stderr.rstrip() + "\nlocal worktree is dirty").strip()
     return PreflightResult(
         machine=spec.name,
         ok=ok,
@@ -489,6 +520,8 @@ def preflight_machine(
         expected_commit=expected_commit,
         local_commit=local_commit,
         remote_commit=commit,
+        local_clean=local_clean,
+        remote_clean=remote_clean,
         stdout=stdout,
         stderr=stderr,
     )
@@ -554,6 +587,9 @@ def render_detached_launch_script(
             "    'updated_at': os.environ['UPDATED_AT'],",
             "})",
             "payload['remote_git_commit'] = os.environ.get('REMOTE_GIT_COMMIT') or None",
+            "remote_git_clean = os.environ.get('REMOTE_GIT_CLEAN')",
+            "if remote_git_clean is not None:",
+            "    payload['remote_git_clean'] = remote_git_clean == 'true'",
             "prelaunch_error = os.environ.get('PRELAUNCH_ERROR')",
             "if prelaunch_error:",
             "    payload['prelaunch_error'] = prelaunch_error",
@@ -578,6 +614,24 @@ def render_detached_launch_script(
             'if [ -n "$EXPECTED_GIT_COMMIT" ] && [ "$REMOTE_GIT_COMMIT" != "$EXPECTED_GIT_COMMIT" ]; then',
             '  PRELAUNCH_ERROR="remote commit/config mismatch: expected ${EXPECTED_GIT_COMMIT}, got ${REMOTE_GIT_COMMIT:-unknown}"',
             "  export PRELAUNCH_ERROR",
+            '  printf "%s\\n" "$PRELAUNCH_ERROR" > "$OUT_DIR/stderr.log"',
+            '  printf "%s\\n" "125" > "$OUT_DIR/exit_code.txt"',
+            '  write_status "failed_infra" "125"',
+            "  exit 125",
+            "fi",
+            "REMOTE_GIT_CLEAN=true",
+            "if ! git diff --quiet 2>/dev/null; then",
+            "  REMOTE_GIT_CLEAN=false",
+            "  PRELAUNCH_ERROR='remote worktree has unstaged changes'",
+            "elif ! git diff --cached --quiet 2>/dev/null; then",
+            "  REMOTE_GIT_CLEAN=false",
+            "  PRELAUNCH_ERROR='remote worktree has staged changes'",
+            "elif [ -n \"$(git ls-files --others --exclude-standard 2>/dev/null)\" ]; then",
+            "  REMOTE_GIT_CLEAN=false",
+            "  PRELAUNCH_ERROR='remote worktree has untracked non-ignored files'",
+            "fi",
+            "export REMOTE_GIT_CLEAN PRELAUNCH_ERROR",
+            'if [ "$REMOTE_GIT_CLEAN" != "true" ]; then',
             '  printf "%s\\n" "$PRELAUNCH_ERROR" > "$OUT_DIR/stderr.log"',
             '  printf "%s\\n" "125" > "$OUT_DIR/exit_code.txt"',
             '  write_status "failed_infra" "125"',
@@ -676,20 +730,19 @@ def launch_detached_job(
 
     launch_command = build_detached_launch_command(files)
     launch_result = run_remote(spec, launch_command, timeout_s=timeout_s)
-    if not launch_result["ok"]:
-        status_probe = read_remote_text(spec, files.status, timeout_s=timeout_s)
-        if status_probe["ok"]:
-            try:
-                payload = json.loads(str(status_probe["stdout"]))
-                job.status = JobStatus(str(payload["status"]))
-            except (json.JSONDecodeError, KeyError, ValueError):
-                job.status = JobStatus.RUNNING
-        else:
-            job.status = JobStatus.FAILED_INFRA
+    status_probe = read_remote_text(spec, files.status, timeout_s=timeout_s)
+    if status_probe["ok"]:
+        try:
+            payload = json.loads(str(status_probe["stdout"]))
+            job.status = JobStatus(str(payload["status"]))
+        except (json.JSONDecodeError, KeyError, ValueError):
+            job.status = JobStatus.RUNNING if launch_result["ok"] else JobStatus.FAILED_INFRA
+    elif not launch_result["ok"]:
+        job.status = JobStatus.FAILED_INFRA
     else:
         job.status = JobStatus.RUNNING
     return LaunchResult(
-        ok=bool(launch_result["ok"]) or job.status != JobStatus.FAILED_INFRA,
+        ok=job.status != JobStatus.FAILED_INFRA,
         status=job.status,
         job=job,
         files=files,
@@ -1203,6 +1256,8 @@ def main(argv: list[str] | None = None) -> int:
         raise RuntimeError("--distill-teacher-checkpoint is required for non-smoke distill_hpo")
     if not args.dry_run and not args.quick_smoke and not args.allow_long_jobs:
         raise RuntimeError("refusing non-smoke scheduler launch without --allow-long-jobs true")
+    if not args.dry_run and not _git_worktree_clean():
+        raise RuntimeError("refusing scheduler launch from a dirty local git worktree")
     collect_root = resolve_collect_root(args.collect_root, run_id=args.run_id)
 
     machines = load_machines(args.machines)

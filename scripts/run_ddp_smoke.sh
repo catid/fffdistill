@@ -45,11 +45,7 @@ COMMON_ARGS=(
     --output "${OUT_DIR}/single_gpu.jsonl" \
     2>&1 | tee "${OUT_DIR}/single_gpu.stdout"
 
-if command -v torchrun >/dev/null 2>&1; then
-    TORCHRUN=(torchrun)
-else
-    TORCHRUN=("${PYTHON_BIN}" -m torch.distributed.run)
-fi
+TORCHRUN=("${PYTHON_BIN}" -m torch.distributed.run)
 
 "${TORCHRUN[@]}" \
     --standalone \

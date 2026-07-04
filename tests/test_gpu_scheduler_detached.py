@@ -451,6 +451,7 @@ def test_read_detached_job_status_records_liveness_for_running_job(monkeypatch) 
 def test_preflight_machine_rejects_commit_mismatch(monkeypatch) -> None:
     preflight_machine = _require_public_helper("preflight_machine")
     spec = MachineSpec(name="work", host="localhost", gpus=2, role="local", workdir="/repo")
+    monkeypatch.setattr(gpu_scheduler, "_git_worktree_clean", lambda: True)
 
     def fake_run_remote(
         spec_arg: MachineSpec,
@@ -482,6 +483,8 @@ def test_preflight_machine_rejects_commit_mismatch(monkeypatch) -> None:
     assert result.expected_commit == "newcommit"
     assert result.remote_commit == "oldcommit"
     assert result.local_commit
+    assert result.local_clean is True
+    assert result.remote_clean is True
     assert "remote commit/config mismatch: expected newcommit, got oldcommit" in result.stderr
 
 
@@ -490,6 +493,7 @@ def test_preflight_machine_records_matching_local_and_remote_commits(monkeypatch
     spec = MachineSpec(name="work", host="localhost", gpus=2, role="local", workdir="/repo")
 
     monkeypatch.setattr(gpu_scheduler, "git_commit", lambda: "localcommit")
+    monkeypatch.setattr(gpu_scheduler, "_git_worktree_clean", lambda: True)
 
     def fake_run_remote(
         spec_arg: MachineSpec,
@@ -525,9 +529,49 @@ def test_preflight_machine_records_matching_local_and_remote_commits(monkeypatch
         "expected_commit": "localcommit",
         "local_commit": "localcommit",
         "remote_commit": "localcommit",
+        "local_clean": True,
+        "remote_clean": True,
         "stdout": "localcommit\nPython 3.12.11",
         "stderr": "",
     }
+
+
+def test_preflight_machine_rejects_dirty_remote_worktree(monkeypatch) -> None:
+    preflight_machine = _require_public_helper("preflight_machine")
+    spec = MachineSpec(name="work", host="localhost", gpus=2, role="local", workdir="/repo")
+    monkeypatch.setattr(gpu_scheduler, "_git_worktree_clean", lambda: True)
+
+    def fake_run_remote(
+        spec_arg: MachineSpec,
+        command: str,
+        *,
+        timeout_s: int,
+    ) -> Mapping[str, object]:
+        assert spec_arg == spec
+        assert "git diff --quiet" in command
+        assert "git ls-files --others --exclude-standard" in command
+        assert timeout_s == 3
+        return {
+            "ok": False,
+            "returncode": 121,
+            "stdout": "localcommit\n",
+            "stderr": "remote worktree has unstaged changes\n",
+        }
+
+    monkeypatch.setattr(gpu_scheduler, "run_remote", fake_run_remote)
+
+    result = preflight_machine(
+        spec,
+        python_bin=".venv/bin/python",
+        expected_commit="localcommit",
+        timeout_s=3,
+    )
+
+    assert result.ok is False
+    assert result.remote_commit == "localcommit"
+    assert result.local_clean is True
+    assert result.remote_clean is False
+    assert "remote worktree has unstaged changes" in result.stderr
 
 
 def test_detached_launch_script_refuses_commit_mismatch_before_command(tmp_path: Path) -> None:
@@ -591,10 +635,76 @@ def test_detached_launch_script_refuses_commit_mismatch_before_command(tmp_path:
     )
 
 
+def test_detached_launch_script_refuses_dirty_worktree_before_command(tmp_path: Path) -> None:
+    render_detached_launch_script = _require_public_helper("render_detached_launch_script")
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True, text=True)
+    (tmp_path / ".gitignore").write_text("outputs/\nlaunch.sh\n", encoding="utf-8")
+    (tmp_path / "tracked.txt").write_text("base\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", ".gitignore", "tracked.txt"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=Test",
+            "commit",
+            "-m",
+            "base",
+        ],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    expected_commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tmp_path,
+        text=True,
+    ).strip()
+    (tmp_path / "tracked.txt").write_text("dirty\n", encoding="utf-8")
+    job = GpuJob(
+        command="touch outputs/sync_guard/work/0/should_not_run",
+        output_dir=Path("outputs/sync_guard/work/0"),
+        machine="work",
+        gpu_id=0,
+    )
+    script_path = tmp_path / "launch.sh"
+    script_path.write_text(
+        render_detached_launch_script(job, expected_commit=expected_commit),
+        encoding="utf-8",
+    )
+
+    completed = subprocess.run(
+        ["bash", str(script_path)],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    output_dir = tmp_path / "outputs/sync_guard/work/0"
+    payload = json.loads((output_dir / "status.json").read_text(encoding="utf-8"))
+    assert completed.returncode == 125
+    assert not (output_dir / "should_not_run").exists()
+    assert payload["status"] == JobStatus.FAILED_INFRA
+    assert payload["returncode"] == 125
+    assert payload["remote_git_commit"] == expected_commit
+    assert payload["remote_git_clean"] is False
+    assert payload["prelaunch_error"] == "remote worktree has unstaged changes"
+
+
 def test_preflight_machine_can_require_cifar10_train_readiness(monkeypatch) -> None:
     preflight_machine = _require_public_helper("preflight_machine")
     spec = MachineSpec(name="work", host="localhost", gpus=2, role="local", workdir="/repo")
     commands: list[str] = []
+    monkeypatch.setattr(gpu_scheduler, "_git_worktree_clean", lambda: True)
 
     def fake_run_remote(
         spec_arg: MachineSpec,
@@ -689,3 +799,57 @@ def test_launch_detached_job_probes_status_after_launch_timeout(monkeypatch) -> 
     assert result.status == JobStatus.RUNNING
     assert job.status == JobStatus.RUNNING
     assert "</dev/null" in launch_commands[0]
+
+
+def test_launch_detached_job_returns_failed_infra_from_prelaunch_status(monkeypatch) -> None:
+    launch_detached_job = _require_public_helper("launch_detached_job")
+    job = GpuJob(
+        command="PYTHONPATH=src CUDA_VISIBLE_DEVICES=0 .venv/bin/python -m trainer",
+        output_dir=Path("outputs/scheduler_smoke/work/0"),
+        machine="work",
+        gpu_id=0,
+    )
+    spec = MachineSpec(name="work", host="localhost", gpus=2, role="local", workdir="/repo")
+
+    monkeypatch.setattr(
+        gpu_scheduler,
+        "write_remote_text",
+        lambda spec_arg, path, text, *, executable, timeout_s: {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "",
+            "stderr": "",
+        },
+    )
+    monkeypatch.setattr(
+        gpu_scheduler,
+        "run_remote",
+        lambda spec_arg, command, *, timeout_s: {
+            "ok": True,
+            "returncode": 0,
+            "stdout": "",
+            "stderr": "",
+        },
+    )
+    monkeypatch.setattr(
+        gpu_scheduler,
+        "read_remote_text",
+        lambda spec_arg, path, *, timeout_s: {
+            "ok": True,
+            "returncode": 0,
+            "stdout": json.dumps(
+                {
+                    "status": JobStatus.FAILED_INFRA.value,
+                    "returncode": 125,
+                    "prelaunch_error": "remote commit/config mismatch",
+                }
+            ),
+            "stderr": "",
+        },
+    )
+
+    result = launch_detached_job(spec, job, timeout_s=20, expected_commit="expected")
+
+    assert result.ok is False
+    assert result.status == JobStatus.FAILED_INFRA
+    assert job.status == JobStatus.FAILED_INFRA

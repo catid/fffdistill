@@ -155,8 +155,16 @@ def _resolve_device(
     context: DistributedContext,
 ) -> torch.device:
     device = requested_device
-    if device.type == "cuda" and strategy == "ddp" and device.index is None:
-        device = torch.device("cuda", context.local_rank)
+    if device.type == "cuda" and strategy == "ddp":
+        if context.world_size > 1 and device.index is not None:
+            raise ValueError(
+                "Use --device auto or --device cuda for multi-process DDP; "
+                "select physical GPUs with CUDA_VISIBLE_DEVICES."
+            )
+        if device.index is None:
+            device = torch.device("cuda", context.local_rank)
+    elif device.type == "cuda" and device.index is None:
+        device = torch.device("cuda", 0)
     if device.type == "cuda":
         torch.cuda.set_device(device)
     return device

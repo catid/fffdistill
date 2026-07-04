@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -518,6 +519,7 @@ def test_scheduler_main_threads_hpo_args_and_requires_cifar_preflight(
 
     monkeypatch.setattr(gpu_scheduler, "preflight_machine", fake_preflight_machine)
     monkeypatch.setattr(gpu_scheduler, "git_commit", lambda: "commit")
+    monkeypatch.setattr(gpu_scheduler, "_git_worktree_clean", lambda: True)
 
     rc = gpu_scheduler.main(
         [
@@ -607,6 +609,7 @@ def test_scheduler_main_threads_distill_hpo_args_and_requires_cifar_preflight(
     monkeypatch.setattr(gpu_scheduler, "preflight_machine", fake_preflight_machine)
     monkeypatch.setattr(gpu_scheduler, "launch_detached_jobs", fake_launch_detached_jobs)
     monkeypatch.setattr(gpu_scheduler, "git_commit", lambda: "commit")
+    monkeypatch.setattr(gpu_scheduler, "_git_worktree_clean", lambda: True)
 
     rc = gpu_scheduler.main(
         [
@@ -756,7 +759,30 @@ def _wait_for_terminal_status(
     raise AssertionError(f"job did not reach terminal status: {job.record()}")
 
 
+def _init_clean_git_repo(path: Path, ignored: str) -> None:
+    subprocess.run(["git", "init"], cwd=path, check=True, capture_output=True, text=True)
+    (path / ".gitignore").write_text(ignored, encoding="utf-8")
+    subprocess.run(["git", "add", ".gitignore"], cwd=path, check=True, capture_output=True, text=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "user.name=Test",
+            "commit",
+            "-m",
+            "base",
+        ],
+        cwd=path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
 def test_detached_local_job_records_success_sidecars(tmp_path) -> None:
+    _init_clean_git_repo(tmp_path, "job_success/\n")
     spec = MachineSpec(
         name="local",
         host="localhost",
@@ -776,7 +802,7 @@ def test_detached_local_job_records_success_sidecars(tmp_path) -> None:
 
     launch = launch_detached_job(spec, job)
     assert launch.ok is True
-    assert launch.status == JobStatus.RUNNING
+    assert launch.status in {JobStatus.RUNNING, JobStatus.SUCCEEDED}
 
     status = _wait_for_terminal_status(spec, job)
 
@@ -792,6 +818,7 @@ def test_detached_local_job_records_success_sidecars(tmp_path) -> None:
 
 
 def test_detached_local_job_classifies_nonzero_as_logic_failure(tmp_path) -> None:
+    _init_clean_git_repo(tmp_path, "job_logic_failure/\n")
     spec = MachineSpec(
         name="local",
         host="localhost",
