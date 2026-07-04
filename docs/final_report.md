@@ -258,7 +258,24 @@ Validation/smoke evidence:
   output metadata.
 
 This partial test result is final-evaluation plumbing evidence, not a final quality
-claim. No full multi-seed FFF student final accuracy is claimed.
+claim. Full final-test quality evidence is now claimed only for the
+validation-selected Stage H family below.
+
+Full Stage H selected FFF student final CIFAR-10 test:
+
+- Selection rule: `no_balance_cosine` was selected by the highest mean
+  validation accuracy in `docs/stage_h_validation_full3ep_families.csv` before
+  any full CIFAR-10 test evaluation.
+- Selection manifest: `docs/stage_h_final_selection_manifest.jsonl`.
+- Summary: `docs/stage_h_final_full_test_summary.md`.
+- Full Stage H selected FFF student final CIFAR-10 validation mean: `0.914800`.
+- Full Stage H selected FFF student final CIFAR-10 test mean accuracy: `0.914933`.
+- Full Stage H selected FFF student final CIFAR-10 test std accuracy: `0.004022`.
+- Best selected FFF student final-test case: `no_balance_cosine_seed21002`,
+  seed `21002`, test accuracy `0.919400`.
+- All three final-test rows have `partial_test_evaluation=false`,
+  `allow_untracked_selection=false`, and `test_accessed=true`; their selection
+  records have `test_accessed=false`.
 
 Detailed T14 report: `docs/t14_finetune_summary.md`.
 
@@ -269,12 +286,13 @@ T15 generated fairness tables from committed evidence only:
 - `docs/t15_fairness_summary.md`
 - `docs/t15_fairness_summary.csv`
 
-The table contains 29 rows and enforces that `test_accessed=true` appears only on
-`final_test` or `partial_final_test` rows. Exactly 2 fairness rows have
+The table contains 30 rows and enforces that `test_accessed=true` appears only on
+`final_test` or `partial_final_test` rows. Exactly 3 fairness rows have
 `test_accessed=true`. Dense-copy, matched low-rank Linear, and matched smaller
 dense Linear baselines now have three-seed validation-only rows in
-`docs/t15_missing_baseline_validation_summary.md`; the shared-only rows baseline
-remains an explicit `not_run` limitation.
+`docs/t15_missing_baseline_validation_summary.md`. The shared-only rows baseline
+also has a three-seed validation-only row there, with mean validation accuracy
+`0.910000` and `test_accessed=false`.
 The final-report validator also checks the committed fairness CSV row count,
 test-access row count, and key prose metrics against their source CSV/Markdown
 artifacts, then regenerates fairness rows from source evidence and rejects a stale CSV.
@@ -339,14 +357,27 @@ Within the evidence that exists:
 - Best corrected Stage F layerwise recipe available for Stage H assembly:
   `vanilla_ste + split_routing_output + LocoProp-S`, because it completed all 64
   eligible layers with train-eval capture and held-out token metrics.
-- Best overall Pareto FFF student: not established. Full multi-seed end-to-end FFF accuracy is not available.
+- Best validation-selected Stage H FFF student: `no_balance_cosine`, with
+  three-seed full final-test mean accuracy `0.914933`.
+- Best overall Pareto FFF student across router families: not established,
+  because only the validation-selected Stage H family has full final-test
+  evidence.
 
 ## Limitations
 
-- Full FFF-replaced student final CIFAR-10 accuracy is not established; only a one-batch partial selected-checkpoint test artifact exists.
-- Legacy Stage F layerwise FFF artifacts used validation-split activation capture and are leakage-limited for layerwise validation metrics. Corrected train-eval Stage F layerwise evidence is now committed, but no full-student Stage H quality claim has been rerun from those artifacts.
-- The shared-only rows baseline is still not run as a matched full-student baseline. Dense teacher-copied, matched low-rank Linear, and matched smaller dense Linear now have validation-only three-seed evidence, but no baseline final-test metrics are claimed.
+- Full FFF-replaced student final CIFAR-10 accuracy is established only for the
+  validation-selected `no_balance_cosine` Stage H family. Other router-family
+  full-student final-test comparisons remain unrun.
+- Legacy Stage F layerwise FFF artifacts used validation-split activation
+  capture and are leakage-limited for layerwise validation metrics. Corrected
+  train-eval Stage F layerwise evidence is committed and feeds the current
+  Stage H final-test path.
+- Dense teacher-copied, matched low-rank Linear, matched smaller dense Linear,
+  and shared-only rows baselines have validation-only three-seed evidence, but
+  no baseline final-test metrics are claimed.
 - Utility-targeted, hard-EM, expert-choice, and ST-Gumbel router recipes have equal-budget hard-layer validation evidence, but not full-student final-test comparisons.
+- GC5 optimizer/WSD validation is still running or awaiting collection for some
+  launched offsets, so no quality optimizer ranking is claimed here.
 - Grouped FFF is much faster than naive but still far slower than dense Linear in current PyTorch implementation.
 - FFF-bank optimizer policy is currently AdamW fallback for 3D replacement banks;
   optimizer conclusions for assembled FFF students must remain labeled accordingly

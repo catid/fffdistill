@@ -58,9 +58,13 @@ def test_build_fairness_rows_from_committed_docs_contains_required_baseline_evid
     rows = build_fairness_rows(Path("docs"))
     by_method = {str(row["method"]): row for row in rows}
 
-    assert len(rows) == EXPECTED_FAIRNESS_ROWS == 29
+    assert len(rows) == expected_fairness_rows(Path("docs")) >= EXPECTED_FAIRNESS_ROWS
     assert by_method["dense_mamba3_teacher"]["split"] == "final_test"
     assert by_method["official_fastfeedforward_fff"]["status"] == "shape_compatible_forward_tested"
+    assert by_method["fff_student_stage_h_no_balance_cosine"]["split"] == "final_test"
+    assert by_method["fff_student_stage_h_no_balance_cosine"]["status"] == "selected_full_test"
+    assert by_method["fff_student_stage_h_no_balance_cosine"]["test_accessed"] == "true"
+    assert by_method["fff_student_stage_h_no_balance_cosine"]["final_test_accuracy"] == "0.914933"
     assert by_method["dense_teacher_copied_student"]["status"] == "completed"
     assert by_method["dense_teacher_copied_student"]["split"] == "validation"
     assert by_method["dense_teacher_copied_student"]["test_accessed"] == "false"
@@ -69,7 +73,8 @@ def test_build_fairness_rows_from_committed_docs_contains_required_baseline_evid
     assert by_method["matched_low_rank_linear"]["validation_accuracy"] == "0.926400"
     assert by_method["matched_smaller_dense_linear"]["status"] == "completed"
     assert by_method["matched_smaller_dense_linear"]["validation_accuracy"] == "0.931933"
-    assert by_method["shared_only_rows_baseline"]["status"] == "not_run"
+    assert by_method["shared_only_rows_baseline"]["status"] == "completed"
+    assert by_method["shared_only_rows_baseline"]["validation_accuracy"] == "0.910000"
     assert (
         by_method["assembled_fff_stage_f_validation_capture_legacy"]["split"]
         == "legacy_validation_capture_layerwise"
@@ -107,36 +112,21 @@ def test_write_fairness_reports_writes_markdown_and_csv(tmp_path: Path) -> None:
     assert "matched_low_rank_linear" in csv_text
 
 
-def test_build_fairness_rows_uses_shared_only_family_when_present(tmp_path: Path) -> None:
+def test_build_fairness_rows_rejects_missing_shared_only_family(tmp_path: Path) -> None:
     docs_dir = tmp_path / "docs"
     shutil.copytree(Path("docs"), docs_dir)
     family_path = docs_dir / "t15_missing_baseline_validation_families.csv"
-    with family_path.open("a", encoding="utf-8", newline="") as handle:
-        writer = csv.writer(handle, lineterminator="\n")
-        writer.writerow(
-            [
-                "shared_only",
-                "3",
-                "3",
-                "21001,21002,21003",
-                "0.812300",
-                "0.001000",
-                "4218.000000",
-                "false",
-                "shared_only_seed21002",
-                "21002",
-                "0.813000",
-                "outputs/scheduler_finetune_hpo/shared_only/student_best.pt",
-            ]
-        )
+    with family_path.open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+        fieldnames = list(rows[0])
+    rows = [row for row in rows if row["family"] != "shared_only"]
+    with family_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, lineterminator="\n")
+        writer.writeheader()
+        writer.writerows(rows)
 
-    rows = build_fairness_rows(docs_dir)
-    by_method = {str(row["method"]): row for row in rows}
-
-    assert len(rows) == EXPECTED_FAIRNESS_ROWS
-    assert by_method["shared_only_rows_baseline"]["status"] == "completed"
-    assert by_method["shared_only_rows_baseline"]["split"] == "validation"
-    assert by_method["shared_only_rows_baseline"]["validation_accuracy"] == "0.812300"
+    with pytest.raises(ValueError, match="expected 4 rows"):
+        build_fairness_rows(docs_dir)
 
 
 def test_build_fairness_rows_adds_optional_gc5_validation_rows(tmp_path: Path) -> None:

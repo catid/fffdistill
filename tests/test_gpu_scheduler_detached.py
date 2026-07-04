@@ -89,6 +89,13 @@ def test_collected_artifact_names_include_finetune_hpo_summaries() -> None:
     assert "trials/trial_000000/metrics_summary.json" in gpu_scheduler.COLLECTED_ARTIFACT_NAMES
 
 
+def test_collected_artifact_names_include_final_eval_metrics() -> None:
+    assert "teacher_final_test_metrics.json" in gpu_scheduler.COLLECTED_ARTIFACT_NAMES
+    assert "teacher_final_test_metrics.jsonl" in gpu_scheduler.COLLECTED_ARTIFACT_NAMES
+    assert "student_final_test_metrics.json" in gpu_scheduler.COLLECTED_ARTIFACT_NAMES
+    assert "student_final_test_metrics.jsonl" in gpu_scheduler.COLLECTED_ARTIFACT_NAMES
+
+
 def test_read_remote_text_reports_copy_integrity_for_truncated_file(tmp_path: Path) -> None:
     spec = MachineSpec(name="local", host="localhost", gpus=0, role="local", workdir=str(tmp_path))
     (tmp_path / "metrics.jsonl").write_text("0123456789", encoding="utf-8")

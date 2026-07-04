@@ -1,0 +1,2 @@
+family,trials,seed_count,seeds,mean_selected_val_accuracy,std_selected_val_accuracy,mean_test_accuracy,std_test_accuracy,mean_test_steps,partial_test_evaluation,test_accessed,best_case,best_seed,best_test_accuracy,checkpoint_path
+no_balance_cosine,3,3,"21001,21002,21003",0.914800,0.004060,0.914933,0.004022,313.000000,false,true,no_balance_cosine_seed21002,21002,0.919400,outputs/scheduler_finetune_hpo/stage_h_validation_full3ep_20260704_5b5e4e1/ai/0/trials/trial_000010_no_balance_cosine_seed21002/student_best.pt

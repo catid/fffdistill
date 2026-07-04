@@ -33,10 +33,11 @@ EXPECTED_ROW_COUNTS = {
     "t20_route_row_output_ablation_results.csv": 7,
     "t19_optimizer_ablation_summary.csv": 6,
     "t14_finetune_summary.csv": 8,
-    "t15_missing_baseline_validation_families.csv": 3,
+    "t15_missing_baseline_validation_families.csv": 4,
+    "stage_h_final_full_test_families.csv": 1,
 }
-EXPECTED_FAIRNESS_ROWS = 29
-EXPECTED_TEST_ACCESS_ROWS = 2
+EXPECTED_FAIRNESS_ROWS = 30
+EXPECTED_TEST_ACCESS_ROWS = 3
 GC5_FAMILY_SUMMARY = "fff_gc5_optimizer_wsd_validation_families.csv"
 FFF_BANK_OPTIMIZER_CAVEAT = (
     "Current Muon grouping sends only hidden 2D matrix parameters to Muon; "
@@ -306,6 +307,41 @@ def _t14_rows(docs_dir: Path) -> list[dict[str, object]]:
     return out
 
 
+def _stage_h_final_student_row(docs_dir: Path) -> dict[str, object]:
+    family_path = docs_dir / "stage_h_final_full_test_families.csv"
+    rows = _read_csv(family_path, expected_rows=EXPECTED_ROW_COUNTS[family_path.name])
+    row = rows[0]
+    if row.get("family") != "no_balance_cosine":
+        raise ValueError(f"{family_path} expected no_balance_cosine final family")
+    if _parse_bool(row.get("partial_test_evaluation"), field="partial_test_evaluation"):
+        raise ValueError(f"{family_path} contains partial final-test evidence")
+    if not _parse_bool(row.get("test_accessed"), field="test_accessed"):
+        raise ValueError(f"{family_path} final student row did not access CIFAR-10 test")
+    if _int_text(row.get("seed_count")) != "3":
+        raise ValueError(f"{family_path} expected three selected final-test seeds")
+    return _row(
+        method="fff_student_stage_h_no_balance_cosine",
+        evidence=str(family_path),
+        split="final_test",
+        status="selected_full_test",
+        test_accessed="true",
+        validation_accuracy=_float_text(row.get("mean_selected_val_accuracy")),
+        final_test_accuracy=_float_text(row.get("mean_test_accuracy")),
+        train_steps="4218 per selected seed",
+        seeds=row.get("seeds", ""),
+        budget=(
+            "Validation-selected no_balance_cosine family, three seeds, full CIFAR-10 "
+            "test evaluation after selection."
+        ),
+        fairness_note=(
+            f"Mean/std final test accuracy {_float_text(row.get('mean_test_accuracy'))}/"
+            f"{_float_text(row.get('std_test_accuracy'))}; best case {row.get('best_case', '')} "
+            f"seed {row.get('best_seed', '')} reached {_float_text(row.get('best_test_accuracy'))}. "
+            "Selection manifests are committed in docs/stage_h_final_selection_manifest.jsonl."
+        ),
+    )
+
+
 def _baseline_rows(docs_dir: Path) -> list[dict[str, object]]:
     evidence = "tests/test_official_fastfeedforward_baseline.py"
     rows = [
@@ -341,22 +377,9 @@ def _baseline_rows(docs_dir: Path) -> list[dict[str, object]]:
             "Shared-only rows baseline using the same three-epoch validation budget.",
         ),
     }
-    required_families = {"dense_copy", "low_rank", "smaller_dense"}
+    required_families = {"dense_copy", "low_rank", "smaller_dense", "shared_only"}
     seen_families: set[str] = set()
-    family_rows = _read_csv(family_path)
-    has_shared_only = any(family.get("family", "") == "shared_only" for family in family_rows)
-    if not has_shared_only:
-        rows.append(
-            _row(
-                method="shared_only_rows_baseline",
-                evidence=str(docs_dir / "t13_stage_f_layerwise_summary.csv"),
-                split="not_run",
-                status="not_run",
-                test_accessed="false",
-                budget="Not executed as a matched full-layer baseline.",
-                fairness_note="FFF HPO includes shared rows, but a shared-only full baseline is not available.",
-            )
-        )
+    family_rows = _read_csv(family_path, expected_rows=EXPECTED_ROW_COUNTS[family_path.name])
     for family in family_rows:
         family_name = family.get("family", "")
         if family_name not in baseline_methods:
@@ -431,6 +454,7 @@ def build_fairness_rows(docs_dir: Path = Path("docs")) -> list[dict[str, object]
     rows.extend(_t20_rows(docs_dir))
     rows.extend(_t19_rows(docs_dir))
     rows.extend(_t14_rows(docs_dir))
+    rows.append(_stage_h_final_student_row(docs_dir))
     rows.extend(_baseline_rows(docs_dir))
     rows.extend(_gc5_rows(docs_dir))
     validate_fairness_rows(rows, expected_rows=expected_fairness_rows(docs_dir))

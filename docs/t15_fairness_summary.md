@@ -30,11 +30,12 @@ final-test, and full final-test rows are deliberately separated.
 | t14_t14_finetune_hpo_autocast_fix_train_nobalance_real | validation_smoke | succeeded | false |  |  |  |  | HPO wrapper train-mode one trial one train/val step no balance |
 | t14_t14_finetune_smoke_autocast_fix_train_balance_globalcap | validation_smoke | succeeded | false |  |  |  |  | batch 32 assembled FFF KD one global train step with balance |
 | t14_t14_student_final_partial_autocast_fix_nobalance_qfalse_v2 | partial_final_test | succeeded partial_test_accuracy=0.3125 | true |  | 0.312500 |  |  | selected one-step HPO checkpoint partial CIFAR-10 test max_test_steps=1 |
+| fff_student_stage_h_no_balance_cosine | final_test | selected_full_test | true | 0.914800 | 0.914933 |  |  | Validation-selected no_balance_cosine family, three seeds, full CIFAR-10 test evaluation after selection. |
 | official_fastfeedforward_fff | shape_smoke | shape_compatible_forward_tested | false |  |  |  |  | CPU API/shape smoke only. |
-| shared_only_rows_baseline | not_run | not_run | false |  |  |  |  | Not executed as a matched full-layer baseline. |
 | matched_smaller_dense_linear | validation | completed | false | 0.931933 |  |  |  | Three seeds, three fine-tune epochs, 4218 train steps each, same teacher checkpoint and validation-only selection protocol. |
 | dense_teacher_copied_student | validation | completed | false | 0.931667 |  |  |  | Three seeds, three fine-tune epochs, 4218 train steps each, same teacher checkpoint and validation-only selection protocol. |
 | matched_low_rank_linear | validation | completed | false | 0.926400 |  |  |  | Three seeds, three fine-tune epochs, 4218 train steps each, same teacher checkpoint and validation-only selection protocol. |
+| shared_only_rows_baseline | validation | completed | false | 0.910000 |  |  |  | Three seeds, three fine-tune epochs, 4218 train steps each, same teacher checkpoint and validation-only selection protocol. |
 
 ## Fairness Checks
 

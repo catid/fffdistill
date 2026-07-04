@@ -31,6 +31,10 @@ ROOT_COLLECTED_ARTIFACT_NAMES = (
     "distill_hpo_summary.json",
     "finetune_hpo_summary.json",
     "finetune_hpo_summary.csv",
+    "teacher_final_test_metrics.json",
+    "teacher_final_test_metrics.jsonl",
+    "student_final_test_metrics.json",
+    "student_final_test_metrics.jsonl",
 )
 TRIAL_COLLECTED_ARTIFACT_NAMES = (
     "trial_config.json",

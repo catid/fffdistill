@@ -40,6 +40,7 @@ REQUIRED_SNIPPETS = (
     "Legacy validation-capture Stage F",
     "docs/t13_stage_f_train_eval_layerwise_summary.csv",
     "Corrected Stage F train-eval rerun",
+    "Full Stage H selected FFF student final CIFAR-10 test",
     "test_accessed=true",
 )
 
@@ -571,6 +572,70 @@ def _validate_t14_metrics(report_text: str, docs_dir: Path) -> None:
     )
 
 
+def _validate_stage_h_final_metrics(report_text: str, docs_dir: Path) -> None:
+    family_source = docs_dir / "stage_h_final_full_test_families.csv"
+    family_rows = _read_csv(family_source, expected_rows=1)
+    family = family_rows[0]
+    if family.get("family") != "no_balance_cosine":
+        raise ValueError(f"{family_source} expected no_balance_cosine family")
+    if _bool(family.get("partial_test_evaluation"), field="partial_test_evaluation", source=family_source):
+        raise ValueError(f"{family_source} contains partial final-test rows")
+    if not _bool(family.get("test_accessed"), field="test_accessed", source=family_source):
+        raise ValueError(f"{family_source} did not access CIFAR-10 test")
+    if _fmt_int(family.get("seed_count")) != "3":
+        raise ValueError(f"{family_source} expected three selected seeds")
+
+    trial_source = docs_dir / "stage_h_final_full_test_trials.csv"
+    trial_rows = _read_csv(trial_source, expected_rows=3)
+    _require_all_equal(trial_rows, "family", "no_balance_cosine", source=trial_source)
+    _require_all_equal(trial_rows, "partial_test_evaluation", "false", source=trial_source)
+    _require_all_equal(trial_rows, "test_accessed", "true", source=trial_source)
+    _require_all_equal(trial_rows, "allow_untracked_selection", "false", source=trial_source)
+    seeds = sorted(_fmt_int(row["seed"]) for row in trial_rows)
+    if seeds != ["21001", "21002", "21003"]:
+        raise ValueError(f"{trial_source} expected selected seeds 21001,21002,21003")
+
+    _expect_metric(
+        report_text,
+        r"Full Stage H selected FFF student final CIFAR-10 test mean accuracy: `([^`]+)`",
+        _fmt_float(_float(family, "mean_test_accuracy", source=family_source), 6),
+        label="Stage H final mean test accuracy",
+        source=family_source,
+    )
+    _expect_metric(
+        report_text,
+        r"Full Stage H selected FFF student final CIFAR-10 test std accuracy: `([^`]+)`",
+        _fmt_float(_float(family, "std_test_accuracy", source=family_source), 6),
+        label="Stage H final std test accuracy",
+        source=family_source,
+    )
+    _expect_metric(
+        report_text,
+        r"Full Stage H selected FFF student final CIFAR-10 validation mean: `([^`]+)`",
+        _fmt_float(_float(family, "mean_selected_val_accuracy", source=family_source), 6),
+        label="Stage H final mean selected validation accuracy",
+        source=family_source,
+    )
+    _expect_contains(
+        report_text,
+        f"Best selected FFF student final-test case: `{family['best_case']}`",
+        label="Stage H final best case",
+        source=family_source,
+    )
+    _expect_contains(
+        report_text,
+        f"seed `{_fmt_int(family['best_seed'])}`",
+        label="Stage H final best seed",
+        source=family_source,
+    )
+    _expect_contains(
+        report_text,
+        f"test accuracy `{_fmt_float(_float(family, 'best_test_accuracy', source=family_source), 6)}`",
+        label="Stage H final best test accuracy",
+        source=family_source,
+    )
+
+
 def _validate_t15_metrics(
     report_text: str,
     fairness_rows: Sequence[Mapping[str, str]],
@@ -657,6 +722,7 @@ def _validate_source_metrics(
     _validate_stage_f_train_eval_metrics(report_text, docs_dir)
     _validate_t20_metrics(report_text, docs_dir)
     _validate_t14_metrics(report_text, docs_dir)
+    _validate_stage_h_final_metrics(report_text, docs_dir)
     _validate_t15_metrics(report_text, fairness_rows, source=docs_dir / "t15_fairness_summary.csv")
     _validate_t19_metrics(report_text, docs_dir)
 
