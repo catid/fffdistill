@@ -1,0 +1,81 @@
+study_name: fff_route_output_ablation
+description: Named route-row output contribution cases for T20. Metrics remain pending until real layerwise distillation runs.
+base_fff:
+  shared_unrouted_frac: 0.10
+  route_rows: 2
+  route_result_rows: 0
+  leaf_rows: 2
+  depth: 5
+  activation: silu
+  hard_routing: true
+  train_temperature: 1.0
+  region_leak: 0.0
+  master_leaf: false
+  fallback_leaf: false
+cases:
+  - name: none_routing_only
+    route_rows_contribute: false
+    route_row_role: routing_only
+    route_result_rows: 0
+    route_rows_output_count: 0
+    route_rows_output_fraction: null
+    expected_route_output_rows_per_node: 0
+  - name: shared_one_per_node
+    route_rows_contribute: true
+    route_row_role: shared_routing_and_output
+    route_result_rows: 0
+    route_rows_output_count: 1
+    route_rows_output_fraction: null
+    expected_route_output_rows_per_node: 1
+  - name: shared_all
+    route_rows_contribute: true
+    route_row_role: shared_routing_and_output
+    route_result_rows: 0
+    route_rows_output_count: all
+    route_rows_output_fraction: null
+    expected_route_output_rows_per_node: 2
+  - name: shared_half_fraction
+    route_rows_contribute: true
+    route_row_role: shared_routing_and_output
+    route_result_rows: 0
+    route_rows_output_count: all
+    route_rows_output_fraction: 0.5
+    expected_route_output_rows_per_node: 1
+  - name: split_one_per_node
+    route_rows_contribute: true
+    route_row_role: split_routing_output
+    route_result_rows: 2
+    route_rows_output_count: 1
+    route_rows_output_fraction: null
+    expected_route_output_rows_per_node: 1
+  - name: split_all
+    route_rows_contribute: true
+    route_row_role: split_routing_output
+    route_result_rows: 2
+    route_rows_output_count: all
+    route_rows_output_fraction: null
+    expected_route_output_rows_per_node: 2
+  - name: split_half_fraction
+    route_rows_contribute: true
+    route_row_role: split_routing_output
+    route_result_rows: 2
+    route_rows_output_count: all
+    route_rows_output_fraction: 0.5
+    expected_route_output_rows_per_node: 1
+report_columns:
+  - route_rows_contribute
+  - route_output_contributes
+  - route_row_role
+  - route_rows_output_count
+  - route_rows_output_fraction
+  - route_result_rows
+  - route_output_rows_per_node
+  - route_output_rows_per_token
+  - active_rows_per_token
+  - stored_rows
+  - active_flops
+  - validation_mse
+  - validation_accuracy
+  - throughput
+  - route_entropy
+  - dead_leaves

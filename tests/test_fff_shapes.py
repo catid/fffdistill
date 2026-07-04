@@ -4,6 +4,7 @@ import pytest
 import torch
 
 from cifar_mamba_fff.models.fff_linear import FFFLinear, FFFLinearConfig
+from cifar_mamba_fff.utils import load_yaml
 
 
 @pytest.mark.parametrize("activation", ["silu", "gelu", "relu"])
@@ -50,7 +51,7 @@ def test_fff_linear_accepts_dataclass_config_and_legacy_contribution_alias() -> 
 
     assert layer.route_row_role == "shared_routing_and_output"
     assert layer.config.route_rows_contribute is True
-    assert layer.route_output_rows_per_token == 1
+    assert layer.route_output_rows_per_token == 2
     assert layer(torch.randn(4, 6)).shape == (4, 3)
 
 
@@ -119,9 +120,14 @@ def test_diagnostics_report_depth_leaves_stored_and_active_rows() -> None:
     assert diagnostics["depth"] == 2
     assert diagnostics["leaves"] == 4
     assert diagnostics["stored_rows"] == 1 + 3 * 1 + 4 * 2
+    assert diagnostics["route_rows_contribute"] is False
+    assert diagnostics["route_output_contributes"] is False
     assert diagnostics["route_row_role"] == "routing_only"
+    assert diagnostics["route_rows_output_count"] is None
+    assert diagnostics["route_rows_output_fraction"] is None
     assert diagnostics["max_visited_route_rows_per_token"] == 2
     assert diagnostics["max_route_output_rows_per_token"] == 0
+    assert diagnostics["route_output_rows_per_node"] == 0
     assert diagnostics["route_output_rows_per_token"] == 0
     assert diagnostics["active_rows_per_token"] == 3
 
@@ -130,9 +136,9 @@ def test_diagnostics_report_depth_leaves_stored_and_active_rows() -> None:
     ("role", "route_result_rows", "count", "expected_route_outputs", "expected_stored"),
     [
         ("routing_only", 0, 0, 0, 1 + 3 * 2 + 4 * 1),
-        ("shared_routing_and_output", 0, 1, 1, 1 + 3 * 2 + 4 * 1),
+        ("shared_routing_and_output", 0, 1, 2, 1 + 3 * 2 + 4 * 1),
         ("shared_routing_and_output", 0, "all", 4, 1 + 3 * 2 + 4 * 1),
-        ("split_routing_output", 2, 3, 3, 1 + 3 * 2 + 3 * 2 + 4 * 1),
+        ("split_routing_output", 2, 3, 4, 1 + 3 * 2 + 3 * 2 + 4 * 1),
     ],
 )
 def test_route_row_role_diagnostics(
@@ -159,6 +165,7 @@ def test_route_row_role_diagnostics(
 
     assert diagnostics["stored_rows"] == expected_stored
     assert diagnostics["route_output_rows_per_token"] == expected_route_outputs
+    assert diagnostics["route_output_rows_per_node"] == expected_route_outputs // layer.depth
     assert diagnostics["active_rows_per_token"].shape == (3,)
     assert torch.equal(
         diagnostics["active_rows_per_token"],
@@ -182,7 +189,12 @@ def test_route_output_fraction_bounds_active_rows() -> None:
     diagnostics = layer.diagnostics(torch.randn(2, 8))
 
     assert diagnostics["max_route_output_rows_per_token"] == 6
+    assert diagnostics["route_output_rows_per_node"] == 1
     assert diagnostics["route_output_rows_per_token"] == 3
+    assert diagnostics["route_rows_contribute"] is True
+    assert diagnostics["route_output_contributes"] is True
+    assert diagnostics["route_rows_output_count"] == "all"
+    assert diagnostics["route_rows_output_fraction"] == pytest.approx(0.5)
     assert torch.equal(diagnostics["active_rows_per_token"], torch.full((2,), 4))
 
 
@@ -242,7 +254,7 @@ def test_enabling_split_route_contribution_changes_outputs_and_active_rows() -> 
     y = split(x)
 
     assert torch.count_nonzero(y) > 0
-    assert torch.equal(split.route(x).diagnostics["active_rows_per_token"], torch.full((2,), 2))
+    assert torch.equal(split.route(x).diagnostics["active_rows_per_token"], torch.full((2,), 3))
 
 
 def _assert_nonzero_finite_grad(name: str, parameter: torch.nn.Parameter) -> None:
@@ -389,3 +401,69 @@ def test_bad_input_shape_raises_value_error() -> None:
 
     with pytest.raises(ValueError):
         layer(torch.randn(2, 7))
+
+
+def test_route_output_ablation_config_cases_are_valid() -> None:
+    raw = load_yaml("configs/fff_route_output_ablation.yaml")
+    base = {
+        key: value
+        for key, value in raw["base_fff"].items()
+        if key != "shared_unrouted_frac"
+    }
+
+    seen: set[str] = set()
+    for case in raw["cases"]:
+        name = case["name"]
+        seen.add(name)
+        expected_rows_per_node = int(case["expected_route_output_rows_per_node"])
+        kwargs = {
+            **base,
+            **{
+                key: value
+                for key, value in case.items()
+                if key not in {"name", "expected_route_output_rows_per_node"}
+            },
+            "shared_rows": 1,
+        }
+        layer = FFFLinear(16, 8, bias=False, **kwargs)
+        diagnostics = layer.diagnostics(torch.randn(3, 16))
+
+        assert diagnostics["route_rows_contribute"] == case["route_rows_contribute"]
+        assert diagnostics["route_output_contributes"] == (expected_rows_per_node > 0)
+        assert diagnostics["route_row_role"] == case["route_row_role"]
+        assert diagnostics["route_rows_output_count"] == case["route_rows_output_count"]
+        assert diagnostics["route_rows_output_fraction"] == case["route_rows_output_fraction"]
+        assert diagnostics["route_output_rows_per_node"] == expected_rows_per_node
+        assert diagnostics["route_output_rows_per_token"] == (
+            expected_rows_per_node * base["depth"]
+        )
+
+    assert seen == {
+        "none_routing_only",
+        "shared_one_per_node",
+        "shared_all",
+        "shared_half_fraction",
+        "split_one_per_node",
+        "split_all",
+        "split_half_fraction",
+    }
+
+
+def test_route_output_zero_count_reports_no_effective_contribution() -> None:
+    layer = FFFLinear(
+        8,
+        4,
+        depth=2,
+        route_rows=2,
+        leaf_rows=1,
+        route_row_role="shared_routing_and_output",
+        route_rows_output_count=0,
+        bias=False,
+    )
+
+    diagnostics = layer.diagnostics(torch.randn(3, 8))
+
+    assert diagnostics["route_rows_contribute"] is True
+    assert diagnostics["route_output_contributes"] is False
+    assert diagnostics["route_output_rows_per_node"] == 0
+    assert diagnostics["route_output_rows_per_token"] == 0

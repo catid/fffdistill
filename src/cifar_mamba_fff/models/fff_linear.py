@@ -534,12 +534,12 @@ class FFFLinear(nn.Module):
             route_result_values=route_info.route_result_values.reshape(
                 *leading_shape,
                 self.depth,
-                self.route_result_rows,
+                route_info.route_result_values.shape[-1],
             ),
             route_result_row_ids=route_info.route_result_row_ids.reshape(
                 *leading_shape,
                 self.depth,
-                self.route_result_rows,
+                route_info.route_result_row_ids.shape[-1],
             ),
             diagnostics=diagnostics,
         )
@@ -554,10 +554,15 @@ class FFFLinear(nn.Module):
                 "shared_rows": self.shared_rows,
                 "route_rows": self.route_rows,
                 "route_result_rows": self.route_result_rows,
+                "route_rows_contribute": self.config.route_rows_contribute,
+                "route_output_contributes": self._route_output_count() > 0,
                 "route_row_role": self.route_row_role,
+                "route_rows_output_count": self.config.route_rows_output_count,
+                "route_rows_output_fraction": self.config.route_rows_output_fraction,
                 "leaf_rows": self.leaf_rows,
                 "max_visited_route_rows_per_token": self.max_visited_route_rows_per_token,
                 "max_route_output_rows_per_token": self.max_route_output_rows_per_token,
+                "route_output_rows_per_node": self._route_output_rows_per_node_selected(),
                 "route_output_rows_per_token": self.route_output_rows_per_token,
                 "active_rows_per_token": self._static_active_rows_per_token(),
                 "grouped_leaf_path": (
@@ -628,7 +633,8 @@ class FFFLinear(nn.Module):
         route_row_offsets = torch.arange(self.route_rows, device=flat.device)
         route_row_ids = node_ids.unsqueeze(-1) * self.route_rows + route_row_offsets
         route_result_values = self._route_result_values(flat, node_ids)
-        result_row_offsets = torch.arange(self.route_result_rows, device=flat.device)
+        selected_result_rows = route_result_values.shape[-1]
+        result_row_offsets = torch.arange(selected_result_rows, device=flat.device)
         route_result_row_ids = node_ids.unsqueeze(-1) * self.route_result_rows + result_row_offsets
         leaf_weights, fallback_weight = self._regular_leaf_weights(leaf_probs)
         active_rows = self._active_rows_per_token(leaf_weights, fallback_weight=fallback_weight)
@@ -653,13 +659,16 @@ class FFFLinear(nn.Module):
         return route_preacts
 
     def _route_result_values(self, flat: Tensor, node_ids: Tensor) -> Tensor:
-        if self.route_result_rows == 0:
+        if self.config.route_row_role != "split_routing_output":
+            return flat.new_empty(flat.shape[0], self.depth, 0)
+        rows_per_node = self._route_output_rows_per_node_selected()
+        if rows_per_node == 0:
             return flat.new_empty(flat.shape[0], self.depth, 0)
         if self.route_result_weight is None or self.route_result_bias is None:
             raise RuntimeError("route_result rows are required for split_routing_output")
         result_preacts = (
-            torch.einsum("ni,mri->nmr", flat, self.route_result_weight)
-            + self.route_result_bias
+            torch.einsum("ni,mri->nmr", flat, self.route_result_weight[:, :rows_per_node])
+            + self.route_result_bias[:, :rows_per_node]
         )
         batch = torch.arange(flat.shape[0], device=flat.device)
         return self._activation(result_preacts[batch[:, None], node_ids])
@@ -811,6 +820,7 @@ class FFFLinear(nn.Module):
         route_info: _FlatRouteInfo,
         token_idx: int | None = None,
     ) -> tuple[Tensor, Tensor]:
+        rows_per_node = self._route_output_rows_per_node_selected()
         if self.config.route_row_role == "shared_routing_and_output":
             if self.route_output is None:
                 raise RuntimeError("route_output is required for shared_routing_and_output")
@@ -820,10 +830,12 @@ class FFFLinear(nn.Module):
             if self.route_result_output is None:
                 raise RuntimeError("route_result_output is required for split_routing_output")
             values = route_info.route_result_values
-            vectors = self.route_result_output[route_info.node_ids]
+            vectors = self.route_result_output[:, :rows_per_node][route_info.node_ids]
         else:
             raise RuntimeError("routing_only has no route output rows")
 
+        values = values[:, :, :rows_per_node]
+        vectors = vectors[:, :, :rows_per_node]
         if token_idx is not None:
             return (
                 values[token_idx].reshape(-1),
@@ -843,10 +855,13 @@ class FFFLinear(nn.Module):
         return 0
 
     def _route_output_count(self) -> int:
+        return self.depth * self._route_output_rows_per_node_selected()
+
+    def _route_output_rows_per_node_selected(self) -> int:
         if self.config.route_row_role == "routing_only":
             return 0
 
-        max_rows = self.max_route_output_rows_per_token
+        max_rows = self._route_output_rows_per_node()
         count_candidates: list[int] = []
         if self.config.route_rows_output_count is None:
             if self.config.route_rows_output_fraction is None:
@@ -911,10 +926,15 @@ class FFFLinear(nn.Module):
             "shared_rows": self.shared_rows,
             "route_rows": self.route_rows,
             "route_result_rows": self.route_result_rows,
+            "route_rows_contribute": self.config.route_rows_contribute,
+            "route_output_contributes": self._route_output_count() > 0,
             "route_row_role": self.route_row_role,
+            "route_rows_output_count": self.config.route_rows_output_count,
+            "route_rows_output_fraction": self.config.route_rows_output_fraction,
             "leaf_rows": self.leaf_rows,
             "max_visited_route_rows_per_token": self.max_visited_route_rows_per_token,
             "max_route_output_rows_per_token": self.max_route_output_rows_per_token,
+            "route_output_rows_per_node": self._route_output_rows_per_node_selected(),
             "route_output_rows_per_token": self._route_output_count(),
             "active_rows_per_token": active,
             "mean_active_rows_per_token": mean_active,

@@ -67,6 +67,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default="routing_only",
     )
     parser.add_argument("--route-rows-output-count", default=None)
+    parser.add_argument("--route-rows-output-fraction", type=float, default=None)
     parser.add_argument("--hard-routing", type=bool_arg, default=True)
     parser.add_argument("--iterations", type=int, default=50)
     parser.add_argument("--warmup", type=int, default=5)
@@ -202,6 +203,7 @@ def _run_benchmark(args: argparse.Namespace) -> list[dict[str, Any]]:
         leaf_rows=args.leaf_rows,
         route_row_role=route_row_role,
         route_rows_output_count=route_rows_output_count,
+        route_rows_output_fraction=args.route_rows_output_fraction,
         hard_routing=args.hard_routing,
         device=device,
         dtype=dtype,
@@ -211,7 +213,15 @@ def _run_benchmark(args: argparse.Namespace) -> list[dict[str, Any]]:
     route_metadata = {
         "active_rows_per_token": diagnostics["mean_active_rows_per_token"],
         "stored_rows": diagnostics["stored_rows"],
+        "route_rows_contribute": diagnostics["route_rows_contribute"],
+        "route_output_contributes": diagnostics["route_output_contributes"],
         "route_row_role": diagnostics["route_row_role"],
+        "route_result_rows": diagnostics["route_result_rows"],
+        "route_rows_output_count": diagnostics["route_rows_output_count"],
+        "route_rows_output_fraction": diagnostics["route_rows_output_fraction"],
+        "max_visited_route_rows_per_token": diagnostics["max_visited_route_rows_per_token"],
+        "max_route_output_rows_per_token": diagnostics["max_route_output_rows_per_token"],
+        "route_output_rows_per_node": diagnostics["route_output_rows_per_node"],
         "route_output_rows_per_token": diagnostics["route_output_rows_per_token"],
         "grouped_leaf_path": diagnostics["grouped_leaf_path"],
     }

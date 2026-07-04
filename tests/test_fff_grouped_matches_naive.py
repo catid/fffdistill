@@ -373,7 +373,7 @@ def test_legacy_route_rows_contribute_matches_shared_role_semantics() -> None:
 
     assert legacy.route_row_role == "shared_routing_and_output"
     assert explicit.route_row_role == "shared_routing_and_output"
-    assert legacy.route_output_rows_per_token == explicit.route_output_rows_per_token == 1
+    assert legacy.route_output_rows_per_token == explicit.route_output_rows_per_token == 2
 
 
 def test_time_cuda_callable_exposes_metadata_on_cpu() -> None:
@@ -416,6 +416,34 @@ def test_benchmark_quick_smoke_reports_grouped_throughput_metadata() -> None:
     assert by_name["fff_grouped"]["tokens_per_second"] > 0.0
     assert by_name["fff_grouped"]["grouped_leaf_path"] == "selected_leaf"
     assert by_name["fff_grouped"]["grouped_naive_max_abs_diff"] < 1e-5
+
+
+def test_benchmark_reports_route_output_ablation_controls() -> None:
+    parser = _build_parser()
+    args = parser.parse_args(
+        [
+            "--quick-smoke",
+            "true",
+            "--device",
+            "cpu",
+            "--route-row-role",
+            "shared_routing_and_output",
+            "--route-rows-output-count",
+            "all",
+            "--route-rows-output-fraction",
+            "0.5",
+        ]
+    )
+
+    rows = _run_benchmark(args)
+    grouped = {row["name"]: row for row in rows}["fff_grouped"]
+
+    assert grouped["route_rows_contribute"] is True
+    assert grouped["route_output_contributes"] is True
+    assert grouped["route_row_role"] == "shared_routing_and_output"
+    assert grouped["route_rows_output_count"] == "all"
+    assert grouped["route_rows_output_fraction"] == pytest.approx(0.5)
+    assert grouped["route_output_rows_per_token"] > 0
 
 
 def test_benchmark_skips_naive_unless_requested() -> None:

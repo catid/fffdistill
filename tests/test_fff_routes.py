@@ -134,8 +134,31 @@ def test_split_route_role_exposes_result_row_metadata() -> None:
     assert route_info.route_result_values.shape == (3, 2, 2)
     assert route_info.route_result_row_ids.shape == (3, 2, 2)
     assert route_info.diagnostics["route_row_role"] == "split_routing_output"
+    assert route_info.diagnostics["route_output_contributes"] is True
     assert route_info.diagnostics["route_output_rows_per_token"] == 4
     assert torch.equal(route_info.diagnostics["active_rows_per_token"], torch.full((3,), 5))
+
+
+def test_split_route_role_evaluates_only_selected_result_rows() -> None:
+    layer = FFFLinear(
+        8,
+        4,
+        depth=3,
+        route_rows=1,
+        route_result_rows=2,
+        leaf_rows=1,
+        route_row_role="split_routing_output",
+        route_rows_output_count=1,
+        bias=False,
+    )
+
+    route_info = layer.route(torch.randn(5, 8))
+
+    assert route_info.route_result_values.shape == (5, 3, 1)
+    assert route_info.route_result_row_ids.shape == (5, 3, 1)
+    assert route_info.diagnostics["route_output_rows_per_node"] == 1
+    assert route_info.diagnostics["route_output_rows_per_token"] == 3
+    assert route_info.diagnostics["route_output_contributes"] is True
 
 
 def test_route_diagnostics_are_consistent_with_route_tensors() -> None:
@@ -173,10 +196,11 @@ def test_route_diagnostics_are_consistent_with_route_tensors() -> None:
     assert diagnostics["leaf_rows"] == layer.leaf_rows
     assert diagnostics["max_visited_route_rows_per_token"] == layer.depth * layer.route_rows
     assert diagnostics["max_route_output_rows_per_token"] == layer.depth * layer.route_result_rows
-    assert diagnostics["route_output_rows_per_token"] == 3
+    assert diagnostics["route_output_rows_per_node"] == 2
+    assert diagnostics["route_output_rows_per_token"] == 6
     assert active_rows.shape == (2, 4)
     assert active_rows.dtype == torch.long
-    assert torch.equal(active_rows, torch.full((2, 4), 25))
+    assert torch.equal(active_rows, torch.full((2, 4), 28))
     assert diagnostics["mean_active_rows_per_token"] == pytest.approx(
         float(active_rows.float().mean())
     )

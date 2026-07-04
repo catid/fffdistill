@@ -13,6 +13,7 @@ fff:
   route_rows_contribute: false
   route_row_role: routing_only
   route_rows_output_count: 0
+  route_rows_output_fraction: null
   activation: silu
   hard_routing: true
   train_temperature: 1.0
