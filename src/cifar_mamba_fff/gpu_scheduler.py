@@ -235,9 +235,12 @@ def build_dry_run_jobs(
     run_id: str | None = None,
     unavailable_slots: set[tuple[str, int]] | None = None,
     max_jobs: int | None = None,
+    seed_base: int = 1337,
 ) -> list[GpuJob]:
     if job_kind not in {"teacher_train", "teacher_hpo"}:
         raise ValueError("job_kind must be teacher_train or teacher_hpo")
+    if seed_base < 0:
+        raise ValueError("seed_base must be non-negative")
     unavailable_slots = unavailable_slots or set()
     jobs: list[GpuJob] = []
     for idx, (machine, gpu_id) in enumerate(enumerate_slots(machines)):
@@ -245,7 +248,7 @@ def build_dry_run_jobs(
             continue
         if max_jobs is not None and len(jobs) >= max_jobs:
             break
-        seed = 1337 + idx
+        seed = seed_base + idx
         default_root = Path("outputs/scheduler_hpo" if job_kind == "teacher_hpo" else "outputs/scheduler_smoke")
         resolved_output_root = output_root or default_root
         if run_id is not None:
@@ -291,6 +294,7 @@ def build_dry_run_jobs(
                     "cuda_visible_devices": str(gpu_id),
                     "python_bin": python_bin,
                     "output_dir": str(output_dir),
+                    "seed_base": seed_base,
                 },
             )
         )
@@ -728,6 +732,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--teacher-hpo-config", default="configs/teacher_hpo.yaml")
     parser.add_argument("--hpo-trials-per-job", type=int, default=1)
     parser.add_argument("--hpo-max-attempts-per-job", type=int, default=32)
+    parser.add_argument(
+        "--seed-base",
+        type=int,
+        default=1337,
+        help="Base seed added to enumerated slot index. Change this for each HPO wave.",
+    )
     parser.add_argument("--max-train-steps", type=int, default=None)
     parser.add_argument("--max-val-steps", type=int, default=None)
     parser.add_argument("--prune-min-value", type=float, default=None)
@@ -815,6 +825,7 @@ def main(argv: list[str] | None = None) -> int:
         run_id=args.run_id,
         unavailable_slots=unavailable_slots,
         max_jobs=args.max_jobs,
+        seed_base=args.seed_base,
     )
     write_queue(Path(args.queue_out), jobs)
     print(f"recorded {len(jobs)} GPU slots in {args.queue_out}")

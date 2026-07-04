@@ -114,6 +114,7 @@ def test_scheduler_dry_run_jobs_bind_gpu_venv_python_and_output_dir(tmp_path) ->
         assert job.metadata["cuda_device_order"] == "PCI_BUS_ID"
         assert job.metadata["cuda_visible_devices"] == str(gpu_id)
         assert job.metadata["output_dir"] == str(expected_output_dir)
+        assert job.metadata["seed_base"] == 1337
 
     queue_path = tmp_path / "job_queue.jsonl"
     write_queue(queue_path, jobs)
@@ -182,7 +183,35 @@ def test_scheduler_hpo_jobs_bind_gpu_seed_and_unique_output_dir() -> None:
         assert f"--seed {1337 + gpu_id}" in job.command
         assert f"--output-dir {expected_output_dir}" in job.command
         assert job.metadata["job_kind"] == "teacher_hpo"
+        assert job.metadata["seed_base"] == 1337
     assert len({job.output_dir for job in jobs}) == len(jobs)
+    assert len({job.seed for job in jobs}) == len(jobs)
+
+
+def test_scheduler_custom_seed_base_changes_hpo_job_seeds() -> None:
+    machines = [
+        MachineSpec(
+            name="work",
+            host="localhost",
+            gpus=2,
+            role="local",
+            workdir="/tmp/repo",
+        )
+    ]
+
+    jobs = build_dry_run_jobs(
+        machines,
+        quick_smoke=True,
+        dry_run=True,
+        job_kind="teacher_hpo",
+        run_id="smoke-002",
+        seed_base=9000,
+    )
+
+    assert [job.seed for job in jobs] == [9000, 9001]
+    assert "--seed 9000" in jobs[0].command
+    assert "--seed 9001" in jobs[1].command
+    assert all(job.metadata["seed_base"] == 9000 for job in jobs)
     assert len({job.seed for job in jobs}) == len(jobs)
 
 
@@ -296,6 +325,8 @@ def test_scheduler_main_threads_hpo_args_and_requires_cifar_preflight(
             "1",
             "--hpo-max-attempts-per-job",
             "5",
+            "--seed-base",
+            "8123",
             "--max-train-steps",
             "1",
             "--max-val-steps",
@@ -312,6 +343,9 @@ def test_scheduler_main_threads_hpo_args_and_requires_cifar_preflight(
         for line in (tmp_path / "queue.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     assert queue_records[0]["output_dir"] == "outputs/scheduler_hpo/hpo-smoke/work/0"
+    assert "--seed 8123" in queue_records[0]["command"]
+    assert queue_records[0]["seed"] == 8123
+    assert queue_records[0]["metadata"]["seed_base"] == 8123
     assert "--max-attempts 5" in queue_records[0]["command"]
     assert "--max-train-steps 1" in queue_records[0]["command"]
     assert "--max-val-steps 1" in queue_records[0]["command"]
