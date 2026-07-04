@@ -29,11 +29,12 @@ FAIRNESS_COLUMNS = [
 ]
 EXPECTED_ROW_COUNTS = {
     "t13_stage_f_layerwise_summary.csv": 64,
+    "t13_stage_f_train_eval_layerwise_summary.csv": 64,
     "t20_route_row_output_ablation_results.csv": 7,
     "t19_optimizer_ablation_summary.csv": 6,
     "t14_finetune_summary.csv": 8,
 }
-EXPECTED_FAIRNESS_ROWS = 28
+EXPECTED_FAIRNESS_ROWS = 29
 EXPECTED_TEST_ACCESS_ROWS = 2
 FFF_BANK_OPTIMIZER_CAVEAT = (
     "Current Muon grouping sends only hidden 2D matrix parameters to Muon; "
@@ -155,10 +156,10 @@ def _stage_f_row(docs_dir: Path) -> dict[str, object]:
     path = docs_dir / "t13_stage_f_layerwise_summary.csv"
     rows = _read_csv(path, expected_rows=EXPECTED_ROW_COUNTS[path.name])
     return _row(
-        method="assembled_fff_stage_f_layerwise",
+        method="assembled_fff_stage_f_validation_capture_legacy",
         evidence=str(path),
-        split="validation_layerwise",
-        status="completed",
+        split="legacy_validation_capture_layerwise",
+        status="superseded_leakage_limited",
         test_accessed=_bool_text(not _all_false(rows)),
         distillation_nmse=_mean(rows, "final_nmse"),
         cosine_similarity=_mean(rows, "final_cosine_similarity"),
@@ -173,7 +174,34 @@ def _stage_f_row(docs_dir: Path) -> dict[str, object]:
         ),
         fairness_note=(
             "Layerwise MSE evidence only; not an end-to-end student accuracy comparison. "
-            "Rerun with train_eval capture before final FFF quality claims."
+            "Superseded for corrected layerwise evidence by the train_eval held-out row."
+        ),
+    )
+
+
+def _stage_f_train_eval_row(docs_dir: Path) -> dict[str, object]:
+    path = docs_dir / "t13_stage_f_train_eval_layerwise_summary.csv"
+    rows = _read_csv(path, expected_rows=EXPECTED_ROW_COUNTS[path.name])
+    return _row(
+        method="assembled_fff_stage_f_train_eval_layerwise",
+        evidence=str(path),
+        split="train_eval_layerwise_holdout",
+        status="completed",
+        test_accessed=_bool_text(not _all_false(rows)),
+        distillation_nmse=_mean(rows, "final_normalized_mse"),
+        cosine_similarity=_mean(rows, "final_cosine_similarity"),
+        tokens_per_second=_mean(rows, "tokens_per_second"),
+        active_rows_per_token=_mean(rows, "active_rows_per_token"),
+        stored_rows=_mean(rows, "stored_rows"),
+        train_steps="64 layers x short layerwise budgets",
+        seeds="12 launch seeds, one shard per GPU slot",
+        budget=(
+            "Corrected train_eval activation capture, 2 sample batches per layer shard, "
+            "10 percent held-out token metric split."
+        ),
+        fairness_note=(
+            "Layerwise held-out token MSE evidence from CIFAR-10 train images with eval/no-augmentation "
+            "transform; not an end-to-end student accuracy comparison and not CIFAR-10 final test."
         ),
     )
 
@@ -323,7 +351,7 @@ def _baseline_placeholder_rows(docs_dir: Path) -> list[dict[str, object]]:
 
 
 def build_fairness_rows(docs_dir: Path = Path("docs")) -> list[dict[str, object]]:
-    rows = [_teacher_row(docs_dir), _stage_f_row(docs_dir)]
+    rows = [_teacher_row(docs_dir), _stage_f_train_eval_row(docs_dir), _stage_f_row(docs_dir)]
     rows.extend(_t20_rows(docs_dir))
     rows.extend(_t19_rows(docs_dir))
     rows.extend(_t14_rows(docs_dir))
@@ -394,6 +422,8 @@ def write_fairness_markdown(path: Path, rows: Sequence[Mapping[str, object]]) ->
             "- Route-output ablations use one representative layer with reported active/stored row budgets.",
             "- Stage F layerwise rows are legacy validation-capture MSE/cosine/throughput evidence, "
             "not clean held-out validation metrics and not final accuracy.",
+            "- Stage F train-eval rows use CIFAR-10 train images with eval/no-augmentation transforms "
+            "and held-out token metrics; they are clean layerwise distillation evidence, not final accuracy.",
             "- Required baselines without committed metrics are explicitly marked `not_run`.",
             "",
         ]

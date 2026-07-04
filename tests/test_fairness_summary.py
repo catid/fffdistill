@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from cifar_mamba_fff.fairness import (
+    EXPECTED_FAIRNESS_ROWS,
     build_fairness_rows,
     validate_fairness_rows,
     write_fairness_reports,
@@ -54,9 +55,27 @@ def test_build_fairness_rows_from_committed_docs_contains_required_placeholders(
     rows = build_fairness_rows(Path("docs"))
     by_method = {str(row["method"]): row for row in rows}
 
+    assert len(rows) == EXPECTED_FAIRNESS_ROWS == 29
     assert by_method["dense_mamba3_teacher"]["split"] == "final_test"
     assert by_method["official_fastfeedforward_fff"]["status"] == "shape_compatible_forward_tested"
     assert by_method["dense_teacher_copied_student"]["status"] == "not_run"
+    assert (
+        by_method["assembled_fff_stage_f_validation_capture_legacy"]["split"]
+        == "legacy_validation_capture_layerwise"
+    )
+    assert (
+        by_method["assembled_fff_stage_f_validation_capture_legacy"]["status"]
+        == "superseded_leakage_limited"
+    )
+    assert (
+        by_method["assembled_fff_stage_f_train_eval_layerwise"]["split"]
+        == "train_eval_layerwise_holdout"
+    )
+    assert (
+        by_method["assembled_fff_stage_f_train_eval_layerwise"]["evidence"]
+        == "docs/t13_stage_f_train_eval_layerwise_summary.csv"
+    )
+    assert by_method["assembled_fff_stage_f_train_eval_layerwise"]["test_accessed"] == "false"
     assert by_method["optimizer_official_muon_cosine"]["seeds"] == "7331"
     assert any(str(row["method"]).startswith("route_output_") for row in rows)
     assert any(str(row["method"]).startswith("optimizer_") for row in rows)

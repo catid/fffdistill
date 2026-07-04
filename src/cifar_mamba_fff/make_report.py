@@ -37,6 +37,9 @@ REQUIRED_SNIPPETS = (
     "https://arxiv.org/pdf/2106.06199",
     "Stage C compared seven router recipes",
     "Stage D swept 10 one-layer architecture/recipe trials",
+    "Legacy validation-capture Stage F",
+    "docs/t13_stage_f_train_eval_layerwise_summary.csv",
+    "Corrected Stage F train-eval rerun",
     "test_accessed=true",
 )
 
@@ -111,6 +114,18 @@ def _require_all_false(rows: Sequence[Mapping[str, object]], key: str, *, source
     bad_rows = [row for row in rows if _bool(row.get(key), field=key, source=source)]
     if bad_rows:
         raise ValueError(f"{source} expected all {key} values to be false")
+
+
+def _require_all_equal(
+    rows: Sequence[Mapping[str, object]],
+    key: str,
+    expected: str,
+    *,
+    source: Path,
+) -> None:
+    bad_values = sorted({str(row.get(key, "")) for row in rows if str(row.get(key, "")) != expected})
+    if bad_values:
+        raise ValueError(f"{source} expected all {key} values to be {expected!r}, found {bad_values}")
 
 
 def _fmt_float(value: float, digits: int, *, comma: bool = False) -> str:
@@ -370,6 +385,94 @@ def _validate_stage_f_metrics(report_text: str, docs_dir: Path) -> None:
         raise ValueError(f"{source} has a LocoProp-S refit that increased local MSE")
 
 
+def _validate_stage_f_train_eval_metrics(report_text: str, docs_dir: Path) -> None:
+    source = docs_dir / "t13_stage_f_train_eval_layerwise_summary.csv"
+    rows = _read_csv(source, expected_rows=64)
+    _require_all_false(rows, "test_accessed", source=source)
+    _require_all_equal(rows, "sample_split", "train_eval", source=source)
+    _require_all_equal(rows, "metric_split", "holdout", source=source)
+    _require_all_equal(rows, "scheduler_status", "succeeded", source=source)
+    _require_all_equal(rows, "trial_status", "succeeded", source=source)
+    eligible_indices = sorted(int(_float(row, "eligible_index", source=source)) for row in rows)
+    if eligible_indices != list(range(64)):
+        raise ValueError(f"{source} does not cover eligible indices 0..63 exactly once")
+    for row in rows:
+        fit_tokens = _float(row, "fit_tokens", source=source)
+        metric_tokens = _float(row, "metric_tokens", source=source)
+        if not (fit_tokens > metric_tokens > 0):
+            raise ValueError(f"{source} has invalid fit/metric token split")
+    _expect_metric(
+        report_text,
+        r"Corrected Stage F train-eval rerun distilled all ([0-9]+) eligible Linear layers",
+        str(len(rows)),
+        label="corrected Stage F eligible layer count",
+        source=source,
+    )
+    _expect_metric(
+        report_text,
+        r"Corrected mean final normalized MSE: `([^`]+)`",
+        _fmt_float(_mean_float(rows, "final_normalized_mse", source=source), 6),
+        label="corrected Stage F mean final normalized MSE",
+        source=source,
+    )
+    _expect_metric(
+        report_text,
+        r"Corrected median final normalized MSE: `([^`]+)`",
+        _fmt_float(_median_float(rows, "final_normalized_mse", source=source), 6),
+        label="corrected Stage F median final normalized MSE",
+        source=source,
+    )
+    _expect_metric(
+        report_text,
+        r"Corrected mean cosine similarity: `([^`]+)`",
+        _fmt_float(_mean_float(rows, "final_cosine_similarity", source=source), 6),
+        label="corrected Stage F mean cosine similarity",
+        source=source,
+    )
+    _expect_metric(
+        report_text,
+        r"Corrected mean throughput: `([^`]+)` tokens/s",
+        _fmt_float(_mean_float(rows, "tokens_per_second", source=source), 1, comma=True),
+        label="corrected Stage F mean throughput",
+        source=source,
+    )
+    _expect_metric(
+        report_text,
+        r"Corrected mean dead leaves: `([^`]+)`",
+        _fmt_float(_mean_float(rows, "dead_leaves", source=source), 2),
+        label="corrected Stage F mean dead leaves",
+        source=source,
+    )
+    _expect_metric(
+        report_text,
+        r"Corrected mean local MSE before refit: `([^`]+)`",
+        _fmt_float(_mean_float(rows, "locoprop_mse_before", source=source), 6),
+        label="corrected Stage F mean LocoProp-S MSE before",
+        source=source,
+    )
+    _expect_metric(
+        report_text,
+        r"corrected after refit: `([^`]+)`",
+        _fmt_float(_mean_float(rows, "locoprop_mse_after", source=source), 6),
+        label="corrected Stage F mean LocoProp-S MSE after",
+        source=source,
+    )
+    worst = max(rows, key=lambda row: _float(row, "final_normalized_mse", source=source))
+    _expect_metric(
+        report_text,
+        r"corrected worst final NMSE was `([^`]+)`",
+        _fmt_float(_float(worst, "final_normalized_mse", source=source), 6),
+        label="corrected Stage F worst final NMSE",
+        source=source,
+    )
+    nonincreasing = all(
+        _bool(row.get("locoprop_nonincreasing"), field="locoprop_nonincreasing", source=source)
+        for row in rows
+    )
+    if not nonincreasing:
+        raise ValueError(f"{source} has a LocoProp-S refit that increased local MSE")
+
+
 def _validate_t20_metrics(report_text: str, docs_dir: Path) -> None:
     source = docs_dir / "t20_route_row_output_ablation_results.csv"
     rows = _read_csv(source, expected_rows=7)
@@ -551,6 +654,7 @@ def _validate_source_metrics(
     _validate_stage_c_metrics(report_text, docs_dir)
     _validate_stage_d_metrics(report_text, docs_dir)
     _validate_stage_f_metrics(report_text, docs_dir)
+    _validate_stage_f_train_eval_metrics(report_text, docs_dir)
     _validate_t20_metrics(report_text, docs_dir)
     _validate_t14_metrics(report_text, docs_dir)
     _validate_t15_metrics(report_text, fairness_rows, source=docs_dir / "t15_fairness_summary.csv")

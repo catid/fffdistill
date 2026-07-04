@@ -7,7 +7,8 @@ final-test, and full final-test rows are deliberately separated.
 | Method | Split | Status | Test accessed | Val acc | Final/partial test acc | NMSE | Tokens/s | Budget note |
 | --- | --- | --- | --- | ---: | ---: | ---: | ---: | --- |
 | dense_mamba3_teacher | final_test | selected_full_test | true | 0.941800 | 0.939900 |  |  | Full teacher HPO selection followed by one full CIFAR-10 test evaluation. |
-| assembled_fff_stage_f_layerwise | validation_layerwise | completed | false |  |  | 0.288707 | 42752.755801 | Legacy validation-split layerwise distillation, 2 sample batches per layer shard; leakage-limited for layerwise validation metrics. |
+| assembled_fff_stage_f_train_eval_layerwise | train_eval_layerwise_holdout | completed | false |  |  | 0.292891 | 42561.999688 | Corrected train_eval activation capture, 2 sample batches per layer shard, 10 percent held-out token metric split. |
+| assembled_fff_stage_f_validation_capture_legacy | legacy_validation_capture_layerwise | superseded_leakage_limited | false |  |  | 0.288707 | 42752.755801 | Legacy validation-split layerwise distillation, 2 sample batches per layer shard; leakage-limited for layerwise validation metrics. |
 | route_output_none_routing_only | validation_single_layer | completed | false | 0.940400 |  | 0.300582 | 36521.263064 | Matched representative layer and token budget; active/stored rows are reported per route-output setting. |
 | route_output_shared_one_per_node | validation_single_layer | completed | false | 0.940600 |  | 0.293318 | 29078.716514 | Matched representative layer and token budget; active/stored rows are reported per route-output setting. |
 | route_output_shared_all | validation_single_layer | completed | false | 0.940400 |  | 0.287133 | 28094.089306 | Matched representative layer and token budget; active/stored rows are reported per route-output setting. |
@@ -42,4 +43,5 @@ final-test, and full final-test rows are deliberately separated.
 - Current Muon grouping sends only hidden 2D matrix parameters to Muon; assembled FFF replacement banks such as route_weight, route_output, route_result_weight, route_result_output, leaf_weight, and leaf_output are 3D tensors and use AdamW fallback unless a future tested bank-specific Muon grouping is implemented. Any assembled-student optimizer conclusion must state whether replacement banks used AdamW fallback or a tested Muon bank grouping.
 - Route-output ablations use one representative layer with reported active/stored row budgets.
 - Stage F layerwise rows are legacy validation-capture MSE/cosine/throughput evidence, not clean held-out validation metrics and not final accuracy.
+- Stage F train-eval rows use CIFAR-10 train images with eval/no-augmentation transforms and held-out token metrics; they are clean layerwise distillation evidence, not final accuracy.
 - Required baselines without committed metrics are explicitly marked `not_run`.

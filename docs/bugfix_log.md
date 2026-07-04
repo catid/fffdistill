@@ -203,3 +203,21 @@ T18 adversarial-review findings and closure evidence are recorded at the end of 
   `sample_split=train_eval` and `test_accessed=false`; 72 layer records were summarized in
   `docs/hard_outproj_router_balance_train_eval_summary.md` and
   `docs/hard_outproj_router_balance_train_eval_results.csv`.
+
+## Corrected Stage F Train-Eval Rerun
+
+- Corrected full Stage F rerun `distill_stage_f_train_eval_shards_20260704_abd09d5`
+  used all 12 GPUs across `work`, `ripper`, `foureyes`, and `ai` at commit
+  `abd09d5537753f870e247aefaed01fe8091b483d`.
+- All 12 one-GPU shard jobs succeeded. The run covers eligible Linear indices `0..63`
+  exactly once, uses `sample_split=train_eval` from CIFAR-10 train images with
+  eval/no-augmentation transforms, records `metric_split=holdout`, and keeps
+  `test_accessed=false` for every layer record.
+- The committed corrected summaries are
+  `docs/t13_stage_f_train_eval_layerwise_summary.md` and
+  `docs/t13_stage_f_train_eval_layerwise_summary.csv`: 64 rows, mean held-out NMSE
+  `0.292891`, median NMSE `0.186459`, mean cosine `0.809442`, mean throughput
+  `42562.0` tokens/s, and mean dead leaves `8.44`.
+- This addresses the `fff-0om` corrected layerwise-evidence gap. It does not establish
+  full Stage H FFF-student final CIFAR-10 accuracy; Stage H must still assemble from the
+  corrected artifacts, select by validation metrics, and only then access CIFAR-10 test.

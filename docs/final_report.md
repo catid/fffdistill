@@ -79,9 +79,11 @@ Grouped-vs-naive correctness and profiling:
 
 LocoProp-S:
 
-- Stage F LocoProp-S succeeded for every eligible layer.
+- Legacy validation-capture Stage F LocoProp-S succeeded for every eligible layer.
 - Mean local MSE before refit: `4.549086`; after refit: `1.289520`.
-- Every recorded refit decreased or preserved local MSE.
+- Corrected train-eval Stage F LocoProp-S also succeeded for every eligible layer.
+- Corrected mean local MSE before refit: `5.707709`; corrected after refit: `1.552447`.
+- Every recorded refit decreased or preserved local MSE in both Stage F summaries.
 
 Detailed profiling: `docs/t16_smoke_profile_summary.md`.
 
@@ -96,7 +98,7 @@ concrete row gates. Stage F selected the working short-budget recipe:
 - `route_rows=1`, `route_result_rows=2`, `route_rows_output_count=all`,
   `route_rows_output_fraction=0.5`.
 - Mean route entropy in Stage F CSV is `0.0` for the hard routed selected recipe.
-- Mean dead leaves: `16.48`.
+- Mean dead leaves: legacy validation-capture `16.48`; corrected train-eval `8.44`.
 
 This is not a final claim that vanilla STE is best. Utility/EM/expert-choice methods
 are implemented and smoke-tested, but the full fair multi-seed router comparison
@@ -152,20 +154,41 @@ Detailed route-output report: `docs/t20_route_row_output_ablation.md`.
 
 ## Layerwise Distillation
 
-Stage F distilled all 64 eligible Linear layers once each across 10 one-GPU jobs on
+Legacy validation-capture Stage F distilled all 64 eligible Linear layers once each across 10 one-GPU jobs on
 `work`, `ripper`, `foureyes`, and `ai`.
 
 - Data split: CIFAR-10 validation split sampling, 2 batches per shard.
-- T18 provenance caveat: these Stage F artifacts fit layer replacements on validation-split images and report metrics from that capture stream. This is not CIFAR-10 test leakage, but it is train-on-validation leakage for layerwise distillation metrics. The corrected code defaults distillation/HPO sampling to `train_eval`, which uses train-split images with eval/no-augmentation transforms, and computes deterministic held-out token metrics. Stage F must be rerun in that mode before final full-student FFF quality claims.
+- T18 provenance caveat: these legacy Stage F artifacts fit layer replacements on validation-split images and report metrics from that capture stream. This is not CIFAR-10 test leakage, but it is train-on-validation leakage for layerwise distillation metrics. They remain committed as historical evidence only.
 - Test access: false for all records.
 - Mean final normalized MSE: `0.288707`.
 - Median final normalized MSE: `0.188059`.
 - Mean cosine similarity: `0.807726`.
 - Mean throughput: `42,752.8` tokens/s.
+- Mean dead leaves: `16.48`.
 - Hardest layers are middle/late `out_proj` modules; worst final NMSE was `0.683897`.
 
-Detailed layer table: `docs/t13_stage_f_layerwise_summary.md` and
+Detailed legacy layer table: `docs/t13_stage_f_layerwise_summary.md` and
 `docs/t13_stage_f_layerwise_summary.csv`.
+
+Corrected Stage F train-eval rerun distilled all 64 eligible Linear layers once each
+across 12 one-GPU shard jobs on `work`, `ripper`, `foureyes`, and `ai`.
+
+- Run id: `distill_stage_f_train_eval_shards_20260704_abd09d5` at commit
+  `abd09d5537753f870e247aefaed01fe8091b483d`.
+- Data split: `train_eval` activation capture from CIFAR-10 train images with
+  eval/no-augmentation transforms, 2 sample batches per shard, and `metric_split=holdout`.
+- Token split: 29,491 fit tokens and 3,277 held-out metric tokens per layer record.
+- Test access: false for all records.
+- Corrected mean final normalized MSE: `0.292891`.
+- Corrected median final normalized MSE: `0.186459`.
+- Corrected mean cosine similarity: `0.809442`.
+- Corrected mean throughput: `42,562.0` tokens/s.
+- Corrected mean dead leaves: `8.44`.
+- The corrected worst final NMSE was `0.702147` on
+  `blocks.11.forward_block.mixer.mixer.out_proj`.
+
+Detailed corrected layer table: `docs/t13_stage_f_train_eval_layerwise_summary.md` and
+`docs/t13_stage_f_train_eval_layerwise_summary.csv`.
 
 Corrected hard-layer train-eval follow-up:
 
@@ -182,8 +205,7 @@ Corrected hard-layer train-eval follow-up:
 - Fastest case: `baseline_vanilla_none`, `44,108.7` tokens/s, with mean NMSE `0.688740`.
 
 This sweep mitigates the hard-layer recipe-selection gap and documents the quality,
-dead-leaf, and throughput tradeoff. It is not a corrected full 64-layer Stage F rerun and
-not a final student accuracy claim. Detailed artifacts:
+dead-leaf, and throughput tradeoff. It is not a final student accuracy claim. Detailed artifacts:
 `docs/hard_outproj_router_balance_train_eval_summary.md` and
 `docs/hard_outproj_router_balance_train_eval_results.csv`.
 
@@ -191,7 +213,9 @@ not a final student accuracy claim. Detailed artifacts:
 
 T14 implemented the assembled FFF student fine-tuning path:
 
-- All 64 eligible linears can be replaced from Stage F artifacts.
+- All 64 eligible linears can be replaced from Stage F artifacts. The existing T14 smoke
+  evidence used the legacy validation-capture Stage F artifacts; Stage H quality runs
+  should assemble from the corrected train-eval Stage F artifacts.
 - BF16 CUDA official Mamba-3 KD forward/backward/optimizer step passes.
 - Optimizer: official Muon plus AdamW fallback. Under the current audited split,
   hidden 2D matrix parameters use Muon, while biases, excluded names, and non-2D
@@ -229,7 +253,7 @@ T15 generated fairness tables from committed evidence only:
 - `docs/t15_fairness_summary.md`
 - `docs/t15_fairness_summary.csv`
 
-The table contains 28 rows and enforces that `test_accessed=true` appears only on
+The table contains 29 rows and enforces that `test_accessed=true` appears only on
 `final_test` or `partial_final_test` rows. Exactly 2 fairness rows have
 `test_accessed=true`. It includes explicit `not_run` rows for
 dense-copy student, shared-only rows baseline, matched low-rank Linear, and matched
@@ -257,10 +281,14 @@ Plot-ready CSV inputs are committed:
 
 - Accuracy vs active rows: `docs/t20_route_row_output_ablation_results.csv`.
 - Accuracy vs throughput: `docs/t20_route_row_output_ablation_results.csv`.
-- MSE vs active rows: `docs/t20_route_row_output_ablation_results.csv` and `docs/t13_stage_f_layerwise_summary.csv`.
+- MSE vs active rows: `docs/t20_route_row_output_ablation_results.csv`,
+  `docs/t13_stage_f_layerwise_summary.csv`, and
+  `docs/t13_stage_f_train_eval_layerwise_summary.csv`.
 - Dead leaves vs balance/recipe: `docs/t13_stage_d_arch_summary.csv`.
 - Route entropy vs accuracy: `docs/t20_route_row_output_ablation_results.csv`.
-- STE/route method vs MSE/throughput: `docs/t13_stage_c_router_summary.csv`, `docs/t13_stage_d_arch_summary.csv`, and `docs/t13_stage_f_layerwise_summary.csv`.
+- STE/route method vs MSE/throughput: `docs/t13_stage_c_router_summary.csv`,
+  `docs/t13_stage_d_arch_summary.csv`, `docs/t13_stage_f_layerwise_summary.csv`,
+  and `docs/t13_stage_f_train_eval_layerwise_summary.csv`.
 
 Rendered plots are committed under `docs/pareto_plots/`:
 
@@ -291,13 +319,15 @@ Within the evidence that exists:
 - Best teacher quality: selected official Mamba-3 dense teacher, `0.9399` final test accuracy.
 - Best single-layer route-output MSE: `split_all`, final NMSE `0.284449`.
 - Best single-layer route-output speed among contributing cases: `split_half_fraction`, `37399.5` tokens/s.
-- Best Stage F layerwise recipe used for assembly: `vanilla_ste + split_routing_output + LocoProp-S`, because it completed all 64 eligible layers.
+- Best corrected Stage F layerwise recipe available for Stage H assembly:
+  `vanilla_ste + split_routing_output + LocoProp-S`, because it completed all 64
+  eligible layers with train-eval capture and held-out token metrics.
 - Best overall Pareto FFF student: not established. Full multi-seed end-to-end FFF accuracy is not available.
 
 ## Limitations
 
 - Full FFF-replaced student final CIFAR-10 accuracy is not established; only a one-batch partial selected-checkpoint test artifact exists.
-- Existing Stage F layerwise FFF artifacts used validation-split activation capture and are leakage-limited for layerwise validation metrics. Rerun Stage F with `train_eval` capture and held-out token metrics before any Stage H full-student FFF claim.
+- Legacy Stage F layerwise FFF artifacts used validation-split activation capture and are leakage-limited for layerwise validation metrics. Corrected train-eval Stage F layerwise evidence is now committed, but no full-student Stage H quality claim has been rerun from those artifacts.
 - Several required baselines are not run: dense teacher-copied student, shared-only rows baseline, matched low-rank Linear, matched smaller dense Linear.
 - Utility-targeted, hard-EM, expert-choice, and ST-Gumbel router recipes are implemented but not fully compared under equal final budgets.
 - Grouped FFF is much faster than naive but still far slower than dense Linear in current PyTorch implementation.

@@ -174,7 +174,11 @@ def collect_distill_hpo_rows(collected_root: Path) -> list[dict[str, Any]]:
                     "gpu": gpu,
                     "seed": hpo_summary.get("seed", status.get("seed")),
                     "grid_offset": hpo_summary.get("grid_offset"),
-                    "case_name": overrides.get("case_name"),
+                    "case_name": (
+                        overrides.get("case_name")
+                        or hpo_summary.get("study_name")
+                        or f"grid_offset_{hpo_summary.get('grid_offset')}"
+                    ),
                     "router_recipe": overrides.get("router_recipe"),
                     "balance_recipe": overrides.get("balance_recipe"),
                     "balance_coeff": overrides.get("balance_coeff"),
@@ -278,7 +282,13 @@ def _aggregate_by_case(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]
     return sorted(aggregates, key=lambda row: float(row["mean_nmse"] or 1.0e9))
 
 
-def write_markdown(path: Path, rows: Sequence[Mapping[str, Any]], *, collected_root: Path) -> None:
+def write_markdown(
+    path: Path,
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    collected_root: Path,
+    title: str = "Distill HPO Summary",
+) -> None:
     if not rows:
         raise ValueError("cannot write an empty distill HPO summary")
     case_rows = _aggregate_by_case(rows)
@@ -316,7 +326,7 @@ def write_markdown(path: Path, rows: Sequence[Mapping[str, Any]], *, collected_r
     sample_splits = sorted({str(row.get("sample_split")) for row in rows})
     machines = sorted({f"{row.get('machine')}:{row.get('gpu')}" for row in rows})
     content = [
-        "# Hard Out-Projection Router/Balance Train-Eval Sweep",
+        f"# {title}",
         "",
         f"- Run id: `{collected_root.name}`",
         f"- Collected root: `{collected_root}`",
@@ -402,7 +412,7 @@ def write_markdown(path: Path, rows: Sequence[Mapping[str, Any]], *, collected_r
                     quality_pick["mean_nmse"],
                     quality_pick["mean_dead_leaves"],
                     quality_pick["mean_tokens_s"],
-                    "lowest mean held-out NMSE in this short hard-layer sweep",
+                    "lowest mean held-out NMSE in this run",
                 ],
                 [
                     "balanced candidate",
@@ -460,8 +470,8 @@ def write_markdown(path: Path, rows: Sequence[Mapping[str, Any]], *, collected_r
         "## Interpretation",
         "",
         "- The previous strict-config failure is resolved: every relaunched case reached `succeeded` and all records preserve `test_accessed=false`.",
-        "- The sweep covers the six hard middle/late `out_proj` layers identified by the Stage F validation-capture audit.",
-        "- Balance-enabled cases did not automatically eliminate route collapse in this short budget; dead-leaf and occupancy metrics should be used alongside NMSE before selecting a full-student recipe.",
+        "- The summary covers the layer and recipe records collected in this distillation-HPO run.",
+        "- Dead-leaf and occupancy metrics should be used alongside NMSE before selecting a full-student recipe.",
         "- These results feed corrected Stage F train_eval selection and equal-budget router comparison. They do not close final Stage H because no full-student final CIFAR-10 test evaluation is included here.",
         "",
     ]
@@ -474,13 +484,14 @@ def main() -> int:
     parser.add_argument("--collected-root", required=True)
     parser.add_argument("--csv-out", required=True)
     parser.add_argument("--markdown-out", required=True)
+    parser.add_argument("--title", default="Distill HPO Summary")
     args = parser.parse_args()
     collected_root = Path(args.collected_root)
     rows = collect_distill_hpo_rows(collected_root)
     if not rows:
         raise RuntimeError(f"no distill HPO rows found under {collected_root}")
     write_csv(Path(args.csv_out), rows)
-    write_markdown(Path(args.markdown_out), rows, collected_root=collected_root)
+    write_markdown(Path(args.markdown_out), rows, collected_root=collected_root, title=args.title)
     print(f"wrote {len(rows)} rows from {collected_root}")
     return 0
 

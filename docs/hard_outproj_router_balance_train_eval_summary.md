@@ -42,7 +42,7 @@ These are train-split activation-capture results using eval/no-augmentation tran
 
 | Use | Case | Mean NMSE | Mean dead leaves | Mean tokens/s | Rationale |
 | --- | --- | --- | --- | --- | --- |
-| best quality | vanilla_depth_6 | 0.681258 | 8.500000 | 22819.160558 | lowest mean held-out NMSE in this short hard-layer sweep |
+| best quality | vanilla_depth_6 | 0.681258 | 8.500000 | 22819.160558 | lowest mean held-out NMSE in this run |
 | balanced candidate | expert_choice_split_minleaf | 0.685069 | 0.500000 | 26775.353756 | lowest dead leaves within +0.01 mean NMSE of the quality pick |
 | fastest | baseline_vanilla_none | 0.688740 | 1.166667 | 44108.737110 | highest measured layer-distillation tokens/s |
 | lowest dead leaves | st_gumbel_split_minleaf | 0.697482 | 0.333333 | 28119.902613 | lowest mean dead leaves regardless of quality drop |
@@ -67,6 +67,6 @@ These are train-split activation-capture results using eval/no-augmentation tran
 ## Interpretation
 
 - The previous strict-config failure is resolved: every relaunched case reached `succeeded` and all records preserve `test_accessed=false`.
-- The sweep covers the six hard middle/late `out_proj` layers identified by the Stage F validation-capture audit.
-- Balance-enabled cases did not automatically eliminate route collapse in this short budget; dead-leaf and occupancy metrics should be used alongside NMSE before selecting a full-student recipe.
+- The summary covers the layer and recipe records collected in this distillation-HPO run.
+- Dead-leaf and occupancy metrics should be used alongside NMSE before selecting a full-student recipe.
 - These results feed corrected Stage F train_eval selection and equal-budget router comparison. They do not close final Stage H because no full-student final CIFAR-10 test evaluation is included here.
