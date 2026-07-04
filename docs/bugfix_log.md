@@ -135,3 +135,10 @@ Further suspected bugs, fixes, tests, and residual risks will be appended during
 - Added strict selected-checkpoint student final evaluation in `cifar_mamba_fff.evaluate_student` plus `scripts/evaluate_student_final.sh`. The evaluator requires CUDA, requires checkpoint validation metrics, rebuilds the assembled FFF student, loads the selected checkpoint, records `test_accessed=true`, and distinguishes partial from full CIFAR-10 test metrics.
 - A partial test evaluation was run only after selecting the one-step HPO checkpoint by validation metrics: `outputs/t14_student_final_partial_autocast_fix_nobalance_qfalse_v2` reports `partial_test_evaluation=true`, `max_test_steps=1`, `test_accuracy_partial=0.3125`, and 64/64 FFF replacements. This is smoke/final-eval plumbing evidence, not a final quality claim.
 - No fake Mamba, alternate architecture, CPU path, smaller model, or optimizer fallback was used. Final CIFAR-10 test accuracy is still reserved for validation-selected checkpoints only.
+
+## T15 Fairness Table
+
+- Added `cifar_mamba_fff.fairness` and `scripts/make_fairness_summary.sh` to generate `docs/t15_fairness_summary.md` and `docs/t15_fairness_summary.csv` from committed evidence.
+- The generated table has 28 rows spanning the dense Mamba-3 teacher, Stage F layerwise FFF, T20 route-output ablations, T19 optimizer/schedule smoke ablations, T14 KD/evaluation artifacts, official `fastfeedforward.FFF` shape smoke, and explicit `not_run` placeholders for required baselines without committed metrics.
+- Fairness validation enforces that `test_accessed=true` appears only on `final_test` or `partial_final_test` rows. The two test-access rows are the selected teacher full final test and the selected student one-step partial final-test plumbing artifact.
+- T15 intentionally does not invent metrics for dense-copy, shared-only, low-rank, or smaller-dense baselines. They are listed as limitations instead of being treated as successful comparisons.
