@@ -56,8 +56,11 @@ def test_local_detached_job_files_and_script_construct_status_and_log_paths() ->
     assert 'bash -lc "$COMMAND" > "$OUT_DIR/stdout.log" 2> "$OUT_DIR/stderr.log"' in script_text
     assert "status.json.tmp" in script_text
     assert "os.replace(tmp_path, status_path)" in script_text
+    assert "heartbeat_loop &" in script_text
     assert "(out_dir / 'heartbeat.txt').write_text" in script_text
     assert 'final_status="succeeded"' in script_text
+    assert '[ "$rc" -ge 128 ]' in script_text
+    assert 'final_status="failed_infra"' in script_text
     assert 'final_status="failed_logic"' in script_text
 
 
@@ -166,6 +169,153 @@ def test_read_detached_job_status_treats_rc255_as_running(monkeypatch) -> None:
 
     assert record["status"] == JobStatus.RUNNING
     assert "ssh transient failure" in record["stderr"]
+    assert job.status == JobStatus.RUNNING
+
+
+def test_read_detached_job_status_treats_timeout_as_running(monkeypatch) -> None:
+    read_detached_job_status = _require_public_helper("read_detached_job_status")
+    job = GpuJob(
+        command="PYTHONPATH=src CUDA_VISIBLE_DEVICES=1 .venv/bin/python -m trainer",
+        output_dir=Path("outputs/scheduler_smoke/work/1"),
+        machine="work",
+        gpu_id=1,
+        status=JobStatus.RUNNING,
+    )
+    spec = MachineSpec(name="work", host="localhost", gpus=2, role="local", workdir="/repo")
+
+    monkeypatch.setattr(
+        gpu_scheduler,
+        "read_remote_text",
+        lambda spec_arg, path, *, timeout_s: {
+            "ok": False,
+            "returncode": None,
+            "stdout": "",
+            "stderr": "timed out after 7 seconds",
+        },
+    )
+
+    record = read_detached_job_status(spec, job, timeout_s=7)
+
+    assert record["status"] == JobStatus.RUNNING
+    assert "timed out" in record["stderr"]
+    assert job.status == JobStatus.RUNNING
+
+
+def test_read_detached_job_status_marks_dead_running_pid_failed_infra(monkeypatch) -> None:
+    read_detached_job_status = _require_public_helper("read_detached_job_status")
+    job = GpuJob(
+        command="PYTHONPATH=src CUDA_VISIBLE_DEVICES=1 .venv/bin/python -m trainer",
+        output_dir=Path("outputs/scheduler_smoke/work/1"),
+        machine="work",
+        gpu_id=1,
+        status=JobStatus.RUNNING,
+    )
+    spec = MachineSpec(name="work", host="localhost", gpus=2, role="local", workdir="/repo")
+
+    monkeypatch.setattr(
+        gpu_scheduler,
+        "read_remote_text",
+        lambda spec_arg, path, *, timeout_s: {
+            "ok": True,
+            "returncode": 0,
+            "stdout": json.dumps({"status": JobStatus.RUNNING.value, "returncode": None}),
+            "stderr": "",
+        },
+    )
+    monkeypatch.setattr(
+        gpu_scheduler,
+        "probe_detached_job_liveness",
+        lambda spec_arg, files, *, timeout_s: {
+            "ok": False,
+            "returncode": 45,
+            "stdout": "",
+            "stderr": "",
+        },
+    )
+
+    record = read_detached_job_status(spec, job, timeout_s=7)
+
+    assert record["status"] == JobStatus.FAILED_INFRA
+    assert record["returncode"] == 45
+    assert "pid is not live" in record["stderr"]
+    assert job.status == JobStatus.FAILED_INFRA
+
+
+def test_read_detached_job_status_keeps_running_on_liveness_timeout(monkeypatch) -> None:
+    read_detached_job_status = _require_public_helper("read_detached_job_status")
+    job = GpuJob(
+        command="PYTHONPATH=src CUDA_VISIBLE_DEVICES=1 .venv/bin/python -m trainer",
+        output_dir=Path("outputs/scheduler_smoke/work/1"),
+        machine="work",
+        gpu_id=1,
+        status=JobStatus.RUNNING,
+    )
+    spec = MachineSpec(name="work", host="localhost", gpus=2, role="local", workdir="/repo")
+
+    monkeypatch.setattr(
+        gpu_scheduler,
+        "read_remote_text",
+        lambda spec_arg, path, *, timeout_s: {
+            "ok": True,
+            "returncode": 0,
+            "stdout": json.dumps({"status": JobStatus.RUNNING.value, "returncode": None}),
+            "stderr": "",
+        },
+    )
+    monkeypatch.setattr(
+        gpu_scheduler,
+        "probe_detached_job_liveness",
+        lambda spec_arg, files, *, timeout_s: {
+            "ok": False,
+            "returncode": None,
+            "stdout": "",
+            "stderr": "timed out",
+        },
+    )
+
+    record = read_detached_job_status(spec, job, timeout_s=7)
+
+    assert record["status"] == JobStatus.RUNNING
+    assert "timed out" in record["stderr"]
+    assert job.status == JobStatus.RUNNING
+
+
+def test_read_detached_job_status_records_liveness_for_running_job(monkeypatch) -> None:
+    read_detached_job_status = _require_public_helper("read_detached_job_status")
+    job = GpuJob(
+        command="PYTHONPATH=src CUDA_VISIBLE_DEVICES=1 .venv/bin/python -m trainer",
+        output_dir=Path("outputs/scheduler_smoke/work/1"),
+        machine="work",
+        gpu_id=1,
+        status=JobStatus.RUNNING,
+    )
+    spec = MachineSpec(name="work", host="localhost", gpus=2, role="local", workdir="/repo")
+
+    monkeypatch.setattr(
+        gpu_scheduler,
+        "read_remote_text",
+        lambda spec_arg, path, *, timeout_s: {
+            "ok": True,
+            "returncode": 0,
+            "stdout": json.dumps({"status": JobStatus.RUNNING.value, "returncode": None}),
+            "stderr": "",
+        },
+    )
+    monkeypatch.setattr(
+        gpu_scheduler,
+        "probe_detached_job_liveness",
+        lambda spec_arg, files, *, timeout_s: {
+            "ok": True,
+            "returncode": 0,
+            "stdout": json.dumps({"pid": 123, "heartbeat_exists": True}),
+            "stderr": "",
+        },
+    )
+
+    record = read_detached_job_status(spec, job, timeout_s=7)
+
+    assert record["status"] == JobStatus.RUNNING
+    assert record["liveness"] == {"pid": 123, "heartbeat_exists": True}
     assert job.status == JobStatus.RUNNING
 
 

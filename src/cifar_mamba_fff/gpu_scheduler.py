@@ -415,13 +415,23 @@ def render_detached_launch_script(job: GpuJob) -> str:
             "(out_dir / 'heartbeat.txt').write_text(os.environ['UPDATED_AT'] + '\\n', encoding='utf-8')",
             "PY",
             "}",
+            "heartbeat_loop() {",
+            "  while true; do",
+            "    date -u +%Y-%m-%dT%H:%M:%SZ > \"$OUT_DIR/heartbeat.txt\"",
+            "    sleep 30",
+            "  done",
+            "}",
             'write_status "running" ""',
+            "heartbeat_loop &",
+            "heartbeat_pid=$!",
             'bash -lc "$COMMAND" > "$OUT_DIR/stdout.log" 2> "$OUT_DIR/stderr.log"',
             "rc=$?",
+            'kill "$heartbeat_pid" >/dev/null 2>&1 || true',
+            'wait "$heartbeat_pid" 2>/dev/null || true',
             'printf "%s\\n" "$rc" > "$OUT_DIR/exit_code.txt"',
             'if [ "$rc" -eq 0 ]; then',
             '  final_status="succeeded"',
-            'elif [ "$rc" -eq 126 ] || [ "$rc" -eq 127 ]; then',
+            'elif [ "$rc" -eq 126 ] || [ "$rc" -eq 127 ] || [ "$rc" -ge 128 ]; then',
             '  final_status="failed_infra"',
             "else",
             '  final_status="failed_logic"',
@@ -431,6 +441,43 @@ def render_detached_launch_script(job: GpuJob) -> str:
             "",
         ]
     )
+
+
+def probe_detached_job_liveness(
+    spec: MachineSpec,
+    files: DetachedJobFiles,
+    *,
+    timeout_s: int = 20,
+) -> dict[str, Any]:
+    command = "\n".join(
+        [
+            "python3 - <<'PY'",
+            "import json",
+            "import os",
+            "import sys",
+            "from pathlib import Path",
+            f"pid_path = Path({str(files.pid)!r})",
+            f"heartbeat_path = Path({str(files.heartbeat)!r})",
+            "if not pid_path.exists():",
+            "    raise SystemExit(44)",
+            "try:",
+            "    pid = int(pid_path.read_text(encoding='utf-8').strip())",
+            "except Exception:",
+            "    raise SystemExit(44)",
+            "try:",
+            "    os.kill(pid, 0)",
+            "except ProcessLookupError:",
+            "    raise SystemExit(45)",
+            "except PermissionError:",
+            "    pass",
+            "payload = {'pid': pid, 'heartbeat_exists': heartbeat_path.exists()}",
+            "if heartbeat_path.exists():",
+            "    payload['heartbeat_mtime'] = heartbeat_path.stat().st_mtime",
+            "print(json.dumps(payload, sort_keys=True))",
+            "PY",
+        ]
+    )
+    return run_remote(spec, command, timeout_s=timeout_s)
 
 
 def build_detached_launch_command(files: DetachedJobFiles) -> str:
@@ -492,7 +539,7 @@ def read_detached_job_status(
     files = detached_job_files(job)
     result = read_remote_text(spec, files.status, timeout_s=timeout_s)
     if not result["ok"]:
-        if job.status == JobStatus.RUNNING and result["returncode"] in {44, 255}:
+        if job.status == JobStatus.RUNNING and result["returncode"] in {None, 44, 255}:
             return {
                 "status": JobStatus.RUNNING,
                 "returncode": None,
@@ -528,6 +575,30 @@ def read_detached_job_status(
             "updated_at": _utc_now(),
             "files": files.record(),
         }
+    if status == JobStatus.RUNNING:
+        liveness = probe_detached_job_liveness(spec, files, timeout_s=timeout_s)
+        if not liveness["ok"]:
+            returncode = liveness["returncode"]
+            if returncode in {None, 255}:
+                payload["stderr"] = str(liveness["stderr"]) or "transient liveness probe failure"
+                job.status = JobStatus.RUNNING
+                return payload
+            job.status = JobStatus.FAILED_INFRA
+            payload = dict(payload)
+            payload.update(
+                {
+                    "status": JobStatus.FAILED_INFRA.value,
+                    "returncode": returncode,
+                    "stderr": str(liveness["stderr"]) or "detached job pid is not live",
+                    "updated_at": _utc_now(),
+                    "files": files.record(),
+                }
+            )
+            return payload
+        try:
+            payload["liveness"] = json.loads(str(liveness["stdout"]) or "{}")
+        except json.JSONDecodeError:
+            payload["liveness"] = {"raw": str(liveness["stdout"])}
     job.status = status
     return payload
 
