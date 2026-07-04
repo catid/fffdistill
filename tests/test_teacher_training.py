@@ -803,7 +803,21 @@ def test_hpo_seed_override_controls_sampling_and_trial_run_seeds(
     assert summary["seed"] == 9001
 
 
-def test_scheduler_supports_cosine_and_wsd() -> None:
+def _step_scheduler_lrs(
+    scheduler: torch.optim.lr_scheduler.LRScheduler,
+    optimizer: torch.optim.Optimizer,
+    *,
+    steps: int,
+) -> list[float]:
+    lrs = [float(optimizer.param_groups[0]["lr"])]
+    for _ in range(steps):
+        optimizer.step()
+        scheduler.step()
+        lrs.append(float(optimizer.param_groups[0]["lr"]))
+    return lrs
+
+
+def test_scheduler_supports_cosine_warmup_and_decay() -> None:
     parameter = torch.nn.Parameter(torch.ones(1))
     optimizer = torch.optim.SGD([parameter], lr=1.0)
     cosine = build_lr_scheduler(
@@ -811,21 +825,22 @@ def test_scheduler_supports_cosine_and_wsd() -> None:
         TeacherTrainConfig(epochs=2, warmup_epochs=1, schedule="cosine"),
         steps_per_epoch=2,
     )
-    assert optimizer.param_groups[0]["lr"] == pytest.approx(0.5)
-    optimizer.step()
-    cosine.step()
-    assert optimizer.param_groups[0]["lr"] == pytest.approx(1.0)
+    assert _step_scheduler_lrs(cosine, optimizer, steps=3) == pytest.approx(
+        [0.5, 1.0, 0.5, 0.0]
+    )
 
+
+def test_scheduler_supports_wsd_warmup_stable_and_decay() -> None:
+    parameter = torch.nn.Parameter(torch.ones(1))
     optimizer = torch.optim.SGD([parameter], lr=1.0)
     wsd = build_lr_scheduler(
         optimizer,
         TeacherTrainConfig(epochs=4, warmup_epochs=1, schedule="wsd", wsd_stable_fraction=0.75),
         steps_per_epoch=1,
     )
-    assert optimizer.param_groups[0]["lr"] == pytest.approx(1.0)
-    optimizer.step()
-    wsd.step()
-    assert optimizer.param_groups[0]["lr"] == pytest.approx(1.0)
+    assert _step_scheduler_lrs(wsd, optimizer, steps=3) == pytest.approx(
+        [1.0, 1.0, 1.0, 0.0]
+    )
 
 
 def test_metadata_smoke_writes_resolved_config_without_touching_data(tmp_path: Path) -> None:

@@ -21,8 +21,11 @@ train:
   batch_size_per_gpu: 512
   precision: bf16
   optimizer: muon_adamw
+  # schedule options: cosine, wsd. WSD holds the base LR through
+  # wsd_stable_fraction of total steps before the final cosine decay.
   schedule: cosine
   warmup_epochs: 10
+  wsd_stable_fraction: 0.8
   lr_muon: 0.02
   lr_adamw: 0.001
   weight_decay_muon: 0.03

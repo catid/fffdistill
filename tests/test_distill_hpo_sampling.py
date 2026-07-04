@@ -12,6 +12,7 @@ from cifar_mamba_fff.hpo.distill_hpo import (
     apply_distill_hpo_overrides,
     canonicalize_distill_route_overrides,
     run_distill_hpo_trials,
+    sample_distill_hpo_cases,
     sample_distill_overrides,
     sample_valid_distill_hpo_candidates,
     write_distill_hpo_trial_plan,
@@ -311,6 +312,82 @@ def test_grid_sampler_respects_grid_offset() -> None:
         "st_gumbel",
         "utility_targeted_ste",
     ]
+
+
+def test_cases_sampler_respects_offsets_and_preserves_case_names() -> None:
+    candidates = sample_distill_hpo_cases(
+        [
+            {
+                "name": "none",
+                "route_rows": 2,
+                "route_row_role": "routing_only",
+                "route_rows_output_count": 0,
+            },
+            {
+                "name": "shared_one",
+                "route_rows": 2,
+                "route_row_role": "shared_routing_and_output",
+                "route_rows_output_count": 1,
+            },
+            {
+                "name": "split_half",
+                "route_rows": 2,
+                "route_row_role": "split_routing_output",
+                "route_result_rows": 2,
+                "route_rows_output_count": "all",
+                "route_rows_output_fraction": 0.5,
+            },
+        ],
+        max_trials=2,
+        max_attempts=3,
+        grid_offset=1,
+    )
+
+    assert [candidate.trial_index for candidate in candidates] == [0, 1]
+    assert [candidate.attempt_index for candidate in candidates] == [1, 2]
+    assert [candidate.overrides["case_name"] for candidate in candidates] == [
+        "shared_one",
+        "split_half",
+    ]
+
+
+def test_cases_sampler_trial_plan_writes_exact_named_case(tmp_path) -> None:
+    summary = write_distill_hpo_trial_plan(
+        base_config=load_yaml("configs/fff_distill_default.yaml"),
+        hpo_config={
+            "sampler": "cases",
+            "cases": [
+                {
+                    "name": "shared_half",
+                    "overrides": {
+                        "include_indices": [32],
+                        "router_recipe": "vanilla_ste",
+                        "shared_unrouted_frac": 0.1,
+                        "route_rows": 2,
+                        "leaf_rows": 2,
+                        "depth": 5,
+                        "route_row_role": "shared_routing_and_output",
+                        "route_rows_output_count": "all",
+                        "route_rows_output_fraction": 0.5,
+                    },
+                }
+            ],
+        },
+        output_dir=tmp_path,
+        max_trials=1,
+        max_attempts=1,
+        seed=123,
+        teacher_checkpoint="/tmp/teacher_best.pt",
+    )
+
+    trial = summary["trials"][0]
+    config = load_yaml(tmp_path / "trials" / "trial_000000" / "distill_config.yaml")
+    assert summary["sampler"] == "cases"
+    assert trial["overrides"]["case_name"] == "shared_half"
+    assert config["hpo_overrides"]["case_name"] == "shared_half"
+    assert config["fff"]["route_row_role"] == "shared_routing_and_output"
+    assert config["fff"]["route_rows_output_count"] == "all"
+    assert config["fff"]["route_rows_output_fraction"] == 0.5
 
 
 def test_grid_sampler_route_role_control_combinations_are_valid() -> None:

@@ -1,0 +1,147 @@
+study_name: fff_distill_t20_route_output_cases
+sampler: cases
+objective: validation_normalized_mse
+direction: minimize
+max_trials: 7
+description: Exact named cases for the T20 route-row output contribution ablation.
+cases:
+  - name: none_routing_only
+    overrides:
+      include_indices: [32]
+      router_recipe: vanilla_ste
+      shared_unrouted_frac: 0.10
+      route_rows: 2
+      leaf_rows: 2
+      depth: 5
+      route_rows_contribute: false
+      route_row_role: routing_only
+      route_result_rows: 0
+      route_rows_output_count: 0
+      route_rows_output_fraction: null
+      activation: silu
+      region_leak: 0.0
+      master_leaf: false
+      balance_recipe: none
+      balance_coeff: 0.001
+      min_leaf_tokens: 64
+      locoprop_refit: every_500
+  - name: shared_one_per_node
+    overrides:
+      include_indices: [32]
+      router_recipe: vanilla_ste
+      shared_unrouted_frac: 0.10
+      route_rows: 2
+      leaf_rows: 2
+      depth: 5
+      route_rows_contribute: true
+      route_row_role: shared_routing_and_output
+      route_result_rows: 0
+      route_rows_output_count: 1
+      route_rows_output_fraction: null
+      activation: silu
+      region_leak: 0.0
+      master_leaf: false
+      balance_recipe: none
+      balance_coeff: 0.001
+      min_leaf_tokens: 64
+      locoprop_refit: every_500
+  - name: shared_all
+    overrides:
+      include_indices: [32]
+      router_recipe: vanilla_ste
+      shared_unrouted_frac: 0.10
+      route_rows: 2
+      leaf_rows: 2
+      depth: 5
+      route_rows_contribute: true
+      route_row_role: shared_routing_and_output
+      route_result_rows: 0
+      route_rows_output_count: all
+      route_rows_output_fraction: null
+      activation: silu
+      region_leak: 0.0
+      master_leaf: false
+      balance_recipe: none
+      balance_coeff: 0.001
+      min_leaf_tokens: 64
+      locoprop_refit: every_500
+  - name: shared_half_fraction
+    overrides:
+      include_indices: [32]
+      router_recipe: vanilla_ste
+      shared_unrouted_frac: 0.10
+      route_rows: 2
+      leaf_rows: 2
+      depth: 5
+      route_rows_contribute: true
+      route_row_role: shared_routing_and_output
+      route_result_rows: 0
+      route_rows_output_count: all
+      route_rows_output_fraction: 0.5
+      activation: silu
+      region_leak: 0.0
+      master_leaf: false
+      balance_recipe: none
+      balance_coeff: 0.001
+      min_leaf_tokens: 64
+      locoprop_refit: every_500
+  - name: split_one_per_node
+    overrides:
+      include_indices: [32]
+      router_recipe: vanilla_ste
+      shared_unrouted_frac: 0.10
+      route_rows: 2
+      leaf_rows: 2
+      depth: 5
+      route_rows_contribute: true
+      route_row_role: split_routing_output
+      route_result_rows: 2
+      route_rows_output_count: 1
+      route_rows_output_fraction: null
+      activation: silu
+      region_leak: 0.0
+      master_leaf: false
+      balance_recipe: none
+      balance_coeff: 0.001
+      min_leaf_tokens: 64
+      locoprop_refit: every_500
+  - name: split_all
+    overrides:
+      include_indices: [32]
+      router_recipe: vanilla_ste
+      shared_unrouted_frac: 0.10
+      route_rows: 2
+      leaf_rows: 2
+      depth: 5
+      route_rows_contribute: true
+      route_row_role: split_routing_output
+      route_result_rows: 2
+      route_rows_output_count: all
+      route_rows_output_fraction: null
+      activation: silu
+      region_leak: 0.0
+      master_leaf: false
+      balance_recipe: none
+      balance_coeff: 0.001
+      min_leaf_tokens: 64
+      locoprop_refit: every_500
+  - name: split_half_fraction
+    overrides:
+      include_indices: [32]
+      router_recipe: vanilla_ste
+      shared_unrouted_frac: 0.10
+      route_rows: 2
+      leaf_rows: 2
+      depth: 5
+      route_rows_contribute: true
+      route_row_role: split_routing_output
+      route_result_rows: 2
+      route_rows_output_count: all
+      route_rows_output_fraction: 0.5
+      activation: silu
+      region_leak: 0.0
+      master_leaf: false
+      balance_recipe: none
+      balance_coeff: 0.001
+      min_leaf_tokens: 64
+      locoprop_refit: every_500

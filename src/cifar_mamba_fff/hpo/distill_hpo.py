@@ -19,7 +19,7 @@ from cifar_mamba_fff.utils import bool_arg, load_yaml, write_json
 
 RouteRowRole = Literal["routing_only", "shared_routing_and_output", "split_routing_output"]
 RouteRowsOutputCount = int | Literal["all"] | None
-DistillHpoSampler = Literal["random", "grid"]
+DistillHpoSampler = Literal["random", "grid", "cases"]
 
 ROUTE_ROW_ROLES: tuple[RouteRowRole, ...] = (
     "routing_only",
@@ -90,7 +90,7 @@ KNOWN_OVERRIDE_KEYS = (
     | set(ROUTER_OVERRIDE_MAP)
     | set(LOCO_PROP_OVERRIDE_MAP)
     | set(ELIGIBLE_OVERRIDE_MAP)
-    | {"locoprop_refit"}
+    | {"case_name", "locoprop_refit"}
 )
 
 
@@ -569,9 +569,9 @@ def _overrides_identity(overrides: Mapping[str, object]) -> tuple[tuple[str, obj
 
 
 def distill_hpo_sampler(hpo_config: Mapping[str, object]) -> DistillHpoSampler:
-    sampler = hpo_config.get("sampler", hpo_config.get("sampling", "random"))
-    if sampler not in ("random", "grid"):
-        raise ValueError("distill HPO sampler must be 'random' or 'grid'")
+    sampler = hpo_config.get("sampler", hpo_config.get("sampling", "cases" if "cases" in hpo_config else "random"))
+    if sampler not in ("random", "grid", "cases"):
+        raise ValueError("distill HPO sampler must be 'random', 'grid', or 'cases'")
     return sampler  # type: ignore[return-value]
 
 
@@ -644,6 +644,62 @@ def sample_valid_distill_hpo_candidates(
             DistillHpoCandidate(
                 trial_index=len(candidates),
                 attempt_index=attempt_index,
+                overrides=overrides,
+            )
+        )
+    return candidates
+
+
+def _case_overrides(case: Mapping[str, object], *, case_index: int) -> dict[str, object]:
+    name = case.get("name", case.get("case_name", f"case_{case_index:06d}"))
+    if not isinstance(name, str) or not name:
+        raise ValueError("distill HPO case name must be a non-empty string")
+    if "overrides" in case:
+        overrides_value = case["overrides"]
+        if not isinstance(overrides_value, Mapping):
+            raise ValueError("distill HPO case overrides must be a mapping")
+        overrides = dict(overrides_value)
+    else:
+        overrides = {key: value for key, value in case.items() if key not in {"name", "overrides"}}
+    overrides["case_name"] = name
+    _reject_unknown_override_keys(overrides)
+    return overrides
+
+
+def sample_distill_hpo_cases(
+    cases: object,
+    *,
+    max_trials: int,
+    max_attempts: int,
+    grid_offset: int = 0,
+    validate_fn: Callable[[Mapping[str, object]], bool] | None = None,
+) -> list[DistillHpoCandidate]:
+    if max_trials <= 0:
+        raise ValueError("max_trials must be positive")
+    if max_attempts < max_trials:
+        raise ValueError("max_attempts must be >= max_trials")
+    if grid_offset < 0:
+        raise ValueError("grid_offset must be non-negative")
+    if not isinstance(cases, Sequence) or isinstance(cases, (str, bytes)) or not cases:
+        raise ValueError("distill HPO cases must be a non-empty sequence")
+
+    candidates: list[DistillHpoCandidate] = []
+    accepted_before_offset = 0
+    for case_index, case in enumerate(cases):
+        if case_index >= max_attempts or len(candidates) >= max_trials:
+            break
+        if not isinstance(case, Mapping):
+            raise ValueError("each distill HPO case must be a mapping")
+        overrides = _case_overrides(case, case_index=case_index)
+        if validate_fn is not None and not validate_fn(overrides):
+            continue
+        if accepted_before_offset < grid_offset:
+            accepted_before_offset += 1
+            continue
+        candidates.append(
+            DistillHpoCandidate(
+                trial_index=len(candidates),
+                attempt_index=case_index,
                 overrides=overrides,
             )
         )
@@ -780,18 +836,26 @@ def write_distill_hpo_trial_plan(
     teacher_checkpoint: str | None = None,
     grid_offset: int = 0,
 ) -> dict[str, object]:
-    search_space = hpo_config.get("search_space")
-    if not isinstance(search_space, Mapping):
-        raise ValueError("distill HPO config must contain a search_space mapping")
     sampler = distill_hpo_sampler(hpo_config)
-    candidates = sample_valid_distill_hpo_candidates(
-        search_space,
-        max_trials=max_trials,
-        max_attempts=max_attempts,
-        rng=random.Random(seed),
-        sampler=sampler,
-        grid_offset=grid_offset,
-    )
+    if sampler == "cases":
+        candidates = sample_distill_hpo_cases(
+            hpo_config.get("cases"),
+            max_trials=max_trials,
+            max_attempts=max_attempts,
+            grid_offset=grid_offset,
+        )
+    else:
+        search_space = hpo_config.get("search_space")
+        if not isinstance(search_space, Mapping):
+            raise ValueError("distill HPO config must contain a search_space mapping")
+        candidates = sample_valid_distill_hpo_candidates(
+            search_space,
+            max_trials=max_trials,
+            max_attempts=max_attempts,
+            rng=random.Random(seed),
+            sampler=sampler,
+            grid_offset=grid_offset,
+        )
     if not candidates:
         raise RuntimeError("distill HPO produced zero valid candidates")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -820,7 +884,7 @@ def write_distill_hpo_trial_plan(
         "accepted_trials": len(candidates),
         "max_attempts": max_attempts,
         "sampler": sampler,
-        "grid_offset": grid_offset if sampler == "grid" else 0,
+        "grid_offset": grid_offset if sampler in ("grid", "cases") else 0,
         "seed": seed,
         "teacher_checkpoint": teacher_checkpoint,
         "test_accessed": False,

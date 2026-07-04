@@ -26,3 +26,4 @@ search_space:
   weight_decay_adamw: [0.0, 0.01, 0.03, 0.05]
   batch_size_per_gpu: [256, 512, 1024, 2048]
   schedule: [cosine, wsd]
+  wsd_stable_fraction: [0.7, 0.8, 0.9]
