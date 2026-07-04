@@ -12,6 +12,7 @@ from cifar_mamba_fff.distill_linears import (
     LinearDistillConfig,
     RouterDistillConfig,
     _capture_autocast_context,
+    _replacement_prediction,
     _router_auxiliary_loss,
     distill_linear_from_tensors,
     load_teacher_for_distillation,
@@ -430,6 +431,46 @@ def test_hard_routing_without_route_output_or_router_loss_is_rejected(tmp_path) 
             ),
             output_dir=tmp_path,
         )
+
+
+@pytest.mark.parametrize(
+    "recipe",
+    [
+        "no_ste_soft_router",
+        "vanilla_ste",
+        "clipped_ste",
+        "sigmoid_surrogate_ste",
+        "st_gumbel",
+    ],
+)
+def test_main_distillation_loss_sends_recipe_gradients_to_route_weights(
+    recipe: str,
+) -> None:
+    torch.manual_seed(14)
+    layer = FFFLinear(
+        6,
+        4,
+        depth=2,
+        shared_rows=2,
+        route_rows=2,
+        leaf_rows=2,
+        hard_routing=True,
+        route_row_role="routing_only",
+        route_rows_output_count=0,
+        bias=False,
+    )
+    x = torch.randn(32, 6)
+    y = torch.randn(32, 4)
+    router_config = RouterDistillConfig(recipe=recipe, loss_coeff=0.0)
+
+    pred = _replacement_prediction(layer, x, y, router_config)
+    loss = (pred - y).square().mean()
+    loss.backward()
+
+    assert torch.isfinite(loss.detach())
+    assert layer.route_weight.grad is not None
+    assert torch.isfinite(layer.route_weight.grad).all()
+    assert layer.route_weight.grad.abs().sum() > 0.0
 
 
 @pytest.mark.parametrize(

@@ -65,6 +65,16 @@ ROUTER_RECIPES: tuple[str, ...] = (
     "hard_em_utility_ste",
     "expert_choice_imitation",
 )
+MAIN_LOSS_ROUTER_RECIPES: tuple[str, ...] = (
+    "no_ste_soft_router",
+    "vanilla_ste",
+    "clipped_ste",
+    "sigmoid_surrogate_ste",
+    "st_gumbel",
+    "utility_targeted_ste",
+    "hard_em_utility_ste",
+    "expert_choice_imitation",
+)
 
 
 def _parse_distill_bool(value: object, *, key: str) -> bool:
@@ -434,6 +444,130 @@ def _branch_utility_from_leaf_utility(layer: FFFLinear, leaf_utility: torch.Tens
     return torch.stack(branch_utilities, dim=1)
 
 
+def _leaf_probs_from_branch_routes(layer: FFFLinear, branch_routes: torch.Tensor) -> torch.Tensor:
+    batch_size = branch_routes.shape[0]
+    frontier = [(0, branch_routes.new_ones(batch_size))]
+    leaf_probs: list[torch.Tensor | None] = [None] * layer.leaves
+
+    for depth_idx in range(layer.depth):
+        next_frontier: list[tuple[int, torch.Tensor]] = []
+        for node_idx, prob_here in frontier:
+            left_prob = prob_here * branch_routes[:, node_idx, 0]
+            right_prob = prob_here * branch_routes[:, node_idx, 1]
+            left_child = 2 * node_idx + 1
+            right_child = left_child + 1
+            if depth_idx == layer.depth - 1:
+                leaf_probs[left_child - layer.internal_nodes] = left_prob
+                leaf_probs[right_child - layer.internal_nodes] = right_prob
+            else:
+                next_frontier.append((left_child, left_prob))
+                next_frontier.append((right_child, right_prob))
+        frontier = next_frontier
+
+    return torch.stack([prob for prob in leaf_probs if prob is not None], dim=-1)
+
+
+def _branch_routes_for_recipe(
+    layer: FFFLinear,
+    x: torch.Tensor,
+    y: torch.Tensor,
+    config: RouterDistillConfig,
+) -> torch.Tensor:
+    branch_logits = _full_branch_logits(layer, x).float()
+    if config.recipe == "no_ste_soft_router":
+        return no_ste_soft_router(branch_logits, temperature=config.temperature)
+    if config.recipe == "vanilla_ste":
+        return vanilla_ste(branch_logits, temperature=config.temperature)
+    if config.recipe == "clipped_ste":
+        return clipped_ste(branch_logits, clip=config.clip)
+    if config.recipe == "sigmoid_surrogate_ste":
+        return sigmoid_surrogate_ste(branch_logits, temperature=config.temperature)
+    if config.recipe == "st_gumbel":
+        return st_gumbel(
+            branch_logits,
+            tau=config.temperature,
+            hard=True,
+            training=layer.training,
+        )
+
+    if config.recipe in {
+        "utility_targeted_ste",
+        "hard_em_utility_ste",
+        "expert_choice_imitation",
+    }:
+        utility = _branch_utility_from_leaf_utility(layer, _leaf_teacher_utility(layer, x, y))
+        if config.recipe == "utility_targeted_ste":
+            routed, _ = utility_targeted_ste(
+                branch_logits,
+                utility,
+                temperature=config.temperature,
+                utility_temperature=config.utility_temperature,
+                return_diagnostics=True,
+            )
+            return routed
+        if config.recipe == "hard_em_utility_ste":
+            routed, _, _ = hard_em_utility_ste(
+                branch_logits,
+                utility,
+                temperature=config.temperature,
+                return_targets=True,
+                return_diagnostics=True,
+            )
+            return routed
+        return no_ste_soft_router(branch_logits, temperature=config.temperature)
+
+    raise RuntimeError(f"validated router recipe became invalid: {config.recipe}")
+
+
+def _forward_with_leaf_weights(
+    layer: FFFLinear,
+    x: torch.Tensor,
+    leaf_weights: torch.Tensor,
+) -> torch.Tensor:
+    flat = x.float()
+    hard_route_info = layer._route_flat(flat, hard=True)
+    out = flat.new_zeros(flat.shape[0], layer.out_features)
+
+    if layer.shared_weight is not None:
+        shared_values = layer._activation(
+            F.linear(flat, layer.shared_weight.float(), layer.shared_bias.float())
+        )
+        out = out + shared_values @ layer.shared_output.float()
+
+    leaf_values = layer._activation(
+        torch.einsum("ni,lri->nlr", flat, layer.leaf_weight[: layer.leaves].float())
+        + layer.leaf_bias[: layer.leaves].float()
+    )
+    leaf_outputs = torch.einsum(
+        "nlr,lro->nlo",
+        leaf_values,
+        layer.leaf_output[: layer.leaves].float(),
+    )
+    out = out + (leaf_outputs * leaf_weights.unsqueeze(-1)).sum(dim=1)
+    out = out + layer._extra_leaf_output_grouped(flat, fallback_weight=layer._fallback_weight())
+    out = out + layer._route_output_grouped(hard_route_info)
+
+    if layer.bias is not None:
+        out = out + layer.bias.float()
+    return out
+
+
+def _replacement_prediction(
+    layer: FFFLinear,
+    x: torch.Tensor,
+    y: torch.Tensor,
+    router_config: RouterDistillConfig,
+) -> torch.Tensor:
+    if router_config.recipe == "none":
+        return layer(x)
+    if router_config.recipe not in MAIN_LOSS_ROUTER_RECIPES:
+        raise RuntimeError(f"router recipe does not support main-loss routing: {router_config.recipe}")
+    branch_routes = _branch_routes_for_recipe(layer, x, y, router_config)
+    leaf_probs = _leaf_probs_from_branch_routes(layer, branch_routes.to(dtype=x.dtype))
+    leaf_weights, _fallback_weight = layer._regular_leaf_weights(leaf_probs)
+    return _forward_with_leaf_weights(layer, x, leaf_weights)
+
+
 def _leaf_occupancy_stats(route_info: Any, *, leaves: int) -> dict[str, object]:
     leaf_ids = route_info.leaf_ids.reshape(-1).detach().cpu()
     counts = torch.bincount(leaf_ids, minlength=leaves).float()
@@ -557,11 +691,11 @@ def _guard_router_training(layer: FFFLinear, config: RouterDistillConfig) -> Non
     if (
         layer.config.hard_routing
         and not bool(diagnostics["route_output_contributes"])
-        and not config.enabled
+        and config.recipe == "none"
     ):
         raise ValueError(
             "hard-routed FFFLinear without route output contribution needs a positive "
-            "router auxiliary recipe; otherwise route parameters are not trained"
+            "router recipe; otherwise route parameters are not trained"
         )
 
 
@@ -610,7 +744,7 @@ def distill_linear_from_tensors(
     metrics_path = output_dir / "layer_metrics.jsonl"
 
     def compute_loss(batch_x: torch.Tensor, batch_y: torch.Tensor) -> torch.Tensor:
-        pred = replacement(batch_x)
+        pred = _replacement_prediction(replacement, batch_x, batch_y, router_config)
         main_loss = distillation_loss(
             pred,
             batch_y,
