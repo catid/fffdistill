@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import ClassVar
 
 import pytest
+import torch
 from torch.utils.data import Dataset
 
 import cifar_mamba_fff.train_teacher as train_teacher
@@ -220,7 +221,7 @@ def test_run_teacher_training_saves_checkpoint_only_for_strictly_best_validation
         train_teacher,
         "build_muon_adamw_optimizer",
         lambda model, train_config, *, assignment_log_path=None: (
-            object(),
+            torch.optim.SGD([torch.nn.Parameter(torch.ones(()))], lr=0.01),
             {
                 "muon_tensors": 1,
                 "adamw_tensors": 1,

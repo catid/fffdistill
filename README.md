@@ -7,7 +7,7 @@ Current status: bootstrap skeleton and task tracking. No teacher accuracy, FFF q
 ## Ground Rules
 
 - Teacher blocks must come from the official `state-spaces/mamba` codebase and must use official `mamba_ssm` Mamba-3 modules.
-- Optimizer baseline starts with official Muon plus AdamW fallback parameter groups. PACE+Muon, PACE+NorMuon, and related optimizer-experiments techniques are deferred to the optimizer-ablation task after the simple baseline is working.
+- Optimizer baseline starts with official Muon plus AdamW fallback parameter groups. T19 adds validation-only optimizer ablation plumbing for WSD, PACE wrapping the official Muon baseline, and a clearly labeled vendored Muon+NorMuon/PACE+NorMuon ablation from optimizer-experiments commit `689568d71ebe92093e5f5bf433127a5184ef0c35`.
 - fastfeedforward is installed and used as a canonical reference/baseline where shape-compatible.
 - CIFAR-10 train is split into 45k train / 5k validation. The CIFAR-10 test split is used only for validation-selected final checkpoints.
 - Dependency, GPU, SSH, correctness, and profiler gates must pass before long experiments.
@@ -37,6 +37,7 @@ bash scripts/run_tests.sh
 ```bash
 bash scripts/run_teacher_hpo.sh
 bash scripts/run_teacher_final.sh
+bash scripts/run_optimizer_ablation.sh
 bash scripts/run_distill_hpo.sh
 bash scripts/run_finetune_hpo.sh
 bash scripts/make_report.sh

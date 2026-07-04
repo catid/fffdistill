@@ -931,7 +931,7 @@ def test_run_context_and_training_metrics_output_shape(
         train_teacher,
         "build_muon_adamw_optimizer",
         lambda model, train_config, *, assignment_log_path=None: (
-            object(),
+            torch.optim.SGD([torch.nn.Parameter(torch.ones(()))], lr=0.01),
             {
                 "muon_tensors": 1,
                 "adamw_tensors": 1,
@@ -1085,7 +1085,7 @@ def test_teacher_checkpoint_is_best_only_and_uses_atomic_helper(
         train_teacher,
         "build_muon_adamw_optimizer",
         lambda model, train_config, *, assignment_log_path=None: (
-            object(),
+            torch.optim.SGD([torch.nn.Parameter(torch.ones(()))], lr=0.01),
             {
                 "muon_tensors": 1,
                 "adamw_tensors": 1,

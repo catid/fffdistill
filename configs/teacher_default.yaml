@@ -20,6 +20,11 @@ train:
   epochs: 200
   batch_size_per_gpu: 512
   precision: bf16
+  # optimizer options:
+  #   muon_adamw / official_muon: official KellerJordan/Muon baseline.
+  #   pace_muon: official Muon baseline wrapped with optimizer_experiments PACE.
+  #   normuon_adamw / muon_normuon: vendored Muon+NorMuon ablation.
+  #   pace_normuon: vendored Muon+NorMuon wrapped with PACE.
   optimizer: muon_adamw
   # schedule options: cosine, wsd. WSD holds the base LR through
   # wsd_stable_fraction of total steps before the final cosine decay.
@@ -30,6 +35,14 @@ train:
   lr_adamw: 0.001
   weight_decay_muon: 0.03
   weight_decay_adamw: 0.03
+  pace_pullback_c: 0.001
+  pace_kappa: 0.5
+  pace_precond: adam
+  pace_beta2: 0.999
+  pace_eps: 1.0e-8
+  pace_update_freq: 1
+  normuon_beta2: 0.93
+  normuon_eps: 1.0e-10
   label_smoothing: 0.1
   mixup: 0.2
   cutmix: 1.0

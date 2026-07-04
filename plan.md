@@ -63,12 +63,23 @@ Start with simple official Muon plus AdamW fallback until the teacher, distillat
 
 Planned optimizer/schedule ablations:
 
-- PACE+Muon from `https://github.com/catid/optimizer_experiments`.
-- PACE+NorMuon from `https://github.com/catid/optimizer_experiments`.
-- WSD learning-rate schedule as a trainer-side schedule option.
+- Official `muon_adamw` / `official_muon`: unchanged KellerJordan/Muon
+  `SingleDeviceMuonWithAuxAdam` baseline with this repo's audited Muon/AdamW
+  parameter split.
+- `pace_muon`: optimizer-experiments PACE wrapper around the official Muon
+  baseline, not the standalone hand-rolled `PaceMuon`; validation/checkpoint
+  selection must use EMA weights.
+- `normuon_adamw` / `muon_normuon`: vendored optimizer-experiments Muon+NorMuon
+  ablation using the same audited parameter split. This is not the official Muon
+  package and must be reported separately.
+- `pace_normuon`: PACE wrapper around the vendored Muon+NorMuon ablation.
+- WSD learning-rate schedule as a trainer-side schedule option, reported
+  separately from optimizer family.
 - Other optimizer-experiments techniques only after the baseline and first two ablations are reproducible.
 
 Optimizer comparisons must use the same teacher checkpoint, split, seeds, training tokens/epochs, HPO budget, and validation-selection protocol as comparable baselines. Report optimizer family and LR schedule separately.
+Vendored optimizer-experiments code is sourced from commit
+`689568d71ebe92093e5f5bf433127a5184ef0c35`.
 
 ## Core Research Axes
 

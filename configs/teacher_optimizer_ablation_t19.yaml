@@ -1,0 +1,75 @@
+seed: 7331
+cases:
+  - name: official_muon_cosine
+    train:
+      epochs: 1
+      batch_size_per_gpu: 256
+      num_workers: 4
+      optimizer: muon_adamw
+      schedule: cosine
+      warmup_epochs: 0
+      mixup: 0.0
+      cutmix: 0.0
+  - name: official_muon_wsd
+    train:
+      epochs: 1
+      batch_size_per_gpu: 256
+      num_workers: 4
+      optimizer: muon_adamw
+      schedule: wsd
+      warmup_epochs: 0
+      wsd_stable_fraction: 0.8
+      mixup: 0.0
+      cutmix: 0.0
+  - name: pace_muon_ema_control
+    train:
+      epochs: 1
+      batch_size_per_gpu: 256
+      num_workers: 4
+      optimizer: pace_muon
+      schedule: wsd
+      warmup_epochs: 0
+      wsd_stable_fraction: 0.8
+      pace_pullback_c: 0.0
+      pace_kappa: 0.5
+      mixup: 0.0
+      cutmix: 0.0
+  - name: pace_muon_c1e3
+    train:
+      epochs: 1
+      batch_size_per_gpu: 256
+      num_workers: 4
+      optimizer: pace_muon
+      schedule: wsd
+      warmup_epochs: 0
+      wsd_stable_fraction: 0.8
+      pace_pullback_c: 0.001
+      pace_kappa: 0.5
+      mixup: 0.0
+      cutmix: 0.0
+  - name: normuon_wsd
+    train:
+      epochs: 1
+      batch_size_per_gpu: 256
+      num_workers: 4
+      optimizer: normuon_adamw
+      schedule: wsd
+      warmup_epochs: 0
+      wsd_stable_fraction: 0.8
+      normuon_beta2: 0.93
+      mixup: 0.0
+      cutmix: 0.0
+  - name: pace_normuon_c1e3
+    train:
+      epochs: 1
+      batch_size_per_gpu: 256
+      num_workers: 4
+      optimizer: pace_normuon
+      schedule: wsd
+      warmup_epochs: 0
+      wsd_stable_fraction: 0.8
+      pace_pullback_c: 0.001
+      pace_kappa: 0.5
+      normuon_beta2: 0.93
+      mixup: 0.0
+      cutmix: 0.0

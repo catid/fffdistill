@@ -8,6 +8,7 @@ import random
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from pathlib import Path
 from typing import Literal
@@ -22,12 +23,31 @@ from .data import Cifar10DataConfig, build_cifar10_loaders
 from .metrics import accuracy
 from .models.mamba3_cifar import Mamba3CifarConfig, Mamba3CifarTeacher
 from .optim.muon_groups import format_param_assignments, split_muon_adamw_parameters
+from .optim.normuon import MuonNorMuon, build_normuon_param_groups
+from .optim.pace import (
+    OPTIMIZER_EXPERIMENTS_COMMIT,
+    OPTIMIZER_EXPERIMENTS_SOURCE,
+    PaceOptimizer,
+)
 from .utils import RunContext, append_jsonl, bool_arg, load_yaml, seed_everything, write_json
 
-OptimizerName = Literal["muon_adamw"]
+OptimizerName = Literal[
+    "muon_adamw",
+    "official_muon",
+    "pace_muon",
+    "normuon_adamw",
+    "muon_normuon",
+    "pace_normuon",
+]
 PrecisionName = Literal["bf16"]
 ScheduleName = Literal["cosine", "wsd"]
+PacePrecondName = Literal["adam", "scalar", "row"]
 SmokeMode = Literal["metadata", "train"]
+
+OFFICIAL_MUON_OPTIMIZERS = frozenset({"muon_adamw", "official_muon"})
+NORMUON_OPTIMIZERS = frozenset({"normuon_adamw", "muon_normuon"})
+PACE_OPTIMIZERS = frozenset({"pace_muon", "pace_normuon"})
+ALL_OPTIMIZERS = OFFICIAL_MUON_OPTIMIZERS | NORMUON_OPTIMIZERS | PACE_OPTIMIZERS
 
 
 @dataclass(frozen=True)
@@ -50,6 +70,14 @@ class TeacherTrainConfig:
     adamw_eps: float = 1e-10
     muon_momentum: float = 0.95
     wsd_stable_fraction: float = 0.8
+    pace_pullback_c: float = 1e-3
+    pace_kappa: float = 0.5
+    pace_precond: PacePrecondName = "adam"
+    pace_beta2: float = 0.999
+    pace_eps: float = 1e-8
+    pace_update_freq: int = 1
+    normuon_beta2: float = 0.93
+    normuon_eps: float = 1e-10
     grad_clip_norm: float | None = None
 
     def validate(self) -> None:
@@ -59,8 +87,8 @@ class TeacherTrainConfig:
             raise ValueError("num_workers must be non-negative")
         if self.precision != "bf16":
             raise ValueError("teacher precision must be bf16 for this project")
-        if self.optimizer != "muon_adamw":
-            raise ValueError("teacher optimizer must start with official muon_adamw baseline")
+        if self.optimizer not in ALL_OPTIMIZERS:
+            raise ValueError(f"teacher optimizer must be one of: {', '.join(sorted(ALL_OPTIMIZERS))}")
         if self.schedule not in {"cosine", "wsd"}:
             raise ValueError("schedule must be one of: cosine, wsd")
         if self.warmup_epochs < 0:
@@ -73,8 +101,16 @@ class TeacherTrainConfig:
             "adamw_eps",
             "muon_momentum",
             "wsd_stable_fraction",
+            "pace_pullback_c",
+            "pace_kappa",
+            "pace_beta2",
+            "pace_eps",
+            "normuon_beta2",
+            "normuon_eps",
         ):
             _finite_nonnegative(name, float(getattr(self, name)))
+        if self.pace_precond not in {"adam", "scalar", "row"}:
+            raise ValueError("pace_precond must be one of: adam, scalar, row")
         if not 0.0 <= self.label_smoothing < 1.0:
             raise ValueError("label_smoothing must be in [0, 1)")
         if not 0.0 <= self.adamw_betas[0] < 1.0 or not 0.0 <= self.adamw_betas[1] < 1.0:
@@ -83,6 +119,17 @@ class TeacherTrainConfig:
             raise ValueError("muon_momentum must be in (0, 1)")
         if not 0.0 < self.wsd_stable_fraction <= 1.0:
             raise ValueError("wsd_stable_fraction must be in (0, 1]")
+        if not 0.0 < self.pace_kappa <= 1.0:
+            raise ValueError("pace_kappa must be in (0, 1]")
+        if not 0.0 <= self.pace_beta2 < 1.0:
+            raise ValueError("pace_beta2 must be in [0, 1)")
+        if self.pace_eps <= 0.0:
+            raise ValueError("pace_eps must be positive")
+        _positive_int("pace_update_freq", self.pace_update_freq)
+        if not 0.0 <= self.normuon_beta2 < 1.0:
+            raise ValueError("normuon_beta2 must be in [0, 1)")
+        if self.normuon_eps <= 0.0:
+            raise ValueError("normuon_eps must be positive")
         if self.grad_clip_norm is not None:
             _finite_nonnegative("grad_clip_norm", self.grad_clip_norm)
             if self.grad_clip_norm == 0.0:
@@ -293,12 +340,11 @@ def _import_official_muon_class() -> type[torch.optim.Optimizer]:
     )
 
 
-def build_muon_adamw_optimizer(
+def _split_and_log_optimizer_parameters(
     model: nn.Module,
-    train_config: TeacherTrainConfig,
     *,
-    assignment_log_path: Path | None = None,
-) -> tuple[torch.optim.Optimizer, dict[str, int]]:
+    assignment_log_path: Path | None,
+) -> tuple[list[nn.Parameter], list[nn.Parameter], dict[str, int]]:
     muon_params, adamw_params, assignments = split_muon_adamw_parameters(model)
     if not muon_params:
         raise ValueError("Muon parameter group is empty; refusing AdamW-only teacher training")
@@ -312,6 +358,24 @@ def build_muon_adamw_optimizer(
             encoding="utf-8",
         )
 
+    return muon_params, adamw_params, {
+        "muon_tensors": len(muon_params),
+        "adamw_tensors": len(adamw_params),
+        "muon_parameters": sum(parameter.numel() for parameter in muon_params),
+        "adamw_parameters": sum(parameter.numel() for parameter in adamw_params),
+    }
+
+
+def build_muon_adamw_optimizer(
+    model: nn.Module,
+    train_config: TeacherTrainConfig,
+    *,
+    assignment_log_path: Path | None = None,
+) -> tuple[torch.optim.Optimizer, dict[str, object]]:
+    muon_params, adamw_params, parameter_summary = _split_and_log_optimizer_parameters(
+        model,
+        assignment_log_path=assignment_log_path,
+    )
     optimizer_cls = _import_official_muon_class()
     optimizer = optimizer_cls(
         [
@@ -332,12 +396,162 @@ def build_muon_adamw_optimizer(
             },
         ]
     )
-    return optimizer, {
-        "muon_tensors": len(muon_params),
-        "adamw_tensors": len(adamw_params),
-        "muon_parameters": sum(parameter.numel() for parameter in muon_params),
-        "adamw_parameters": sum(parameter.numel() for parameter in adamw_params),
+    return optimizer, parameter_summary | {
+        "optimizer_family": "muon_adamw",
+        "optimizer_source": "official KellerJordan/Muon SingleDeviceMuonWithAuxAdam",
+        "uses_ema_eval": False,
     }
+
+
+def build_normuon_adamw_optimizer(
+    model: nn.Module,
+    train_config: TeacherTrainConfig,
+    *,
+    assignment_log_path: Path | None = None,
+) -> tuple[torch.optim.Optimizer, dict[str, object]]:
+    muon_params, adamw_params, parameter_summary = _split_and_log_optimizer_parameters(
+        model,
+        assignment_log_path=assignment_log_path,
+    )
+    optimizer = MuonNorMuon(
+        build_normuon_param_groups(
+            muon_params,
+            adamw_params,
+            lr_muon=train_config.lr_muon,
+            lr_adamw=train_config.lr_adamw,
+            weight_decay_muon=train_config.weight_decay_muon,
+            weight_decay_adamw=train_config.weight_decay_adamw,
+            muon_momentum=train_config.muon_momentum,
+            adamw_betas=train_config.adamw_betas,
+            adamw_eps=train_config.adamw_eps,
+        ),
+        normuon_beta2=train_config.normuon_beta2,
+        normuon_eps=train_config.normuon_eps,
+    )
+    return optimizer, parameter_summary | {
+        "optimizer_family": "normuon_adamw",
+        "optimizer_source": "vendored optimizer_experiments Muon+NorMuon ablation",
+        "optimizer_experiments_commit": OPTIMIZER_EXPERIMENTS_COMMIT,
+        "optimizer_experiments_source": OPTIMIZER_EXPERIMENTS_SOURCE,
+        "normuon_beta2": train_config.normuon_beta2,
+        "normuon_eps": train_config.normuon_eps,
+        "uses_ema_eval": False,
+    }
+
+
+def _wrap_with_pace(
+    optimizer: torch.optim.Optimizer,
+    train_config: TeacherTrainConfig,
+) -> PaceOptimizer:
+    return PaceOptimizer(
+        optimizer,
+        pullback_c=train_config.pace_pullback_c,
+        kappa=train_config.pace_kappa,
+        precond=train_config.pace_precond,
+        beta2=train_config.pace_beta2,
+        eps=train_config.pace_eps,
+        update_freq=train_config.pace_update_freq,
+    )
+
+
+def build_training_optimizer(
+    model: nn.Module,
+    train_config: TeacherTrainConfig,
+    *,
+    assignment_log_path: Path | None = None,
+) -> tuple[torch.optim.Optimizer, dict[str, object]]:
+    if train_config.optimizer in OFFICIAL_MUON_OPTIMIZERS:
+        optimizer, summary = build_muon_adamw_optimizer(
+            model,
+            train_config,
+            assignment_log_path=assignment_log_path,
+        )
+        return optimizer, summary | {
+            "optimizer_family": train_config.optimizer,
+            "uses_ema_eval": False,
+        }
+    if train_config.optimizer == "pace_muon":
+        base_optimizer, summary = build_muon_adamw_optimizer(
+            model,
+            train_config,
+            assignment_log_path=assignment_log_path,
+        )
+        return _wrap_with_pace(base_optimizer, train_config), summary | {
+            "optimizer_family": "pace_muon",
+            "base_optimizer_family": "muon_adamw",
+            "optimizer_source": "official Muon wrapped by vendored optimizer_experiments PACE",
+            "optimizer_experiments_commit": OPTIMIZER_EXPERIMENTS_COMMIT,
+            "optimizer_experiments_source": OPTIMIZER_EXPERIMENTS_SOURCE,
+            "pace_pullback_c": train_config.pace_pullback_c,
+            "pace_kappa": train_config.pace_kappa,
+            "pace_precond": train_config.pace_precond,
+            "pace_beta2": train_config.pace_beta2,
+            "pace_update_freq": train_config.pace_update_freq,
+            "uses_ema_eval": True,
+        }
+    if train_config.optimizer in NORMUON_OPTIMIZERS:
+        optimizer, summary = build_normuon_adamw_optimizer(
+            model,
+            train_config,
+            assignment_log_path=assignment_log_path,
+        )
+        return optimizer, summary | {
+            "optimizer_family": train_config.optimizer,
+            "uses_ema_eval": False,
+        }
+    if train_config.optimizer == "pace_normuon":
+        base_optimizer, summary = build_normuon_adamw_optimizer(
+            model,
+            train_config,
+            assignment_log_path=assignment_log_path,
+        )
+        return _wrap_with_pace(base_optimizer, train_config), summary | {
+            "optimizer_family": "pace_normuon",
+            "base_optimizer_family": "normuon_adamw",
+            "optimizer_source": "vendored optimizer_experiments Muon+NorMuon wrapped by PACE",
+            "optimizer_experiments_commit": OPTIMIZER_EXPERIMENTS_COMMIT,
+            "optimizer_experiments_source": OPTIMIZER_EXPERIMENTS_SOURCE,
+            "pace_pullback_c": train_config.pace_pullback_c,
+            "pace_kappa": train_config.pace_kappa,
+            "pace_precond": train_config.pace_precond,
+            "pace_beta2": train_config.pace_beta2,
+            "pace_update_freq": train_config.pace_update_freq,
+            "uses_ema_eval": True,
+        }
+    raise ValueError(f"unsupported optimizer family: {train_config.optimizer}")
+
+
+@contextmanager
+def optimizer_eval_context(optimizer: torch.optim.Optimizer):
+    use_ema_weights = getattr(optimizer, "use_ema_weights", None)
+    if callable(use_ema_weights):
+        with use_ema_weights():
+            yield
+    else:
+        yield
+
+
+def _optimizer_lr_metrics(optimizer: torch.optim.Optimizer) -> dict[str, float]:
+    lrs = [float(group.get("lr", 0.0)) for group in optimizer.param_groups]
+    if not lrs:
+        return {}
+    metrics = {
+        "lr_min": min(lrs),
+        "lr_max": max(lrs),
+        "lr_group_0": lrs[0],
+        "lr_muon": lrs[0],
+        "lr_adamw": lrs[1] if len(lrs) > 1 else lrs[0],
+    }
+    if len(lrs) > 1:
+        metrics["lr_group_1"] = lrs[1]
+    return metrics
+
+
+def _scheduler_optimizer(optimizer: torch.optim.Optimizer) -> torch.optim.Optimizer:
+    base_optimizer = getattr(optimizer, "base_optimizer", optimizer)
+    if not isinstance(base_optimizer, torch.optim.Optimizer):
+        raise TypeError("LR scheduler target must be a torch.optim.Optimizer")
+    return base_optimizer
 
 
 def build_lr_scheduler(
@@ -492,8 +706,7 @@ def _train_one_step(
         "train_batch_size": float(target.numel()),
         "train_loss": float(loss.detach().float().item()),
         "train_accuracy_hard_labels": accuracy(logits.detach().float(), target.detach()),
-        "lr_muon": float(optimizer.param_groups[0]["lr"]),
-        "lr_adamw": float(optimizer.param_groups[1]["lr"]),
+        **_optimizer_lr_metrics(optimizer),
     }
 
 
@@ -551,13 +764,17 @@ def run_teacher_training(
 
     train_loader, val_loader = build_cifar10_loaders(run_config.data)
     model, parameter_count = build_teacher_model(run_config.model, device=device)
-    optimizer, optimizer_summary = build_muon_adamw_optimizer(
+    optimizer, optimizer_summary = build_training_optimizer(
         model,
         run_config.train,
         assignment_log_path=output_dir / "param_assignments.txt",
     )
     steps_per_epoch = len(train_loader) if max_train_steps is None else min(len(train_loader), max_train_steps)
-    scheduler = build_lr_scheduler(optimizer, run_config.train, steps_per_epoch=max(1, steps_per_epoch))
+    scheduler = build_lr_scheduler(
+        _scheduler_optimizer(optimizer),
+        run_config.train,
+        steps_per_epoch=max(1, steps_per_epoch),
+    )
     metrics_path = output_dir / "metrics.jsonl"
     checkpoint_path = output_dir / "teacher_best.pt"
     if metrics_path.exists():
@@ -595,38 +812,39 @@ def run_teacher_training(
             epoch_train_images_seen += step_batch_size
         if train_metrics is None:
             raise RuntimeError("train loader produced no batches")
-        val_metrics = _evaluate_steps(model, val_loader, run_config, device, max_steps=val_step_limit)
-        val_accuracy = val_metrics["val_accuracy"]
-        is_best = val_accuracy > best_val_accuracy
-        if is_best:
-            best_val_accuracy = val_accuracy
-        metrics = {
-            "phase": "teacher_train",
-            "epoch": epoch,
-            "parameter_count": parameter_count,
-            "train_steps_total": total_train_steps,
-            "train_images_seen": train_images_seen,
-            "epoch_train_images_seen": epoch_train_images_seen,
-            "epoch_train_elapsed_seconds": epoch_train_elapsed_seconds,
-            "epoch_train_images_per_second": epoch_train_images_seen
-            / max(epoch_train_elapsed_seconds, 1e-9),
-            "epoch_seconds": time.perf_counter() - epoch_start,
-            **train_metrics,
-            **val_metrics,
-        }
-        append_jsonl(metrics_path, metrics)
-        if epoch_callback is not None:
-            epoch_callback(metrics)
-        if save_checkpoint and is_best:
-            save_teacher_checkpoint_atomic(
-                checkpoint_path,
-                {
-                    "model": model.state_dict(),
-                    "config": _jsonable(run_config),
-                    "parameter_count": parameter_count,
-                    "metrics": metrics,
-                },
-            )
+        with optimizer_eval_context(optimizer):
+            val_metrics = _evaluate_steps(model, val_loader, run_config, device, max_steps=val_step_limit)
+            val_accuracy = val_metrics["val_accuracy"]
+            is_best = val_accuracy > best_val_accuracy
+            if is_best:
+                best_val_accuracy = val_accuracy
+            metrics = {
+                "phase": "teacher_train",
+                "epoch": epoch,
+                "parameter_count": parameter_count,
+                "train_steps_total": total_train_steps,
+                "train_images_seen": train_images_seen,
+                "epoch_train_images_seen": epoch_train_images_seen,
+                "epoch_train_elapsed_seconds": epoch_train_elapsed_seconds,
+                "epoch_train_images_per_second": epoch_train_images_seen
+                / max(epoch_train_elapsed_seconds, 1e-9),
+                "epoch_seconds": time.perf_counter() - epoch_start,
+                **train_metrics,
+                **val_metrics,
+            }
+            append_jsonl(metrics_path, metrics)
+            if epoch_callback is not None:
+                epoch_callback(metrics)
+            if save_checkpoint and is_best:
+                save_teacher_checkpoint_atomic(
+                    checkpoint_path,
+                    {
+                        "model": model.state_dict(),
+                        "config": _jsonable(run_config),
+                        "parameter_count": parameter_count,
+                        "metrics": metrics,
+                    },
+                )
 
     torch.cuda.synchronize(device)
     elapsed_seconds = time.perf_counter() - start_time
@@ -643,7 +861,7 @@ def run_teacher_training(
         "train_images_per_second_train_only": train_images_seen / max(train_elapsed_seconds, 1e-9),
         "peak_cuda_memory_allocated_bytes": torch.cuda.max_memory_allocated(device),
         "peak_cuda_memory_reserved_bytes": torch.cuda.max_memory_reserved(device),
-        "optimizer": "official SingleDeviceMuonWithAuxAdam",
+        "optimizer": run_config.train.optimizer,
         "optimizer_summary": optimizer_summary,
         "quick_smoke": quick_smoke,
     }
