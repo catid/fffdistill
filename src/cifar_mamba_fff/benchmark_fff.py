@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, Literal
 
 import torch
@@ -12,7 +13,21 @@ from .models.fff_linear import FFFLinear, RouteRowRole
 from .profile import TimingResult, time_cuda_callable
 from .utils import bool_arg
 
-BenchmarkKind = Literal["dense", "fff_grouped", "fff_naive"]
+BenchmarkKind = Literal[
+    "dense",
+    "fff_grouped",
+    "fff_naive",
+    "dense_backward",
+    "fff_grouped_backward",
+    "fff_naive_backward",
+]
+
+
+@dataclass(frozen=True)
+class BenchmarkCase:
+    name: BenchmarkKind
+    forward: Callable[[], torch.Tensor]
+    module: nn.Module
 
 
 def _dtype_arg(value: str) -> torch.dtype:
@@ -55,7 +70,24 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hard-routing", type=bool_arg, default=True)
     parser.add_argument("--iterations", type=int, default=50)
     parser.add_argument("--warmup", type=int, default=5)
-    parser.add_argument("--include-naive", type=bool_arg, default=False)
+    parser.add_argument(
+        "--include-naive",
+        type=bool_arg,
+        default=False,
+        help="Run the slow naive FFF path and emit grouped-vs-naive diff metadata.",
+    )
+    parser.add_argument(
+        "--skip-naive",
+        type=bool_arg,
+        default=False,
+        help="Skip the slow naive FFF path and omit grouped-vs-naive diff metadata.",
+    )
+    parser.add_argument(
+        "--measure-backward",
+        type=bool_arg,
+        default=False,
+        help="Also time one forward+backward optimizer-free step for each selected case.",
+    )
     parser.add_argument("--json", type=bool_arg, default=True)
     return parser
 
@@ -79,6 +111,12 @@ def _sync_if_cuda(device: torch.device) -> None:
         torch.cuda.synchronize(device)
 
 
+def _should_run_naive(args: argparse.Namespace) -> bool:
+    if getattr(args, "skip_naive", False):
+        return False
+    return bool(getattr(args, "include_naive", False))
+
+
 def _measure(
     *,
     fn: Callable[[], torch.Tensor],
@@ -100,6 +138,24 @@ def _measure(
     output = fn()
     _sync_if_cuda(device)
     return output, result
+
+
+def _make_backward_step(
+    *,
+    forward: Callable[[], torch.Tensor],
+    module: nn.Module,
+    x: torch.Tensor,
+) -> Callable[[], torch.Tensor]:
+    def step() -> torch.Tensor:
+        module.zero_grad(set_to_none=True)
+        if x.grad is not None:
+            x.grad = None
+        output = forward()
+        loss = output.float().square().mean()
+        loss.backward()
+        return loss.detach()
+
+    return step
 
 
 def _run_benchmark(args: argparse.Namespace) -> list[dict[str, Any]]:
@@ -131,6 +187,8 @@ def _run_benchmark(args: argparse.Namespace) -> list[dict[str, Any]]:
 
     torch.manual_seed(123)
     x = torch.randn(args.batch_size, args.in_features, device=device, dtype=dtype)
+    if args.measure_backward:
+        x.requires_grad_(True)
     dense = nn.Linear(args.in_features, args.out_features, device=device, dtype=dtype)
     fff = FFFLinear(
         args.in_features,
@@ -157,27 +215,28 @@ def _run_benchmark(args: argparse.Namespace) -> list[dict[str, Any]]:
         "route_output_rows_per_token": diagnostics["route_output_rows_per_token"],
         "grouped_leaf_path": diagnostics["grouped_leaf_path"],
     }
-    cases: tuple[tuple[BenchmarkKind, Callable[[], torch.Tensor]], ...] = (
-        ("dense", lambda: dense(x)),
-        ("fff_grouped", lambda: fff.forward_grouped(x)),
+    cases: tuple[BenchmarkCase, ...] = (
+        BenchmarkCase("dense", lambda: dense(x), dense),
+        BenchmarkCase("fff_grouped", lambda: fff.forward_grouped(x), fff),
     )
-    if args.include_naive:
-        cases = (*cases, ("fff_naive", lambda: fff.forward_naive(x)))
+    if _should_run_naive(args):
+        cases = (*cases, BenchmarkCase("fff_naive", lambda: fff.forward_naive(x), fff))
 
     outputs: dict[BenchmarkKind, torch.Tensor] = {}
     rows: list[dict[str, Any]] = []
-    for name, fn in cases:
+    for case in cases:
         output, timing = _measure(
-            fn=fn,
+            fn=case.forward,
             iterations=args.iterations,
             warmup=args.warmup,
             tokens=args.batch_size,
             device=device,
         )
-        outputs[name] = output.detach()
+        outputs[case.name] = output.detach()
         rows.append(
             timing.as_metadata(
-                name=name,
+                name=case.name,
+                phase="forward",
                 device=str(device),
                 dtype=str(dtype).removeprefix("torch."),
                 tokens=args.batch_size,
@@ -190,6 +249,27 @@ def _run_benchmark(args: argparse.Namespace) -> list[dict[str, Any]]:
         max_abs_diff = (outputs["fff_grouped"] - outputs["fff_naive"]).abs().max().item()
         for row in rows:
             row["grouped_naive_max_abs_diff"] = max_abs_diff
+    if args.measure_backward:
+        for case in cases:
+            backward_name = f"{case.name}_backward"
+            _, timing = _measure(
+                fn=_make_backward_step(forward=case.forward, module=case.module, x=x),
+                iterations=args.iterations,
+                warmup=args.warmup,
+                tokens=args.batch_size,
+                device=device,
+            )
+            rows.append(
+                timing.as_metadata(
+                    name=backward_name,
+                    phase="forward_backward",
+                    device=str(device),
+                    dtype=str(dtype).removeprefix("torch."),
+                    tokens=args.batch_size,
+                    tokens_per_second=timing.items_per_second,
+                    **route_metadata,
+                )
+            )
     return rows
 
 
