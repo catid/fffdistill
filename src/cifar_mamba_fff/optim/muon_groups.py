@@ -52,7 +52,7 @@ def _excluded_name_reason(name: str, adamw_name_fragments: tuple[str, ...]) -> s
     components = _name_components(name)
     lowered = name.lower()
 
-    if name.rpartition(".")[2].lower() == "bias":
+    if "bias" in components:
         return "bias parameter"
     if components and _CLASSIFIER_NAME_COMPONENTS.intersection(components):
         return "classifier/head parameter name"
