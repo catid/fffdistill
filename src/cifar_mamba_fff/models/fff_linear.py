@@ -469,6 +469,17 @@ class FFFLinear(nn.Module):
     def max_route_output_rows_per_token(self) -> int:
         return self.depth * self._route_output_rows_per_node()
 
+    def _estimated_active_flops_per_token(self, active_rows_per_token: float) -> float:
+        return 2.0 * float(active_rows_per_token) * (self.in_features + self.out_features)
+
+    @property
+    def estimated_routing_flops_per_token(self) -> int:
+        return 2 * self.internal_nodes * self.route_rows * self.in_features
+
+    @property
+    def estimated_dense_flops_per_token(self) -> int:
+        return 2 * self.in_features * self.out_features
+
     def reset_parameters(self) -> None:
         if self.shared_weight is not None:
             self._reset_input_bank(self.shared_weight, self.shared_bias)
@@ -623,6 +634,11 @@ class FFFLinear(nn.Module):
                 "route_output_rows_per_node": self._route_output_rows_per_node_selected(),
                 "route_output_rows_per_token": self.route_output_rows_per_token,
                 "active_rows_per_token": self._static_active_rows_per_token(),
+                "estimated_active_flops_per_token": self._estimated_active_flops_per_token(
+                    self._static_active_rows_per_token()
+                ),
+                "estimated_routing_flops_per_token": self.estimated_routing_flops_per_token,
+                "estimated_dense_flops_per_token": self.estimated_dense_flops_per_token,
                 "grouped_leaf_path": (
                     "selected_leaf" if self._can_use_selected_leaf_grouped_path() else "all_leaves"
                 ),
@@ -1057,6 +1073,9 @@ class FFFLinear(nn.Module):
             "route_output_rows_per_token": self._route_output_count(),
             "active_rows_per_token": active,
             "mean_active_rows_per_token": mean_active,
+            "estimated_active_flops_per_token": self._estimated_active_flops_per_token(mean_active),
+            "estimated_routing_flops_per_token": self.estimated_routing_flops_per_token,
+            "estimated_dense_flops_per_token": self.estimated_dense_flops_per_token,
             "grouped_leaf_path": (
                 "selected_leaf" if self._can_use_selected_leaf_grouped_path() else "all_leaves"
             ),

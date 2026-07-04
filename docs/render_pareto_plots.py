@@ -490,6 +490,16 @@ def build_outputs() -> dict[Path, str]:
         "Accuracy plots use `validation_accuracy_after_replacement` from the T20 one-layer "
         "route-output sweep. No committed full FFF-student accuracy-vs-active-rows or "
         "accuracy-vs-throughput CSV exists.",
+        "The full-student Pareto source CSV remains blocked on the comparison tasks. Its "
+        "rows should carry recipe metadata, selection split/protocol, validation accuracy, "
+        "validation-selected final-test accuracy when available, active rows, estimated "
+        "active/routing/dense FLOPs per token, stored rows, parameter counts, measured "
+        "throughput, seeds, `test_accessed`, and source manifest paths.",
+        "The committed T20 route-output CSV predates estimated FLOP columns. Regenerated "
+        "distill summaries from current diagnostics can populate "
+        "`estimated_active_flops_per_token`, `estimated_routing_flops_per_token`, and "
+        "`estimated_dense_flops_per_token`; existing T20 rows should not be treated as "
+        "the final active-FLOP source.",
         "`docs/t13_stage_f_layerwise_summary.csv` has route entropy and MSE columns but no "
         "validation accuracy column, so route-entropy-vs-accuracy uses T20 one-layer "
         "replacement accuracy only.",

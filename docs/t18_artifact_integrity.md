@@ -74,17 +74,19 @@ commits, dirty local worktrees, dirty remote worktrees, missing remote `.git`,
 missing remote Python, and optional missing CIFAR-10 train data before launching
 detached jobs.
 
-The remaining hardening gap is config/content hashing. The current scheduler
-preflight does not compute a canonical SHA256 manifest for referenced config
-files, job commands, or launcher scripts and compare it on each remote before
-launch. Until that exists, the safe policy is:
+The scheduler now computes a canonical SHA256 manifest for referenced
+config/selection files in job commands and compares that manifest on each remote
+before launch. This closes the previous config-content preflight gap for YAML
+configs and selection JSON records. Launcher script hashing is still covered
+indirectly by the expected git commit and clean-worktree checks rather than by a
+separate script manifest. The safe policy is:
 
 - sync with `scripts/sync_repo_remote.sh all` from a clean committed checkout;
 - launch with default `--preflight true --expected-commit "$(git rev-parse HEAD)"`;
-- treat `git_commit` plus collected configs/run contexts as provenance, not as a
-  full config-hash preflight guarantee;
-- do not promote new remote results as fully preflight-hardened unless the launch
-  record also contains matching local/remote config or manifest hashes.
+- require matching local/remote config manifest hashes in preflight records for
+  scheduler-launched jobs that reference config or selection files;
+- do not promote new remote results as fully preflight-hardened if the launch
+  record shows missing or mismatched config manifests.
 
 ## Recollection And Regeneration Policy
 

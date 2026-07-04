@@ -7,6 +7,7 @@ import statistics
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from shlex import split as shlex_split
 from typing import Any
 
 TRIAL_COLUMNS = [
@@ -17,6 +18,8 @@ TRIAL_COLUMNS = [
     "family",
     "seed",
     "selected_val_accuracy",
+    "min_selected_val_accuracy",
+    "allow_below_target",
     "test_accuracy",
     "test_loss",
     "test_steps",
@@ -37,6 +40,8 @@ FAMILY_COLUMNS = [
     "seeds",
     "mean_selected_val_accuracy",
     "std_selected_val_accuracy",
+    "below_target_trial_count",
+    "allow_below_target",
     "mean_test_accuracy",
     "std_test_accuracy",
     "mean_test_steps",
@@ -75,6 +80,12 @@ def _parse_bool(value: object, *, field: str, source: Path | str) -> bool:
     raise ValueError(f"{source} has invalid boolean value for {field}: {value!r}")
 
 
+def _parse_bool_default(value: object, *, default: bool = False) -> bool:
+    if value in (None, ""):
+        return default
+    return _parse_bool(value, field="boolean", source="value")
+
+
 def _as_float(value: object) -> float | None:
     if value in (None, ""):
         return None
@@ -93,6 +104,57 @@ def _as_int(value: object) -> int | None:
     except (TypeError, ValueError):
         return None
     return int(number)
+
+
+def _flag_value(tokens: Sequence[str], flag: str) -> str | None:
+    for index, token in enumerate(tokens):
+        if token == flag and index + 1 < len(tokens):
+            return tokens[index + 1]
+        prefix = f"{flag}="
+        if token.startswith(prefix):
+            return token[len(prefix) :]
+    return None
+
+
+def _argv_tokens(status: Mapping[str, Any], run_context: Mapping[str, Any]) -> list[str]:
+    argv = run_context.get("argv")
+    if isinstance(argv, Sequence) and not isinstance(argv, (str, bytes)):
+        return [str(token) for token in argv]
+    command = status.get("command")
+    if isinstance(command, str):
+        try:
+            return shlex_split(command)
+        except ValueError:
+            return []
+    return []
+
+
+def _run_context(metrics_path: Path) -> Mapping[str, Any]:
+    path = metrics_path.parent / "run_context.json"
+    if not path.exists():
+        return {}
+    payload = _load_json(path)
+    return payload if isinstance(payload, Mapping) else {}
+
+
+def _threshold_metadata(
+    *,
+    metrics: Mapping[str, Any],
+    status: Mapping[str, Any],
+    run_context: Mapping[str, Any],
+) -> tuple[float, bool]:
+    min_selected = _as_float(metrics.get("min_selected_val_accuracy"))
+    allow_below = metrics.get("allow_below_target")
+    if min_selected is None:
+        min_selected = _as_float(run_context.get("min_selected_val_accuracy"))
+    if allow_below in (None, ""):
+        allow_below = run_context.get("allow_below_target")
+    tokens = _argv_tokens(status, run_context)
+    if min_selected is None:
+        min_selected = _as_float(_flag_value(tokens, "--min-selected-val-accuracy"))
+    if allow_below in (None, ""):
+        allow_below = _flag_value(tokens, "--allow-below-target")
+    return min_selected if min_selected is not None else 0.90, _parse_bool_default(allow_below)
 
 
 def _fmt(value: object, digits: int = 6) -> str:
@@ -157,6 +219,7 @@ def _require_number(value: object, *, field: str, source: Path) -> float:
 def _trial_row(run_root: Path, metrics_path: Path, selection_by_case: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
     metrics = _expect_mapping(_load_json(metrics_path), source=metrics_path)
     run, machine, gpu, status = _slot_metadata(metrics_path, run_root)
+    run_context = _run_context(metrics_path)
     if str(status.get("status")) != "succeeded":
         raise ValueError(f"{metrics_path} slot status is not succeeded: {status.get('status')!r}")
     if status.get("returncode") not in (0, "0"):
@@ -200,6 +263,16 @@ def _trial_row(run_root: Path, metrics_path: Path, selection_by_case: Mapping[st
     selection_val = _require_number(selection_record.get("best_val_accuracy"), field="best_val_accuracy", source=metrics_path)
     if abs(selected_val - selection_val) > 1e-8:
         raise ValueError(f"{case} selection validation accuracy does not match final metrics")
+    min_selected_val_accuracy, allow_below_target = _threshold_metadata(
+        metrics=metrics,
+        status=status,
+        run_context=run_context,
+    )
+    if selected_val < min_selected_val_accuracy and not allow_below_target:
+        raise ValueError(
+            f"{case} selected validation accuracy {selected_val:.6f} is below "
+            f"{min_selected_val_accuracy:.6f} without allow_below_target=true"
+        )
     return {
         "run": run,
         "machine": machine,
@@ -208,6 +281,8 @@ def _trial_row(run_root: Path, metrics_path: Path, selection_by_case: Mapping[st
         "family": family,
         "seed": seed,
         "selected_val_accuracy": selected_val,
+        "min_selected_val_accuracy": min_selected_val_accuracy,
+        "allow_below_target": allow_below_target,
         "test_accuracy": _require_number(metrics.get("test_accuracy"), field="test_accuracy", source=metrics_path),
         "test_loss": _require_number(metrics.get("test_loss"), field="test_loss", source=metrics_path),
         "test_steps": _as_int(metrics.get("test_steps")),
@@ -251,6 +326,12 @@ def aggregate_by_family(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any
     for family, family_rows in grouped.items():
         test_acc = [float(row["test_accuracy"]) for row in family_rows]
         selected_val = [float(row["selected_val_accuracy"]) for row in family_rows]
+        below_target_trial_count = sum(
+            1
+            for row in family_rows
+            if float(row["selected_val_accuracy"]) < float(row.get("min_selected_val_accuracy", 0.90))
+        )
+        allow_below_target = any(_parse_bool_default(row.get("allow_below_target")) for row in family_rows)
         test_steps = [float(row["test_steps"]) for row in family_rows if row.get("test_steps") not in (None, "")]
         seeds = sorted(int(row["seed"]) for row in family_rows)
         best = max(family_rows, key=lambda row: (float(row["test_accuracy"]), -int(row["seed"])))
@@ -262,6 +343,8 @@ def aggregate_by_family(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any
                 "seeds": ",".join(str(seed) for seed in seeds),
                 "mean_selected_val_accuracy": statistics.fmean(selected_val),
                 "std_selected_val_accuracy": statistics.stdev(selected_val) if len(selected_val) > 1 else 0.0,
+                "below_target_trial_count": below_target_trial_count,
+                "allow_below_target": allow_below_target,
                 "mean_test_accuracy": statistics.fmean(test_acc),
                 "std_test_accuracy": statistics.stdev(test_acc) if len(test_acc) > 1 else 0.0,
                 "mean_test_steps": statistics.fmean(test_steps) if test_steps else None,
@@ -325,6 +408,7 @@ def write_markdown(
     *,
     collected_roots: Sequence[Path],
     title: str = "Stage H Final Student Test Summary",
+    selection_rule: str = "validation-selected checkpoints from committed selection manifests.",
 ) -> None:
     families = aggregate_by_family(rows)
     roots_text = ", ".join(str(root) for root in collected_roots)
@@ -336,7 +420,7 @@ def write_markdown(
         f"- Families: `{len(families)}`",
         "- CIFAR-10 test accessed: `true`",
         "- Partial test evaluation: `false`",
-        "- Selection rule: validation-selected `no_balance_cosine` family from Stage H full 3-epoch validation.",
+        f"- Selection rule: {selection_rule}",
         "",
         "## Family Aggregate",
         "",
@@ -347,6 +431,8 @@ def write_markdown(
                 "Seeds",
                 "Mean val acc",
                 "Std val acc",
+                "Below-target trials",
+                "Allow below target",
                 "Mean test acc",
                 "Std test acc",
                 "Best case",
@@ -360,6 +446,8 @@ def write_markdown(
                     row["seeds"],
                     row["mean_selected_val_accuracy"],
                     row["std_selected_val_accuracy"],
+                    row["below_target_trial_count"],
+                    row["allow_below_target"],
                     row["mean_test_accuracy"],
                     row["std_test_accuracy"],
                     row["best_case"],
@@ -379,6 +467,8 @@ def write_markdown(
                 "GPU",
                 "Seed",
                 "Val acc",
+                "Min val gate",
+                "Allow below target",
                 "Test acc",
                 "Test steps",
                 "Checkpoint SHA256",
@@ -390,6 +480,8 @@ def write_markdown(
                     row["gpu"],
                     row["seed"],
                     row["selected_val_accuracy"],
+                    row["min_selected_val_accuracy"],
+                    row["allow_below_target"],
                     row["test_accuracy"],
                     row["test_steps"],
                     row["checkpoint_sha256"],
@@ -411,6 +503,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--markdown-out", required=True)
     parser.add_argument("--selection-jsonl-out", required=True)
     parser.add_argument("--title", default="Stage H Final Student Test Summary")
+    parser.add_argument(
+        "--selection-rule",
+        default="validation-selected checkpoints from committed selection manifests.",
+    )
     args = parser.parse_args(argv)
 
     roots = [Path(root) for root in args.collected_root]
@@ -420,7 +516,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     write_csv(Path(args.csv_out), rows)
     write_family_csv(Path(args.family_csv_out), rows)
     write_selection_manifest_jsonl(Path(args.selection_jsonl_out), rows, roots)
-    write_markdown(Path(args.markdown_out), rows, collected_roots=roots, title=args.title)
+    write_markdown(
+        Path(args.markdown_out),
+        rows,
+        collected_roots=roots,
+        title=args.title,
+        selection_rule=args.selection_rule,
+    )
     print(f"wrote {len(rows)} student final-test rows from {len(roots)} root(s)")
     return 0
 

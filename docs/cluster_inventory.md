@@ -13,9 +13,9 @@ Generated: 2026-07-04T18:00:01.610058+00:00
   fail as infrastructure errors, and detached launch scripts re-check
   `git rev-parse HEAD` immediately before running the job command so a drifted
   rsync target cannot silently enter an experiment.
-- Current preflight does not yet record or compare local/remote config SHA256
-  manifests. Until that is implemented, `git_commit` plus collected configs/run
-  contexts are provenance records, not a full config-hash preflight guarantee.
+- Scheduler preflight now records and compares canonical SHA256 manifests for
+  referenced config/selection files in job commands. A remote with matching git
+  commit but stale config YAML or selection JSON is refused before launch.
 - `ai` has 2x RTX 5090 GPUs with about 32 GiB each, so batch-size caps should be
   separate from the 95 GiB Pro6000 class.
 

@@ -33,11 +33,11 @@ EXPECTED_ROW_COUNTS = {
     "t20_route_row_output_ablation_results.csv": 7,
     "t19_optimizer_ablation_summary.csv": 6,
     "t14_finetune_summary.csv": 8,
-    "t15_missing_baseline_validation_families.csv": 4,
-    "stage_h_final_full_test_families.csv": 1,
+    "t15_baselines_final_test_families.csv": 4,
+    "stage_h_all_families_final_test_families.csv": 4,
 }
-EXPECTED_FAIRNESS_ROWS = 30
-EXPECTED_TEST_ACCESS_ROWS = 3
+EXPECTED_FAIRNESS_ROWS = 33
+EXPECTED_TEST_ACCESS_ROWS = 10
 GC5_FAMILY_SUMMARY = "fff_gc5_optimizer_wsd_validation_families.csv"
 EXPECTED_GC5_FAMILY_ROWS = 15
 EXPECTED_GC5_SEED = "1337"
@@ -327,39 +327,52 @@ def _t14_rows(docs_dir: Path) -> list[dict[str, object]]:
     return out
 
 
-def _stage_h_final_student_row(docs_dir: Path) -> dict[str, object]:
-    family_path = docs_dir / "stage_h_final_full_test_families.csv"
+def _stage_h_final_student_rows(docs_dir: Path) -> list[dict[str, object]]:
+    family_path = docs_dir / "stage_h_all_families_final_test_families.csv"
     rows = _read_csv(family_path, expected_rows=EXPECTED_ROW_COUNTS[family_path.name])
-    row = rows[0]
-    if row.get("family") != "no_balance_cosine":
-        raise ValueError(f"{family_path} expected no_balance_cosine final family")
-    if _parse_bool(row.get("partial_test_evaluation"), field="partial_test_evaluation"):
-        raise ValueError(f"{family_path} contains partial final-test evidence")
-    if not _parse_bool(row.get("test_accessed"), field="test_accessed"):
-        raise ValueError(f"{family_path} final student row did not access CIFAR-10 test")
-    if _int_text(row.get("seed_count")) != "3":
-        raise ValueError(f"{family_path} expected three selected final-test seeds")
-    return _row(
-        method="fff_student_stage_h_no_balance_cosine",
-        evidence=str(family_path),
-        split="final_test",
-        status="selected_full_test",
-        test_accessed="true",
-        validation_accuracy=_float_text(row.get("mean_selected_val_accuracy")),
-        final_test_accuracy=_float_text(row.get("mean_test_accuracy")),
-        train_steps="4218 per selected seed",
-        seeds=row.get("seeds", ""),
-        budget=(
-            "Validation-selected no_balance_cosine family, three seeds, full CIFAR-10 "
-            "test evaluation after selection."
-        ),
-        fairness_note=(
-            f"Mean/std final test accuracy {_float_text(row.get('mean_test_accuracy'))}/"
-            f"{_float_text(row.get('std_test_accuracy'))}; best case {row.get('best_case', '')} "
-            f"seed {row.get('best_seed', '')} reached {_float_text(row.get('best_test_accuracy'))}. "
-            "Selection manifests are committed in docs/stage_h_final_selection_manifest.jsonl."
-        ),
-    )
+    required_families = {"no_balance_cosine", "baseline_cosine", "wsd", "low_lr_cosine"}
+    seen_families: set[str] = set()
+    out: list[dict[str, object]] = []
+    for row in rows:
+        family_name = row.get("family", "")
+        if family_name not in required_families:
+            raise ValueError(f"unexpected Stage H family in {family_path}: {family_name!r}")
+        seen_families.add(family_name)
+        if _parse_bool(row.get("partial_test_evaluation"), field="partial_test_evaluation"):
+            raise ValueError(f"{family_path} contains partial final-test evidence")
+        if not _parse_bool(row.get("test_accessed"), field="test_accessed"):
+            raise ValueError(f"{family_path} Stage H row {family_name} did not access CIFAR-10 test")
+        if _int_text(row.get("seed_count")) != "3":
+            raise ValueError(f"{family_path} Stage H row {family_name} expected three final-test seeds")
+        selected = family_name == "no_balance_cosine"
+        out.append(
+            _row(
+                method=f"fff_student_stage_h_{family_name}",
+                evidence=str(family_path),
+                split="final_test",
+                status="validation_leader_full_test" if selected else "all_family_full_test",
+                test_accessed="true",
+                validation_accuracy=_float_text(row.get("mean_selected_val_accuracy")),
+                final_test_accuracy=_float_text(row.get("mean_test_accuracy")),
+                train_steps="4218 per final-tested seed",
+                seeds=row.get("seeds", ""),
+                budget=(
+                    "Three validation-trained Stage H seeds per family, full CIFAR-10 "
+                    "test evaluation after validation-only Stage H HPO."
+                ),
+                fairness_note=(
+                    f"Mean/std final test accuracy {_float_text(row.get('mean_test_accuracy'))}/"
+                    f"{_float_text(row.get('std_test_accuracy'))}; best case {row.get('best_case', '')} "
+                    f"seed {row.get('best_seed', '')} reached {_float_text(row.get('best_test_accuracy'))}. "
+                    "All-family final-test comparison; do not use these test results for further selection. "
+                    "Selection manifests are committed in docs/stage_h_all_families_final_selection_manifest.jsonl."
+                ),
+            )
+        )
+    missing_required = sorted(required_families - seen_families)
+    if missing_required:
+        raise ValueError(f"{family_path} missing required Stage H families: {missing_required}")
+    return out
 
 
 def _baseline_rows(docs_dir: Path) -> list[dict[str, object]]:
@@ -380,11 +393,11 @@ def _baseline_rows(docs_dir: Path) -> list[dict[str, object]]:
             ),
         ),
     ]
-    family_path = docs_dir / "t15_missing_baseline_validation_families.csv"
+    family_path = docs_dir / "t15_baselines_final_test_families.csv"
     baseline_methods = {
         "dense_copy": (
             "dense_teacher_copied_student",
-            "Dense teacher-copied student sanity baseline; validation-only, no CIFAR-10 test access.",
+            "Dense teacher-copied student sanity baseline.",
         ),
         "low_rank": (
             "matched_low_rank_linear",
@@ -407,25 +420,35 @@ def _baseline_rows(docs_dir: Path) -> list[dict[str, object]]:
         if family_name not in baseline_methods:
             raise ValueError(f"unexpected baseline family in {family_path}: {family_name!r}")
         seen_families.add(family_name)
+        if _parse_bool(family.get("partial_test_evaluation"), field="partial_test_evaluation"):
+            raise ValueError(f"{family_path} contains partial final-test evidence")
+        if not _parse_bool(family.get("test_accessed"), field="test_accessed"):
+            raise ValueError(f"{family_path} baseline row {family_name} did not access CIFAR-10 test")
+        if _int_text(family.get("seed_count")) != "3":
+            raise ValueError(f"{family_path} baseline row {family_name} expected three final-test seeds")
         method, note_prefix = baseline_methods[family_name]
         rows.append(
             _row(
                 method=method,
                 evidence=str(family_path),
-                split="validation",
-                status="completed",
+                split="final_test",
+                status="validation_selected_full_test",
                 test_accessed=_bool_text(family.get("test_accessed")),
-                validation_accuracy=_float_text(family.get("mean_best_val_accuracy")),
-                train_steps=_int_text(family.get("mean_train_steps")),
+                validation_accuracy=_float_text(family.get("mean_selected_val_accuracy")),
+                final_test_accuracy=_float_text(family.get("mean_test_accuracy")),
+                train_steps="4218 per final-tested seed",
                 seeds=family.get("seeds", ""),
                 budget=(
-                    "Three seeds, three fine-tune epochs, 4218 train steps each, "
-                    "same teacher checkpoint and validation-only selection protocol."
+                    "Three validation-selected seeds, three fine-tune epochs, 4218 train steps each, "
+                    "same teacher checkpoint, then full CIFAR-10 test evaluation."
                 ),
                 fairness_note=(
-                    f"{note_prefix} Best case {family.get('best_case', '')} "
-                    f"seed {family.get('best_seed', '')} reached validation accuracy "
-                    f"{_float_text(family.get('best_val_accuracy'))}."
+                    f"{note_prefix} Mean/std final test accuracy "
+                    f"{_float_text(family.get('mean_test_accuracy'))}/"
+                    f"{_float_text(family.get('std_test_accuracy'))}; best case "
+                    f"{family.get('best_case', '')} seed {family.get('best_seed', '')} reached "
+                    f"{_float_text(family.get('best_test_accuracy'))}. Selection manifests are "
+                    "committed in docs/t15_baselines_final_selection_manifest.jsonl."
                 ),
             )
         )
@@ -493,7 +516,7 @@ def build_fairness_rows(docs_dir: Path = Path("docs")) -> list[dict[str, object]
     rows.extend(_t20_rows(docs_dir))
     rows.extend(_t19_rows(docs_dir))
     rows.extend(_t14_rows(docs_dir))
-    rows.append(_stage_h_final_student_row(docs_dir))
+    rows.extend(_stage_h_final_student_rows(docs_dir))
     rows.extend(_baseline_rows(docs_dir))
     rows.extend(_gc5_rows(docs_dir))
     validate_fairness_rows(rows, expected_rows=expected_fairness_rows(docs_dir))
@@ -564,8 +587,9 @@ def write_fairness_markdown(path: Path, rows: Sequence[Mapping[str, object]]) ->
             "not clean held-out validation metrics and not final accuracy.",
             "- Stage F train-eval rows use CIFAR-10 train images with eval/no-augmentation transforms "
             "and held-out token metrics; they are clean layerwise distillation evidence, not final accuracy.",
-            "- Required baselines without committed metrics are explicitly marked `not_run`; "
-            "completed baseline rows are validation-only unless separately marked final-test.",
+            "- Completed T15 baseline rows are final-test rows only when backed by validation-selected "
+            "full CIFAR-10 test artifacts; older validation-only baseline summaries are superseded "
+            "for final accuracy claims.",
             "",
         ]
     )

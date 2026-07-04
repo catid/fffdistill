@@ -248,6 +248,8 @@ def test_format_student_final_result_separates_partial_and_full_metrics() -> Non
     )
 
     assert partial["test_accessed"] is True
+    assert partial["min_selected_val_accuracy"] == pytest.approx(0.9)
+    assert partial["allow_below_target"] is False
     assert partial["partial_test_evaluation"] is True
     assert partial["test_accuracy_partial"] == pytest.approx(0.3)
     assert "test_accuracy" not in partial

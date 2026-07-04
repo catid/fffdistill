@@ -79,7 +79,9 @@ report_columns:
   - effective_route_output_rows
   - unused_route_output_rows
   - unused_stored_route_output_rows
-  - active_flops
+  - estimated_active_flops_per_token
+  - estimated_routing_flops_per_token
+  - estimated_dense_flops_per_token
   - validation_mse
   - validation_accuracy
   - throughput

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import subprocess
 import time
@@ -9,6 +10,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from shlex import quote
+from shlex import split as shlex_split
 from typing import Any
 
 from .cluster import MachineSpec, load_machines, read_remote_text, run_remote, write_remote_text
@@ -54,6 +56,15 @@ COLLECTED_ARTIFACT_NAMES = (
     *ROOT_COLLECTED_ARTIFACT_NAMES,
     *(f"trials/trial_000000/{name}" for name in TRIAL_COLLECTED_ARTIFACT_NAMES),
 )
+CONFIG_PATH_ARGUMENTS = frozenset(
+    {
+        "--base-config",
+        "--hpo-config",
+        "--config",
+        "--selection-record",
+    }
+)
+CONFIG_MANIFEST_PREFIX = "CONFIG_MANIFEST "
 
 
 class JobStatus(StrEnum):
@@ -135,11 +146,15 @@ class PreflightResult:
     remote_commit: str | None = None
     local_clean: bool | None = None
     remote_clean: bool | None = None
+    local_config_manifest_sha256: str | None = None
+    remote_config_manifest_sha256: str | None = None
+    local_config_manifest: dict[str, Any] | None = None
+    remote_config_manifest: dict[str, Any] | None = None
     stdout: str = ""
     stderr: str = ""
 
     def record(self) -> dict[str, object]:
-        return {
+        record: dict[str, object] = {
             "machine": self.machine,
             "ok": self.ok,
             "returncode": self.returncode,
@@ -152,6 +167,16 @@ class PreflightResult:
             "stdout": self.stdout.strip(),
             "stderr": self.stderr.strip(),
         }
+        if self.local_config_manifest is not None or self.remote_config_manifest is not None:
+            record.update(
+                {
+                    "local_config_manifest_sha256": self.local_config_manifest_sha256,
+                    "remote_config_manifest_sha256": self.remote_config_manifest_sha256,
+                    "local_config_manifest": self.local_config_manifest,
+                    "remote_config_manifest": self.remote_config_manifest,
+                }
+            )
+        return record
 
 
 def _utc_now() -> str:
@@ -172,10 +197,126 @@ def _git_worktree_clean() -> bool:
     return completed.returncode == 0 and not completed.stdout.strip()
 
 
+def _append_stderr(stderr: str, message: str) -> str:
+    return (stderr.rstrip() + "\n" + message).strip()
+
+
 def _relative_path(path: Path, *, field_name: str) -> Path:
     if path.is_absolute():
         raise ValueError(f"{field_name} must be relative to the repository workdir")
     return path
+
+
+def _normalize_manifest_path(path: str | Path) -> str:
+    relative = _relative_path(Path(path), field_name="config manifest path")
+    if any(part == ".." for part in relative.parts):
+        raise ValueError(f"config manifest path must stay inside repository: {path}")
+    return relative.as_posix()
+
+
+def build_config_manifest(paths: list[str | Path]) -> dict[str, Any] | None:
+    normalized = sorted({_normalize_manifest_path(path) for path in paths if str(path)})
+    if not normalized:
+        return None
+    files: list[dict[str, object]] = []
+    for path_text in normalized:
+        path = Path(path_text)
+        if not path.is_file():
+            raise FileNotFoundError(f"config manifest path not found: {path_text}")
+        data = path.read_bytes()
+        files.append(
+            {
+                "path": path_text,
+                "size_bytes": len(data),
+                "sha256": hashlib.sha256(data).hexdigest(),
+            }
+        )
+    canonical = json.dumps(files, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return {
+        "algorithm": "sha256",
+        "files": files,
+        "sha256": hashlib.sha256(canonical).hexdigest(),
+    }
+
+
+def _config_manifest_paths(manifest: dict[str, Any] | None) -> list[str]:
+    if manifest is None:
+        return []
+    paths: list[str] = []
+    for entry in manifest.get("files", []):
+        if not isinstance(entry, dict):
+            continue
+        path = entry.get("path")
+        if path:
+            paths.append(str(path))
+    return paths
+
+
+def config_manifest_paths_from_jobs(jobs: list[GpuJob]) -> list[str]:
+    paths: list[str | Path] = []
+    for job in jobs:
+        try:
+            parts = shlex_split(job.command)
+        except ValueError as exc:
+            raise ValueError(f"cannot parse job command for config manifest: {job.command}") from exc
+        for index, token in enumerate(parts):
+            if token in CONFIG_PATH_ARGUMENTS:
+                if index + 1 >= len(parts):
+                    raise ValueError(f"{token} in job command is missing a path")
+                paths.append(parts[index + 1])
+                continue
+            for flag in CONFIG_PATH_ARGUMENTS:
+                prefix = f"{flag}="
+                if token.startswith(prefix):
+                    paths.append(token[len(prefix) :])
+    return sorted({_normalize_manifest_path(path) for path in paths if str(path)})
+
+
+def _config_manifest_python_source() -> str:
+    return "\n".join(
+        [
+            "import hashlib, json, sys",
+            "from pathlib import Path",
+            "paths = json.loads(sys.argv[1])",
+            "files = []",
+            "for path_text in sorted(set(paths)):",
+            "    path = Path(path_text)",
+            "    if path.is_absolute() or '..' in path.parts:",
+            "        raise SystemExit(f'invalid config manifest path: {path_text}')",
+            "    if not path.is_file():",
+            "        raise SystemExit(f'missing config manifest path: {path_text}')",
+            "    data = path.read_bytes()",
+            "    files.append({",
+            "        'path': path_text,",
+            "        'size_bytes': len(data),",
+            "        'sha256': hashlib.sha256(data).hexdigest(),",
+            "    })",
+            "canonical = json.dumps(files, sort_keys=True, separators=(',', ':')).encode('utf-8')",
+            "manifest = {",
+            "    'algorithm': 'sha256',",
+            "    'files': files,",
+            "    'sha256': hashlib.sha256(canonical).hexdigest(),",
+            "}",
+            f"print({CONFIG_MANIFEST_PREFIX!r} + json.dumps(manifest, sort_keys=True))",
+        ]
+    )
+
+
+def _remote_config_manifest_command(paths: list[str | Path], *, python_bin: str) -> str | None:
+    normalized = sorted({_normalize_manifest_path(path) for path in paths if str(path)})
+    if not normalized:
+        return None
+    return (
+        f"{quote(python_bin)} -c {quote(_config_manifest_python_source())} "
+        f"{quote(json.dumps(normalized))}"
+    )
+
+
+def _extract_remote_config_manifest(stdout: str) -> dict[str, Any] | None:
+    for line in stdout.splitlines():
+        if line.startswith(CONFIG_MANIFEST_PREFIX):
+            return json.loads(line[len(CONFIG_MANIFEST_PREFIX) :])
+    return None
 
 
 def detached_job_files(job: GpuJob) -> DetachedJobFiles:
@@ -699,11 +840,20 @@ def preflight_machine(
     *,
     python_bin: str = DEFAULT_PYTHON_BIN,
     expected_commit: str | None = None,
+    config_paths: list[str | Path] | None = None,
+    expected_config_manifest: dict[str, Any] | None = None,
     require_cifar10_train: bool = False,
     data_dir: str | Path = "data/cifar10",
     timeout_s: int = 20,
 ) -> PreflightResult:
     local_clean = _git_worktree_clean()
+    local_config_manifest = expected_config_manifest
+    if local_config_manifest is None:
+        local_config_manifest = build_config_manifest(list(config_paths or []))
+    manifest_command = _remote_config_manifest_command(
+        _config_manifest_paths(local_config_manifest),
+        python_bin=python_bin,
+    )
     commands = [
         "test -d .git",
         "git rev-parse HEAD",
@@ -717,6 +867,8 @@ def preflight_machine(
         f"test -x {quote(python_bin)}",
         f"{quote(python_bin)} --version",
     ]
+    if manifest_command is not None:
+        commands.append(manifest_command)
     if require_cifar10_train:
         commands.append(
             f"{quote(python_bin)} scripts/prepare_cifar10.py "
@@ -732,15 +884,34 @@ def preflight_machine(
     ok = bool(result["ok"])
     stderr = str(result["stderr"])
     remote_clean = result["returncode"] != 121
+    try:
+        remote_config_manifest = _extract_remote_config_manifest(stdout)
+    except json.JSONDecodeError as exc:
+        ok = False
+        stderr = _append_stderr(stderr, f"remote config manifest is invalid JSON: {exc}")
+        remote_config_manifest = None
     if expected_commit is not None and commit != expected_commit:
         ok = False
-        stderr = (
-            stderr.rstrip()
-            + f"\nremote commit/config mismatch: expected {expected_commit}, got {commit}"
-        ).strip()
+        stderr = _append_stderr(
+            stderr,
+            f"remote commit/config mismatch: expected {expected_commit}, got {commit}",
+        )
+    if local_config_manifest is not None:
+        local_sha = str(local_config_manifest["sha256"])
+        remote_sha = (
+            str(remote_config_manifest["sha256"])
+            if remote_config_manifest is not None and remote_config_manifest.get("sha256")
+            else None
+        )
+        if remote_sha != local_sha:
+            ok = False
+            stderr = _append_stderr(
+                stderr,
+                f"remote config manifest mismatch: expected {local_sha}, got {remote_sha or 'missing'}",
+            )
     if not local_clean:
         ok = False
-        stderr = (stderr.rstrip() + "\nlocal worktree is dirty").strip()
+        stderr = _append_stderr(stderr, "local worktree is dirty")
     return PreflightResult(
         machine=spec.name,
         ok=ok,
@@ -751,6 +922,16 @@ def preflight_machine(
         remote_commit=commit,
         local_clean=local_clean,
         remote_clean=remote_clean,
+        local_config_manifest_sha256=(
+            str(local_config_manifest["sha256"]) if local_config_manifest is not None else None
+        ),
+        remote_config_manifest_sha256=(
+            str(remote_config_manifest["sha256"])
+            if remote_config_manifest is not None and remote_config_manifest.get("sha256")
+            else None
+        ),
+        local_config_manifest=local_config_manifest,
+        remote_config_manifest=remote_config_manifest,
         stdout=stdout,
         stderr=stderr,
     )
@@ -1569,6 +1750,7 @@ def main(argv: list[str] | None = None) -> int:
         skipped_results: list[dict[str, Any]] = []
         preflight_records_by_machine: dict[str, dict[str, object]] = {}
         expected_launch_commit = None if args.expected_commit == "any" else str(args.expected_commit)
+        config_manifest = build_config_manifest(config_manifest_paths_from_jobs(jobs))
         if args.preflight:
             specs_by_name = {machine.name: machine for machine in machines}
             machines_with_jobs = sorted({str(job.machine) for job in jobs if job.machine is not None})
@@ -1577,6 +1759,7 @@ def main(argv: list[str] | None = None) -> int:
                     specs_by_name[machine_name],
                     python_bin=args.python_bin,
                     expected_commit=expected_launch_commit,
+                    expected_config_manifest=config_manifest,
                     require_cifar10_train=args.smoke_mode == "train"
                     or args.job_kind
                     in {"teacher_hpo", "distill_hpo", "finetune_hpo", "student_final"},

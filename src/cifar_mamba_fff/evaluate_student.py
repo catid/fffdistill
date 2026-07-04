@@ -200,12 +200,16 @@ def format_student_final_result(
     eligible_count: int,
     quick_smoke: bool,
     max_test_steps: int | None,
+    min_selected_val_accuracy: float = 0.90,
+    allow_below_target: bool = False,
 ) -> dict[str, object]:
     partial = quick_smoke or max_test_steps is not None
     result: dict[str, object] = {
         "phase": "student_final_test",
         "checkpoint_path": str(checkpoint_path),
         "selected_val_accuracy": selected_val_accuracy_value,
+        "min_selected_val_accuracy": min_selected_val_accuracy,
+        "allow_below_target": allow_below_target,
         "test_steps": metrics["val_steps"],
         "elapsed_seconds": elapsed_seconds,
         "student_replacement_count": replacement_count,
@@ -291,6 +295,8 @@ def evaluate_student_checkpoint(
                 "checkpoint_path": str(checkpoint_path),
                 "checkpoint_sha256": checkpoint_sha256,
                 "selected_val_accuracy": selected_val,
+                "min_selected_val_accuracy": min_selected_val_accuracy,
+                "allow_below_target": allow_below_target,
                 "selection": selection_metadata,
                 "test_accessed": True,
                 "run_config": run_config,
@@ -337,6 +343,8 @@ def evaluate_student_checkpoint(
         eligible_count=eligible_count,
         quick_smoke=quick_smoke,
         max_test_steps=max_test_steps,
+        min_selected_val_accuracy=min_selected_val_accuracy,
+        allow_below_target=allow_below_target,
     )
     result["checkpoint_sha256"] = checkpoint_sha256
     result["selection"] = dict(selection_metadata)

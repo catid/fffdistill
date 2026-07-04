@@ -167,7 +167,7 @@ def test_validate_final_report_rejects_stage_h_selection_rank_drift(tmp_path: Pa
 def test_validate_final_report_rejects_test_accessed_selection_manifest(tmp_path: Path) -> None:
     docs_dir = tmp_path / "docs"
     shutil.copytree(Path("docs"), docs_dir)
-    source = docs_dir / "stage_h_final_selection_manifest.jsonl"
+    source = docs_dir / "stage_h_all_families_final_selection_manifest.jsonl"
     _rewrite_jsonl_record(source, record_index=0, updates={"test_accessed": True})
     write_fairness_reports(docs_dir=docs_dir)
 
@@ -181,14 +181,6 @@ def test_validate_final_report_checks_optional_gc5_validation_metrics(tmp_path: 
     _write_gc5_validation_csvs(docs_dir)
     write_fairness_reports(docs_dir=docs_dir)
     report = docs_dir / "final_report.md"
-    report.write_text(
-        report.read_text(encoding="utf-8").replace(
-            "The table contains 30 rows",
-            "The table contains 45 rows",
-        ),
-        encoding="utf-8",
-    )
-
     with pytest.raises(ValueError, match="GC5 validation trial row count"):
         report.write_text(
             report.read_text(encoding="utf-8").replace(
@@ -217,7 +209,6 @@ def test_validate_final_report_rejects_missing_gc5_wsd_scope_note(tmp_path: Path
     report = docs_dir / "final_report.md"
     report.write_text(
         report.read_text(encoding="utf-8")
-        .replace("The table contains 30 rows", "The table contains 45 rows")
         .replace(
             "GC5 are limited to the official Muon family",
             "WSD cells in GC5 are not described here",

@@ -106,3 +106,33 @@ def test_collect_student_final_rows_rejects_partial_or_untracked(tmp_path: Path)
 
     with pytest.raises(ValueError, match="partial"):
         collect_student_final_rows(root)
+
+
+def test_collect_student_final_rows_labels_below_target_failure_analysis(tmp_path: Path) -> None:
+    root = tmp_path / "collected"
+    _write_case(root, gpu=0, case="low_lr_cosine_seed21001", seed=21001, val=0.8892, test=0.888)
+
+    with pytest.raises(ValueError, match="without allow_below_target"):
+        collect_student_final_rows(root)
+
+    run_context = root / "foureyes" / "0" / "run_context.json"
+    run_context.write_text(
+        json.dumps(
+            {
+                "argv": [
+                    "evaluate_student.py",
+                    "--min-selected-val-accuracy",
+                    "0.9",
+                    "--allow-below-target",
+                    "true",
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rows = collect_student_final_rows(root)
+
+    assert rows[0]["min_selected_val_accuracy"] == pytest.approx(0.9)
+    assert rows[0]["allow_below_target"] is True
+    assert aggregate_by_family(rows)[0]["below_target_trial_count"] == 1

@@ -63,6 +63,9 @@ SUMMARY_COLUMNS = [
     "active_rows_per_token",
     "stored_rows",
     "effective_stored_rows",
+    "estimated_active_flops_per_token",
+    "estimated_routing_flops_per_token",
+    "estimated_dense_flops_per_token",
     "route_output_rows_per_token",
     "route_output_rows_per_node",
     "locoprop_status",
@@ -262,6 +265,15 @@ def collect_distill_hpo_rows(collected_root: Path) -> list[dict[str, Any]]:
                     "active_rows_per_token": diagnostics.get("active_rows_per_token_mean"),
                     "stored_rows": diagnostics.get("stored_rows"),
                     "effective_stored_rows": diagnostics.get("effective_stored_rows"),
+                    "estimated_active_flops_per_token": diagnostics.get(
+                        "estimated_active_flops_per_token"
+                    ),
+                    "estimated_routing_flops_per_token": diagnostics.get(
+                        "estimated_routing_flops_per_token"
+                    ),
+                    "estimated_dense_flops_per_token": diagnostics.get(
+                        "estimated_dense_flops_per_token"
+                    ),
                     "route_output_rows_per_token": diagnostics.get("route_output_rows_per_token"),
                     "route_output_rows_per_node": diagnostics.get("route_output_rows_per_node"),
                     "locoprop_status": locoprop.get("status"),

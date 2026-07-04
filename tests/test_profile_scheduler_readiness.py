@@ -16,6 +16,7 @@ from cifar_mamba_fff.cluster import MachineSpec
 from cifar_mamba_fff.gpu_scheduler import (
     GpuJob,
     JobStatus,
+    build_config_manifest,
     build_distill_hpo_command,
     build_dry_run_jobs,
     build_finetune_hpo_command,
@@ -23,8 +24,10 @@ from cifar_mamba_fff.gpu_scheduler import (
     build_student_final_jobs,
     build_teacher_hpo_command,
     build_train_teacher_command,
+    config_manifest_paths_from_jobs,
     launch_detached_job,
     parse_unavailable_slots,
+    preflight_machine,
     read_detached_job_status,
     resolve_collect_root,
     write_queue,
@@ -218,6 +221,71 @@ def test_scheduler_dry_run_jobs_bind_gpu_venv_python_and_output_dir(tmp_path) ->
 
     assert records[0]["output_dir"] == "outputs/scheduler_smoke/work/0"
     assert records[0]["metadata"]["output_dir"] == "outputs/scheduler_smoke/work/0"
+
+
+def test_config_manifest_paths_from_jobs_collects_config_arguments() -> None:
+    jobs = [
+        GpuJob(
+            command=(
+                "PYTHONPATH=src .venv/bin/python -m runner "
+                "--base-config configs/base.yaml --hpo-config=configs/hpo.yaml "
+                "--selection-record docs/final_eval_selection/case.json"
+            ),
+            output_dir=Path("outputs/job"),
+            machine="work",
+            gpu_id=0,
+        )
+    ]
+
+    assert config_manifest_paths_from_jobs(jobs) == [
+        "configs/base.yaml",
+        "configs/hpo.yaml",
+        "docs/final_eval_selection/case.json",
+    ]
+
+
+def test_preflight_records_and_refuses_config_manifest_mismatch(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    (config_dir / "base.yaml").write_text("seed: 1\n", encoding="utf-8")
+    local_manifest = build_config_manifest(["configs/base.yaml"])
+    assert local_manifest is not None
+    remote_manifest = {
+        **local_manifest,
+        "sha256": "0" * 64,
+    }
+    spec = MachineSpec(name="work", host="localhost", gpus=1, role="local", workdir=str(tmp_path))
+
+    monkeypatch.setattr(gpu_scheduler, "_git_worktree_clean", lambda: True)
+    monkeypatch.setattr(gpu_scheduler, "git_commit", lambda: "abc123")
+
+    def fake_run_remote(*args, **kwargs):
+        return {
+            "ok": True,
+            "returncode": 0,
+            "stdout": (
+                "abc123\n"
+                "Python 3.12.0\n"
+                f"{gpu_scheduler.CONFIG_MANIFEST_PREFIX}"
+                f"{json.dumps(remote_manifest, sort_keys=True)}\n"
+            ),
+            "stderr": "",
+        }
+
+    monkeypatch.setattr(gpu_scheduler, "run_remote", fake_run_remote)
+
+    result = preflight_machine(
+        spec,
+        python_bin="python3",
+        expected_commit="abc123",
+        expected_config_manifest=local_manifest,
+    )
+
+    assert result.ok is False
+    assert result.local_config_manifest_sha256 == local_manifest["sha256"]
+    assert result.remote_config_manifest_sha256 == "0" * 64
+    assert "remote config manifest mismatch" in result.stderr
 
 
 def test_scheduler_filters_unavailable_slots() -> None:
@@ -758,6 +826,11 @@ def test_scheduler_main_threads_distill_hpo_args_and_requires_cifar_preflight(
     monkeypatch,
     capsys,
 ) -> None:
+    monkeypatch.chdir(tmp_path)
+    configs_dir = tmp_path / "configs"
+    configs_dir.mkdir()
+    (configs_dir / "distill base.yaml").write_text("model: distill\n", encoding="utf-8")
+    (configs_dir / "distill hpo.yaml").write_text("trials: 2\n", encoding="utf-8")
     machines_path = tmp_path / "machines.yaml"
     machines_path.write_text(
         "\n".join(
@@ -866,6 +939,11 @@ def test_scheduler_main_threads_finetune_hpo_args_and_requires_cifar_preflight(
     monkeypatch,
     capsys,
 ) -> None:
+    monkeypatch.chdir(tmp_path)
+    configs_dir = tmp_path / "configs"
+    configs_dir.mkdir()
+    (configs_dir / "finetune base.yaml").write_text("model: finetune\n", encoding="utf-8")
+    (configs_dir / "finetune hpo.yaml").write_text("trials: 2\n", encoding="utf-8")
     machines_path = tmp_path / "machines.yaml"
     machines_path.write_text(
         "\n".join(
@@ -967,6 +1045,13 @@ def test_scheduler_main_threads_student_final_manifest_and_requires_cifar_prefli
     monkeypatch,
     capsys,
 ) -> None:
+    monkeypatch.chdir(tmp_path)
+    selection_dir = tmp_path / "docs" / "selection"
+    selection_dir.mkdir(parents=True)
+    (selection_dir / "baseline_seed21001.json").write_text(
+        json.dumps({"case": "baseline_seed21001"}) + "\n",
+        encoding="utf-8",
+    )
     machines_path = tmp_path / "machines.yaml"
     machines_path.write_text(
         "\n".join(

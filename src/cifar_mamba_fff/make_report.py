@@ -41,7 +41,7 @@ REQUIRED_SNIPPETS = (
     "Legacy validation-capture Stage F",
     "docs/t13_stage_f_train_eval_layerwise_summary.csv",
     "Corrected Stage F train-eval rerun",
-    "Full Stage H selected FFF student final CIFAR-10 test",
+    "Full Stage H all-family FFF student final CIFAR-10 test",
     "test_accessed=true",
 )
 
@@ -607,39 +607,46 @@ def _validate_stage_h_final_metrics(report_text: str, docs_dir: Path) -> None:
     ):
         raise ValueError(f"{validation_source} selected family is not a strict validation leader")
 
-    family_source = docs_dir / "stage_h_final_full_test_families.csv"
-    family_rows = _read_csv(family_source, expected_rows=1)
-    family = family_rows[0]
-    if family.get("family") != "no_balance_cosine":
-        raise ValueError(f"{family_source} expected no_balance_cosine family")
-    if _bool(family.get("partial_test_evaluation"), field="partial_test_evaluation", source=family_source):
-        raise ValueError(f"{family_source} contains partial final-test rows")
-    if not _bool(family.get("test_accessed"), field="test_accessed", source=family_source):
-        raise ValueError(f"{family_source} did not access CIFAR-10 test")
-    if _fmt_int(family.get("seed_count")) != "3":
-        raise ValueError(f"{family_source} expected three selected seeds")
+    expected_families = {row["family"] for row in validation_rows}
+    family_source = docs_dir / "stage_h_all_families_final_test_families.csv"
+    family_rows = _read_csv(family_source, expected_rows=4)
+    family_by_name = {str(row.get("family", "")): row for row in family_rows}
+    if set(family_by_name) != expected_families:
+        raise ValueError(f"{family_source} families do not match {validation_source}")
+    for family_name, family_row in family_by_name.items():
+        if _bool(family_row.get("partial_test_evaluation"), field="partial_test_evaluation", source=family_source):
+            raise ValueError(f"{family_source} contains partial final-test rows")
+        if not _bool(family_row.get("test_accessed"), field="test_accessed", source=family_source):
+            raise ValueError(f"{family_source} family {family_name} did not access CIFAR-10 test")
+        if _fmt_int(family_row.get("seed_count")) != "3":
+            raise ValueError(f"{family_source} family {family_name} expected three final-test seeds")
+
+    family = family_by_name["no_balance_cosine"]
     if _fmt_float(_float(family, "mean_selected_val_accuracy", source=family_source), 6) != _fmt_float(
         _float(validation_sorted[0], "mean_best_val_accuracy", source=validation_source), 6
     ):
-        raise ValueError(f"{family_source} selected validation mean does not match {validation_source}")
+        raise ValueError(f"{family_source} validation leader mean does not match {validation_source}")
 
-    trial_source = docs_dir / "stage_h_final_full_test_trials.csv"
-    trial_rows = _read_csv(trial_source, expected_rows=3)
-    _require_all_equal(trial_rows, "family", "no_balance_cosine", source=trial_source)
+    trial_source = docs_dir / "stage_h_all_families_final_test_trials.csv"
+    trial_rows = _read_csv(trial_source, expected_rows=12)
     _require_all_equal(trial_rows, "partial_test_evaluation", "false", source=trial_source)
     _require_all_equal(trial_rows, "test_accessed", "true", source=trial_source)
     _require_all_equal(trial_rows, "allow_untracked_selection", "false", source=trial_source)
-    seeds = sorted(_fmt_int(row["seed"]) for row in trial_rows)
-    if seeds != ["21001", "21002", "21003"]:
-        raise ValueError(f"{trial_source} expected selected seeds 21001,21002,21003")
+    trial_families = {str(row.get("family", "")) for row in trial_rows}
+    if trial_families != expected_families:
+        raise ValueError(f"{trial_source} families do not match {validation_source}")
+    for family_name in expected_families:
+        seeds = sorted(_fmt_int(row["seed"]) for row in trial_rows if row.get("family") == family_name)
+        if seeds != ["21001", "21002", "21003"]:
+            raise ValueError(f"{trial_source} family {family_name} expected seeds 21001,21002,21003")
     commits = sorted({str(row.get("remote_git_commit", "")) for row in trial_rows})
     if len(commits) != 1 or not commits[0]:
         raise ValueError(f"{trial_source} expected one non-empty final-eval remote_git_commit")
-    run_ids = sorted({str(row.get("run", "")) for row in trial_rows})
-    if len(run_ids) != 1 or not run_ids[0]:
-        raise ValueError(f"{trial_source} expected one non-empty final-eval run id")
+    run_ids = sorted({str(row.get("run", "")) for row in trial_rows if str(row.get("run", ""))})
+    if not run_ids:
+        raise ValueError(f"{trial_source} expected non-empty final-eval run ids")
 
-    selection_source = docs_dir / "stage_h_final_selection_manifest.jsonl"
+    selection_source = docs_dir / "stage_h_all_families_final_selection_manifest.jsonl"
     selection_rows: list[Mapping[str, object]] = []
     with selection_source.open("r", encoding="utf-8") as handle:
         for line_number, line in enumerate(handle, start=1):
@@ -649,23 +656,23 @@ def _validate_stage_h_final_metrics(report_text: str, docs_dir: Path) -> None:
             if not isinstance(payload, Mapping):
                 raise ValueError(f"{selection_source}:{line_number} is not a JSON object")
             selection_rows.append(payload)
-    if len(selection_rows) != 3:
-        raise ValueError(f"{selection_source} expected three selected manifests")
+    if len(selection_rows) != 12:
+        raise ValueError(f"{selection_source} expected 12 all-family manifests")
     selection_by_case = {str(row.get("case", "")): row for row in selection_rows}
     if set(selection_by_case) != {str(row["case"]) for row in trial_rows}:
         raise ValueError(f"{selection_source} cases do not match {trial_source}")
     for row in trial_rows:
         selection = selection_by_case[str(row["case"])]
-        if selection.get("family") != "no_balance_cosine":
-            raise ValueError(f"{selection_source} has non-selected family {selection.get('family')!r}")
+        if selection.get("family") != row.get("family"):
+            raise ValueError(f"{selection_source} family does not match final trial row")
         if not _bool(selection.get("selected_for_final_eval"), field="selected_for_final_eval", source=selection_source):
             raise ValueError(f"{selection_source} contains unselected final manifest")
         if _bool(selection.get("test_accessed"), field="test_accessed", source=selection_source):
             raise ValueError(f"{selection_source} selection manifest accessed CIFAR-10 test")
-        if str(selection.get("selection_stage")) != "stage_h_validation_full3ep":
+        if str(selection.get("selection_stage")) != "stage_h_all_families_20260704":
             raise ValueError(f"{selection_source} has unexpected selection_stage")
-        if "highest mean validation accuracy" not in str(selection.get("selection_rule", "")):
-            raise ValueError(f"{selection_source} is missing the validation-selection rule")
+        if "Selected every completed Stage H validation family/seed" not in str(selection.get("selection_rule", "")):
+            raise ValueError(f"{selection_source} is missing the all-family selection rule")
         if _fmt_int(selection.get("seed")) != _fmt_int(row["seed"]):
             raise ValueError(f"{selection_source} seed does not match final trial row")
         if str(selection.get("checkpoint_path")) != str(row.get("checkpoint_path")):
@@ -679,28 +686,35 @@ def _validate_stage_h_final_metrics(report_text: str, docs_dir: Path) -> None:
 
     _expect_metric(
         report_text,
-        r"Full Stage H selected FFF student final CIFAR-10 test mean accuracy: `([^`]+)`",
+        r"Full Stage H all-family FFF student final CIFAR-10 validation-leader test mean accuracy: `([^`]+)`",
         _fmt_float(_float(family, "mean_test_accuracy", source=family_source), 6),
         label="Stage H final mean test accuracy",
         source=family_source,
     )
     _expect_metric(
         report_text,
-        r"Full Stage H selected FFF student final CIFAR-10 test std accuracy: `([^`]+)`",
+        r"Full Stage H all-family FFF student final CIFAR-10 validation-leader test std accuracy: `([^`]+)`",
         _fmt_float(_float(family, "std_test_accuracy", source=family_source), 6),
         label="Stage H final std test accuracy",
         source=family_source,
     )
     _expect_metric(
         report_text,
-        r"Full Stage H selected FFF student final CIFAR-10 validation mean: `([^`]+)`",
+        r"Full Stage H all-family FFF student final CIFAR-10 validation-leader validation mean: `([^`]+)`",
         _fmt_float(_float(family, "mean_selected_val_accuracy", source=family_source), 6),
         label="Stage H final mean selected validation accuracy",
         source=family_source,
     )
+    for family_name, family_row in family_by_name.items():
+        _expect_contains(
+            report_text,
+            f"{family_name} `{_fmt_float(_float(family_row, 'mean_test_accuracy', source=family_source), 6)}`",
+            label=f"Stage H final family mean {family_name}",
+            source=family_source,
+        )
     _expect_contains(
         report_text,
-        f"Best selected FFF student final-test case: `{family['best_case']}`",
+        f"Best Stage H all-family final-test case: `{family['best_case']}`",
         label="Stage H final best case",
         source=family_source,
     )
@@ -761,6 +775,25 @@ def _validate_t15_metrics(
         label="T15 fairness test-access row count",
         source=source,
     )
+    baseline_methods = {
+        "dense_teacher_copied_student": "dense_copy",
+        "matched_smaller_dense_linear": "smaller_dense",
+        "matched_low_rank_linear": "low_rank",
+        "shared_only_rows_baseline": "shared_only",
+    }
+    rows_by_method = {str(row.get("method", "")): row for row in fairness_rows}
+    for method, family_name in baseline_methods.items():
+        row = rows_by_method.get(method)
+        if row is None:
+            raise ValueError(f"{source} missing baseline fairness row {method}")
+        if row.get("split") != "final_test" or str(row.get("test_accessed", "")).strip().lower() != "true":
+            raise ValueError(f"{source} baseline row {method} is not final-test evidence")
+        _expect_contains(
+            report_text,
+            f"{family_name} `{_fmt_float(_float(row, 'final_test_accuracy', source=source), 6)}`",
+            label=f"T15 baseline final-test mean {family_name}",
+            source=source,
+        )
 
 
 def _validate_t19_metrics(report_text: str, docs_dir: Path) -> None:

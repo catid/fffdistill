@@ -240,6 +240,9 @@ def test_route_diagnostics_are_consistent_with_route_tensors() -> None:
     assert diagnostics["mean_active_rows_per_token"] == pytest.approx(
         float(active_rows.float().mean())
     )
+    assert diagnostics["estimated_active_flops_per_token"] == pytest.approx(504.0)
+    assert diagnostics["estimated_routing_flops_per_token"] == 168
+    assert diagnostics["estimated_dense_flops_per_token"] == 36
 
     assert torch.isfinite(route_info.leaf_probs).all()
     assert torch.allclose(route_info.leaf_probs.sum(dim=-1), torch.ones(2, 4), atol=1e-6)
