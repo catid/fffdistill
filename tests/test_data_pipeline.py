@@ -106,16 +106,21 @@ def test_default_split_is_45k_5k_and_deterministic(fake_torchvision, tmp_path) -
     assert all(call.download is False for call in fake_torchvision.calls)
 
 
-def test_split_changes_with_seed(fake_torchvision, tmp_path) -> None:
+def test_split_uses_split_seed_not_loader_seed(fake_torchvision, tmp_path) -> None:
     train_a, val_a = data.build_cifar10_datasets(
         data.Cifar10DataConfig(data_dir=tmp_path, download=False, seed=1)
     )
     train_b, val_b = data.build_cifar10_datasets(
         data.Cifar10DataConfig(data_dir=tmp_path, download=False, seed=2)
     )
+    train_c, val_c = data.build_cifar10_datasets(
+        data.Cifar10DataConfig(data_dir=tmp_path, download=False, seed=1, split_seed=2)
+    )
 
-    assert train_a.indices != train_b.indices
-    assert val_a.indices != val_b.indices
+    assert train_a.indices == train_b.indices
+    assert val_a.indices == val_b.indices
+    assert train_a.indices != train_c.indices
+    assert val_a.indices != val_c.indices
 
 
 def test_train_transform_uses_crop_flip_and_optional_randaugment(
@@ -192,6 +197,8 @@ def test_test_dataset_requires_explicit_use_test_and_stays_unaugmented(
         {"mixup": -0.1},
         {"cutmix": float("inf")},
         {"smoke_test_size": data.CIFAR10_TEST_SIZE + 1},
+        {"seed": -1},
+        {"split_seed": -1},
     ],
 )
 def test_config_validates_batch_augmentation_hooks(kwargs: dict[str, object]) -> None:

@@ -175,6 +175,7 @@ def test_hpo_resolve_train_overrides_rebuilds_data_config() -> None:
     assert run_config.data.batch_size == 1024
     assert run_config.data.num_workers == 0
     assert run_config.data.seed == 9001
+    assert run_config.data.split_seed == base_run.data.split_seed
     assert run_config.data.label_smoothing == pytest.approx(0.05)
     assert run_config.data.mixup == pytest.approx(0.4)
     assert run_config.data.cutmix == pytest.approx(0.5)
@@ -390,6 +391,7 @@ def test_run_context_and_training_metrics_output_shape(
     output_dir = tmp_path / "teacher"
     context = train_teacher.RunContext(output_dir, seed=run_config.seed, quick_smoke=True)
     context.prepare(configure_cuda=False)
+    seed_calls: list[int] = []
 
     train_teacher.write_run_context(
         output_dir=output_dir,
@@ -401,6 +403,7 @@ def test_run_context_and_training_metrics_output_shape(
     )
 
     monkeypatch.setattr(train_teacher.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(train_teacher, "seed_everything", lambda seed: seed_calls.append(seed))
     monkeypatch.setattr(train_teacher, "build_cifar10_loaders", lambda config: ([object()], [object()]))
     monkeypatch.setattr(
         train_teacher,
@@ -493,6 +496,7 @@ def test_run_context_and_training_metrics_output_shape(
     assert summary["metrics_path"] == str(output_dir / "metrics.jsonl")
     summary_payload = json.loads((output_dir / "metrics_summary.json").read_text(encoding="utf-8"))
     assert summary_payload["quick_smoke"] is True
+    assert seed_calls[0] == run_config.seed
 
     with pytest.raises(FileExistsError, match="metrics"):
         train_teacher.run_teacher_training(
@@ -501,3 +505,129 @@ def test_run_context_and_training_metrics_output_shape(
             quick_smoke=True,
             save_checkpoint=False,
         )
+
+
+def test_teacher_checkpoint_is_best_only_and_uses_atomic_helper(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_config = TeacherRunConfig(
+        seed=77,
+        dataset_name="cifar10",
+        data=Cifar10DataConfig(
+            data_dir=tmp_path / "data",
+            batch_size=2,
+            num_workers=0,
+            quick_smoke=False,
+            download=False,
+            use_test=False,
+        ),
+        model=Mamba3CifarConfig(),
+        train=TeacherTrainConfig(
+            epochs=2,
+            batch_size_per_gpu=2,
+            num_workers=0,
+            mixup=0.0,
+            cutmix=0.0,
+        ),
+    )
+
+    class _TinyModel:
+        def state_dict(self):
+            return {"weight": torch.tensor([1.0])}
+
+    val_accuracies = iter([0.5, 0.4])
+    save_calls: list[tuple[Path, dict[str, object]]] = []
+
+    monkeypatch.setattr(train_teacher.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(train_teacher, "seed_everything", lambda seed: None)
+    monkeypatch.setattr(train_teacher, "build_cifar10_loaders", lambda config: ([object()], [object()]))
+    monkeypatch.setattr(
+        train_teacher,
+        "build_teacher_model",
+        lambda model_config, *, device=None, enforce_target_params=True: (_TinyModel(), 10_000_000),
+    )
+    monkeypatch.setattr(
+        train_teacher,
+        "build_muon_adamw_optimizer",
+        lambda model, train_config, *, assignment_log_path=None: (
+            object(),
+            {
+                "muon_tensors": 1,
+                "adamw_tensors": 1,
+                "muon_parameters": 9_000_000,
+                "adamw_parameters": 1_000_000,
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        train_teacher,
+        "build_lr_scheduler",
+        lambda optimizer, train_config, *, steps_per_epoch: object(),
+    )
+    monkeypatch.setattr(
+        train_teacher,
+        "_train_one_step",
+        lambda model, batch, optimizer, scheduler, run_config, device: {
+            "train_loss": 2.3,
+            "train_accuracy_hard_labels": 0.125,
+            "lr_muon": 0.02,
+            "lr_adamw": 0.001,
+        },
+    )
+    monkeypatch.setattr(
+        train_teacher,
+        "_evaluate_steps",
+        lambda model, loader, run_config, device, *, max_steps: {
+            "val_loss": 2.2,
+            "val_accuracy": next(val_accuracies),
+            "val_steps": 1.0,
+        },
+    )
+    monkeypatch.setattr(
+        train_teacher,
+        "save_teacher_checkpoint_atomic",
+        lambda path, payload: save_calls.append((path, dict(payload))),
+    )
+
+    summary = train_teacher.run_teacher_training(
+        run_config,
+        output_dir=tmp_path / "teacher",
+        quick_smoke=False,
+        save_checkpoint=True,
+    )
+
+    assert summary["best_val_accuracy"] == pytest.approx(0.5)
+    assert len(save_calls) == 1
+    assert save_calls[0][0] == tmp_path / "teacher" / "teacher_best.pt"
+    assert save_calls[0][1]["metrics"]["val_accuracy"] == pytest.approx(0.5)
+
+
+def test_save_teacher_checkpoint_atomic_uses_tmp_then_replace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkpoint_path = tmp_path / "teacher_best.pt"
+    calls: list[tuple[str, Path, Path | None]] = []
+
+    def fake_torch_save(payload: object, path: Path) -> None:
+        calls.append(("save", path, None))
+        path.write_text("tmp", encoding="utf-8")
+
+    def fake_replace(src: Path, dst: Path) -> None:
+        calls.append(("replace", src, dst))
+        dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+        src.unlink()
+
+    monkeypatch.setattr(train_teacher.torch, "save", fake_torch_save)
+    monkeypatch.setattr(train_teacher.os, "replace", fake_replace)
+
+    train_teacher.save_teacher_checkpoint_atomic(checkpoint_path, {"ok": True})
+
+    tmp_path_expected = checkpoint_path.with_name(checkpoint_path.name + ".tmp")
+    assert calls == [
+        ("save", tmp_path_expected, None),
+        ("replace", tmp_path_expected, checkpoint_path),
+    ]
+    assert checkpoint_path.read_text(encoding="utf-8") == "tmp"
+    assert not tmp_path_expected.exists()

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import math
+import os
 import random
 import sys
 import time
@@ -21,7 +22,7 @@ from .data import Cifar10DataConfig, build_cifar10_loaders
 from .metrics import accuracy
 from .models.mamba3_cifar import Mamba3CifarConfig, Mamba3CifarTeacher
 from .optim.muon_groups import format_param_assignments, split_muon_adamw_parameters
-from .utils import RunContext, append_jsonl, bool_arg, load_yaml, write_json
+from .utils import RunContext, append_jsonl, bool_arg, load_yaml, seed_everything, write_json
 
 OptimizerName = Literal["muon_adamw"]
 PrecisionName = Literal["bf16"]
@@ -540,6 +541,8 @@ def run_teacher_training(
     save_checkpoint: bool = False,
     epoch_callback: Callable[[dict[str, object]], None] | None = None,
 ) -> dict[str, object]:
+    run_config.validate()
+    seed_everything(run_config.seed)
     if not torch.cuda.is_available():
         raise RuntimeError("CUDA is required for BF16 official Mamba-3 teacher training")
     device = torch.device("cuda")
@@ -578,7 +581,10 @@ def run_teacher_training(
         if train_metrics is None:
             raise RuntimeError("train loader produced no batches")
         val_metrics = _evaluate_steps(model, val_loader, run_config, device, max_steps=val_step_limit)
-        best_val_accuracy = max(best_val_accuracy, val_metrics["val_accuracy"])
+        val_accuracy = val_metrics["val_accuracy"]
+        is_best = val_accuracy > best_val_accuracy
+        if is_best:
+            best_val_accuracy = val_accuracy
         metrics = {
             "phase": "teacher_train",
             "epoch": epoch,
@@ -591,15 +597,15 @@ def run_teacher_training(
         append_jsonl(metrics_path, metrics)
         if epoch_callback is not None:
             epoch_callback(metrics)
-        if save_checkpoint and val_metrics["val_accuracy"] >= best_val_accuracy:
-            torch.save(
+        if save_checkpoint and is_best:
+            save_teacher_checkpoint_atomic(
+                checkpoint_path,
                 {
                     "model": model.state_dict(),
                     "config": _jsonable(run_config),
                     "parameter_count": parameter_count,
                     "metrics": metrics,
                 },
-                checkpoint_path,
             )
 
     summary = {
@@ -614,6 +620,13 @@ def run_teacher_training(
     }
     write_json(output_dir / "metrics_summary.json", _jsonable(summary))
     return summary
+
+
+def save_teacher_checkpoint_atomic(checkpoint_path: Path, payload: Mapping[str, object]) -> None:
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = checkpoint_path.with_name(checkpoint_path.name + ".tmp")
+    torch.save(payload, tmp_path)
+    os.replace(tmp_path, checkpoint_path)
 
 
 def write_run_context(

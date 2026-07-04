@@ -22,6 +22,7 @@ class Cifar10DataConfig:
     batch_size: int = 512
     num_workers: int = 8
     seed: int = 1337
+    split_seed: int = 1337
     train_size: int = CIFAR10_DISTILL_TRAIN_SIZE
     val_size: int = CIFAR10_VAL_SIZE
     download: bool = True
@@ -40,6 +41,8 @@ class Cifar10DataConfig:
             raise ValueError("batch_size must be positive")
         if self.num_workers < 0:
             raise ValueError("num_workers must be non-negative")
+        _validate_nonnegative_int("seed", self.seed)
+        _validate_nonnegative_int("split_seed", self.split_seed)
         _validate_positive_int("train_size", self.train_size)
         _validate_positive_int("val_size", self.val_size)
         _validate_positive_int("smoke_train_size", self.smoke_train_size)
@@ -69,6 +72,11 @@ def _import_torchvision():
 def _validate_positive_int(name: str, value: int) -> None:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"{name} must be a positive integer")
+
+
+def _validate_nonnegative_int(name: str, value: int) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
 
 
 def _validate_train_val_size(train_size: int, val_size: int) -> None:
@@ -160,7 +168,7 @@ def build_cifar10_datasets(config: Cifar10DataConfig) -> tuple[Dataset, Dataset]
         len(full_train),
         train_size=train_size,
         val_size=val_size,
-        seed=config.seed,
+        seed=config.split_seed,
     )
     return Subset(full_train, train_indices), Subset(full_eval, val_indices)
 
