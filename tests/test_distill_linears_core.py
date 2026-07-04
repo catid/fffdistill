@@ -194,6 +194,20 @@ def test_linear_distill_config_validates_metric_holdout_fraction() -> None:
         LinearDistillConfig.from_mapping({"metric_holdout_fraction": 1.0})
 
 
+def test_layerwise_distillation_rejects_unknown_top_level_config_key(tmp_path) -> None:
+    model = nn.Sequential(nn.Linear(6, 4))
+    config = _small_distill_config()
+    config["stale_typo"] = True
+
+    with pytest.raises(ValueError, match="unknown top-level keys: stale_typo"):
+        run_layerwise_distillation(
+            model,
+            [torch.randn(8, 6)],
+            config,
+            output_dir=tmp_path,
+        )
+
+
 def test_balance_distill_config_parses_hpo_aliases() -> None:
     config = BalanceDistillConfig.from_mapping(
         {
@@ -533,6 +547,66 @@ def test_distill_linear_can_disable_metric_holdout_for_synthetic_overfit(tmp_pat
     assert result.metric_split == "train"
 
 
+def test_st_gumbel_reported_metrics_use_eval_mode(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    torch.manual_seed(16)
+    original_st_gumbel = distill_linears.st_gumbel
+    training_flags: list[bool] = []
+
+    def recording_st_gumbel(*args, **kwargs):
+        training_flags.append(bool(kwargs.get("training")))
+        return original_st_gumbel(*args, **kwargs)
+
+    monkeypatch.setattr(distill_linears, "st_gumbel", recording_st_gumbel)
+    linear = nn.Linear(6, 4)
+    x = torch.randn(48, 6)
+    y = linear(x).detach()
+
+    result = distill_linear_from_tensors(
+        "layer",
+        linear,
+        x,
+        y,
+        fff_config={
+            "shared_rows": 4,
+            "depth": 1,
+            "route_rows": 1,
+            "leaf_rows": 1,
+            "hard_routing": True,
+            "route_row_role": "routing_only",
+            "route_rows_output_count": 0,
+        },
+        distill_config=LinearDistillConfig.from_mapping(
+            {
+                "steps": 1,
+                "lr": 0.001,
+                "batch_size": 8,
+                "max_capture_bytes_per_layer": None,
+            }
+        ),
+        router_config=RouterDistillConfig(recipe="st_gumbel", loss_coeff=0.001),
+        output_dir=tmp_path,
+    )
+
+    assert torch.isfinite(torch.tensor(result.final_loss))
+    assert False in training_flags
+    assert True in training_flags
+    records = [
+        json.loads(line)
+        for line in (tmp_path / "layer_metrics.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert records[0]["phase"] == "initial"
+    assert records[0]["metric_mode"] == "eval"
+    assert records[0]["metric_hard_routing"] is True
+    assert records[0]["metric_loss_includes_auxiliary"] is False
+    assert records[-1]["phase"] == "final"
+    assert records[-1]["metric_mode"] == "eval"
+    assert records[-1]["metric_hard_routing"] is True
+    assert records[-1]["metric_loss_includes_auxiliary"] is False
+
+
 def test_layerwise_distillation_selects_explicit_layer_indices(tmp_path) -> None:
     torch.manual_seed(111)
     model = _ThreeLinearTeacher()
@@ -667,7 +741,9 @@ def test_distill_linear_applies_balance_config_and_writes_metrics(tmp_path) -> N
     assert final_balance["enabled"] is True
     assert final_balance["coeff"] == pytest.approx(0.01)
     assert final_balance["min_leaf_tokens"] == 4
-    assert final_balance["min_leaf_occupancy"] == pytest.approx(4 / result.fit_tokens)
+    assert final_balance["min_leaf_occupancy"] == pytest.approx(
+        4 / int(records[-1]["diagnostics_tokens"])
+    )
     assert final_balance["loss"] >= 0.0
     assert final_balance["weighted_loss"] >= 0.0
     assert set(final_balance["components"]) == {"split", "min_leaf", "margin"}

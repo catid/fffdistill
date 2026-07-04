@@ -82,4 +82,7 @@ The quick-smoke token rates are dominated by setup and tiny-kernel overhead; the
 - Representative grouped FFF is much faster than naive correctness mode but still much slower than dense `nn.Linear` at these small row counts.
 - Soft routing is slower than hard selected-leaf routing because grouped execution must evaluate all leaves.
 - Split route-output contribution increases active rows and reduces grouped throughput versus routing-only hard routing.
-- Long HPO should still wait for the open P0 review fixes: Muon grouping for FFF banks and the Mamba3 teacher residual/pre-norm wrapper.
+- Long HPO should still wait for the open P0 review fixes. The current FFF-bank
+  optimizer policy is documented as AdamW fallback for 3D replacement banks; any
+  optimizer conclusion for assembled FFF students must label that policy or use a
+  tested bank-specific Muon grouping.

@@ -35,6 +35,13 @@ EXPECTED_ROW_COUNTS = {
 }
 EXPECTED_FAIRNESS_ROWS = 28
 EXPECTED_TEST_ACCESS_ROWS = 2
+FFF_BANK_OPTIMIZER_CAVEAT = (
+    "Current Muon grouping sends only hidden 2D matrix parameters to Muon; "
+    "assembled FFF replacement banks such as route_weight, route_output, "
+    "route_result_weight, route_result_output, leaf_weight, and leaf_output "
+    "are 3D tensors and use AdamW fallback unless a future tested bank-specific "
+    "Muon grouping is implemented."
+)
 
 
 def _read_csv(path: Path, *, expected_rows: int | None = None) -> list[dict[str, str]]:
@@ -218,10 +225,14 @@ def _t19_rows(docs_dir: Path) -> list[dict[str, object]]:
                 tokens_per_second=_float_text(row.get("train_images_per_second_train_only")),
                 train_steps=_int_text(row.get("train_steps_total")),
                 seeds=seeds,
-                budget="Equal two-step teacher smoke budget; not a quality ranking.",
+                budget=(
+                    "Equal two-step teacher smoke budget; no FFF replacement banks; "
+                    "not a quality ranking."
+                ),
                 fairness_note=(
                     f"optimizer={row.get('optimizer', '')}, schedule={row.get('schedule', '')}; "
-                    "WSD is reported separately from optimizer family."
+                    "WSD is reported separately from optimizer family. "
+                    "These teacher rows are not FFF-bank optimizer evidence."
                 ),
             )
         )
@@ -248,7 +259,10 @@ def _t14_rows(docs_dir: Path) -> list[dict[str, object]]:
                 train_steps="1 bounded step" if "one train" in purpose else "",
                 seeds="1",
                 budget=purpose,
-                fairness_note="T14 smoke/final-eval plumbing evidence; not a full final accuracy claim.",
+                fairness_note=(
+                    "T14 smoke/final-eval plumbing evidence; not a full final accuracy claim. "
+                    f"{FFF_BANK_OPTIMIZER_CAVEAT}"
+                ),
             )
         )
     return out
@@ -375,6 +389,8 @@ def write_fairness_markdown(path: Path, rows: Sequence[Mapping[str, object]]) ->
             "",
             "- CIFAR-10 test access appears only in `final_test` or `partial_final_test` rows.",
             "- Optimizer ablations use equal two-step smoke budgets and are not ranked as final quality results.",
+            f"- {FFF_BANK_OPTIMIZER_CAVEAT} Any assembled-student optimizer conclusion must "
+            "state whether replacement banks used AdamW fallback or a tested Muon bank grouping.",
             "- Route-output ablations use one representative layer with reported active/stored row budgets.",
             "- Stage F layerwise rows are legacy validation-capture MSE/cosine/throughput evidence, "
             "not clean held-out validation metrics and not final accuracy.",

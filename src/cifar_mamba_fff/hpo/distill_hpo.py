@@ -609,11 +609,15 @@ def sample_valid_distill_hpo_candidates(
         raise ValueError("grid_offset must be non-negative")
     candidates: list[DistillHpoCandidate] = []
     if sampler == "random":
+        accepted_before_offset = 0
         for attempt_index in range(max_attempts):
             if len(candidates) >= max_trials:
                 break
             overrides = sample_distill_overrides(search_space, rng=rng)
             if validate_fn is not None and not validate_fn(overrides):
+                continue
+            if accepted_before_offset < grid_offset:
+                accepted_before_offset += 1
                 continue
             candidates.append(
                 DistillHpoCandidate(
@@ -884,7 +888,7 @@ def write_distill_hpo_trial_plan(
         "accepted_trials": len(candidates),
         "max_attempts": max_attempts,
         "sampler": sampler,
-        "grid_offset": grid_offset if sampler in ("grid", "cases") else 0,
+        "grid_offset": grid_offset,
         "seed": seed,
         "teacher_checkpoint": teacher_checkpoint,
         "test_accessed": False,

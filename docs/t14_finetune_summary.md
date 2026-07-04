@@ -14,6 +14,12 @@ artifacts.
   - reconstructs every `FFFLinear` from `configs/fff_distill_stage_f.yaml`;
   - loads every `fff_state.pt` with `strict=True`;
   - writes `student_assembly_manifest.json/.csv`.
+- Uses the shared audited Muon/AdamW split: hidden 2D matrix parameters go to Muon,
+  while biases and non-2D tensors go to AdamW fallback. Current assembled FFF
+  replacement banks such as `route_weight`, `route_output`, `route_result_weight`,
+  `route_result_output`, `leaf_weight`, and `leaf_output` are 3D tensors, so those
+  banks used AdamW fallback in the T14 smoke artifacts. These rows do not claim
+  Muon-specific behavior for FFF replacement banks.
 - Collected remote Stage F `fff_state.pt` artifacts locally under the ignored `outputs/scheduler_distill_hpo/distill_stage_f_shards_20260704_091746` tree; all 64 eligible linears have state files available locally.
 - Added KD fine-tune losses:
   - cross entropy on CIFAR-10 train labels;
@@ -107,9 +113,9 @@ No substitute architecture, optimizer, CPU path, or fake Mamba path was used.
 | `outputs/t14_finetune_smoke_20260704_b32` | batch 32 after FFF memory fix | failed official Mamba TileLang backward shared-memory setting | false |
 | `outputs/t14_finetune_smoke_20260704_b32_nobalance` | same, balance hooks disabled | same Mamba TileLang backward failure | false |
 | `outputs/t14_finetune_smoke_20260704_b32_nobalance_contig` | same, FFF outputs forced contiguous | same Mamba TileLang backward failure | false |
-| `outputs/t14_finetune_smoke_autocast_fix_train_nobalance_real` | batch-32 assembled FFF KD, one train step + one val step, no balance | succeeded; 64/64 linears replaced, official Muon+AdamW, no test access | false |
+| `outputs/t14_finetune_smoke_autocast_fix_train_nobalance_real` | batch-32 assembled FFF KD, one train step + one val step, no balance | succeeded; 64/64 linears replaced, official Muon+AdamW with 3D FFF banks on AdamW fallback, no test access | false |
 | `outputs/t14_finetune_hpo_autocast_fix_train_nobalance_real` | fine-tune HPO wrapper, one train-mode trial, one train step + one val step, no balance | succeeded; wrapper launched `--smoke-mode train`, metrics summary written | false |
-| `outputs/t14_finetune_smoke_autocast_fix_train_balance_globalcap` | batch-32 assembled FFF KD, one train step + one val step, default balance enabled | succeeded; `train_steps_total=1`, 64/64 linears replaced, official Muon+AdamW | false |
+| `outputs/t14_finetune_smoke_autocast_fix_train_balance_globalcap` | batch-32 assembled FFF KD, one train step + one val step, default balance enabled | succeeded; `train_steps_total=1`, 64/64 linears replaced, official Muon+AdamW with 3D FFF banks on AdamW fallback | false |
 | `outputs/t14_student_final_partial_autocast_fix_nobalance_qfalse_v2` | selected one-step HPO checkpoint, partial CIFAR-10 test evaluation with `max_test_steps=1` | succeeded; `partial_test_evaluation=true`, `test_accuracy_partial=0.3125`, 64/64 linears replaced | true |
 
 ## Additional Safety Fix

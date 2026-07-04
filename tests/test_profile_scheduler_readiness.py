@@ -80,7 +80,11 @@ def test_benchmark_backward_rows_are_opt_in() -> None:
 
     assert set(by_name) == {"dense", "fff_grouped", "dense_backward", "fff_grouped_backward"}
     assert by_name["dense"]["phase"] == "forward"
+    assert by_name["dense"]["grad_enabled"] is False
+    assert by_name["fff_grouped"]["grad_enabled"] is False
     assert by_name["fff_grouped_backward"]["phase"] == "forward_backward"
+    assert by_name["dense_backward"]["grad_enabled"] is True
+    assert by_name["fff_grouped_backward"]["grad_enabled"] is True
     assert by_name["fff_grouped_backward"]["tokens_per_second"] > 0.0
 
 

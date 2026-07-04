@@ -127,19 +127,22 @@ def _measure(
     warmup: int,
     tokens: int,
     device: torch.device,
+    grad_enabled: bool = False,
 ) -> tuple[torch.Tensor, TimingResult]:
-    for _ in range(warmup):
-        fn()
-    _sync_if_cuda(device)
-    result = time_cuda_callable(
-        fn,
-        iterations=iterations,
-        items=tokens,
-        allow_cpu=device.type == "cpu",
-        device=device,
-    )
-    output = fn()
-    _sync_if_cuda(device)
+    grad_context = torch.enable_grad if grad_enabled else torch.no_grad
+    with grad_context():
+        for _ in range(warmup):
+            fn()
+        _sync_if_cuda(device)
+        result = time_cuda_callable(
+            fn,
+            iterations=iterations,
+            items=tokens,
+            allow_cpu=device.type == "cpu",
+            device=device,
+        )
+        output = fn()
+        _sync_if_cuda(device)
     return output, result
 
 
@@ -266,6 +269,7 @@ def _run_benchmark(args: argparse.Namespace) -> list[dict[str, Any]]:
                 dtype=str(dtype).removeprefix("torch."),
                 tokens=args.batch_size,
                 tokens_per_second=timing.items_per_second,
+                grad_enabled=False,
                 **route_metadata,
             )
         )
@@ -283,6 +287,7 @@ def _run_benchmark(args: argparse.Namespace) -> list[dict[str, Any]]:
                 warmup=args.warmup,
                 tokens=args.batch_size,
                 device=device,
+                grad_enabled=True,
             )
             rows.append(
                 timing.as_metadata(
@@ -292,6 +297,7 @@ def _run_benchmark(args: argparse.Namespace) -> list[dict[str, Any]]:
                     dtype=str(dtype).removeprefix("torch."),
                     tokens=args.batch_size,
                     tokens_per_second=timing.items_per_second,
+                    grad_enabled=True,
                     **route_metadata,
                 )
             )

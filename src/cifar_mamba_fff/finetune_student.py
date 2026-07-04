@@ -39,6 +39,7 @@ from .train_teacher import (
     build_lr_scheduler,
     build_training_optimizer,
     optimizer_eval_context,
+    resolve_scheduler_total_steps,
     save_teacher_checkpoint_atomic,
 )
 from .utils import RunContext, append_jsonl, bool_arg, load_yaml, seed_everything, write_json
@@ -884,11 +885,18 @@ def run_finetune_training(
         teacher_train_config,
         assignment_log_path=output_dir / "param_assignments.txt",
     )
-    steps_per_epoch = len(train_loader) if max_train_steps is None else min(len(train_loader), max_train_steps)
+    steps_per_epoch = max(1, len(train_loader))
+    scheduler_total_steps = resolve_scheduler_total_steps(
+        teacher_train_config,
+        steps_per_epoch=steps_per_epoch,
+        max_train_steps=max_train_steps,
+        quick_smoke=quick_smoke,
+    )
     scheduler = build_lr_scheduler(
         _scheduler_optimizer(optimizer),
         teacher_train_config,
-        steps_per_epoch=max(1, steps_per_epoch),
+        steps_per_epoch=steps_per_epoch,
+        total_steps=scheduler_total_steps,
     )
     metrics_path = output_dir / "metrics.jsonl"
     checkpoint_path = output_dir / "student_best.pt"

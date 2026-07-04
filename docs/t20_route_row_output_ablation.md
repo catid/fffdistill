@@ -24,6 +24,24 @@ Reports distinguish the configured request (`route_rows_contribute`) from effect
 - Excluded slots: `ripper:1` and `foureyes:0` remained excluded because pre-launch checks showed persistent 100% GPU utilization with negligible memory and no visible compute PID.
 - Validation accuracy evaluation: after copying ignored `fff_state.pt` artifacts locally from scheduler outputs/remotes, each one-layer replacement was loaded into the selected teacher and evaluated on the full CIFAR-10 validation split (`val_steps=10`), with `test_accessed=false`.
 
+Recompute command pattern for the validation-accuracy column:
+
+```bash
+PYTHONPATH=src .venv/bin/python -m cifar_mamba_fff.t20_recompute_validation \
+  --teacher-checkpoint checkpoints/teacher/ripper0_val9418_test9399_teacher_best.pt \
+  --distill-config configs/fff_distill_stage_f.yaml \
+  --replacement-state outputs/scheduler_distill_hpo/<run>/<machine>/<gpu>/trials/trial_000000/layers/blocks__8__forward_block__mixer__mixer__in_proj/fff_state.pt \
+  --eligible-index 32 \
+  --output-dir outputs/t20_validation_recompute/<case_name> \
+  --device cuda \
+  --batch-size 512 \
+  --max-val-steps 10
+```
+
+The recompute tool writes `t20_validation_recompute.json` and `run_context.json`,
+records `sample_split=val`, and refuses CUDA execution if CUDA is unavailable. It
+does not construct a CIFAR-10 test loader.
+
 ## Results
 
 | Case | Role | Output rows/node | Active rows/token | Effective stored rows | Final NMSE | Cosine | Tokens/s | Dead leaves | Validation accuracy |

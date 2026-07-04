@@ -9,6 +9,16 @@ and config now support an explicit shared `seeds:` list per case, write
 `seed_list`/`seed_count` to artifacts, and require a NorMuon/PACE+NorMuon update-RMS
 calibration note before future ablation claims.
 
+FFF-bank optimizer caveat: this repo's audited Muon/AdamW split sends hidden 2D
+matrix parameters to Muon and sends biases, norm/embedding/head parameters, and
+all non-2D tensors to AdamW fallback. Current FFF replacement banks such as
+`route_weight`, `route_output`, `route_result_weight`, `route_result_output`,
+`leaf_weight`, and `leaf_output` are 3D tensors, so those banks use AdamW fallback
+in assembled FFF students unless a future tested bank-specific Muon grouping is
+implemented. The rows below are dense-teacher smoke rows with no FFF replacement
+banks; any future optimizer conclusion about assembled FFF students must state
+whether replacement banks used AdamW fallback or a tested Muon bank grouping.
+
 - Run id: `t19_optimizer_ablation_20260704_094958`
 - Git commit for launch: `c4425c03000273f76cf3a3892e1abf90c1dd8f68`
 - Budget per case: `epochs=1`, `max_train_steps=2`, `max_val_steps=2`, batch size `256`, train/validation split only.
@@ -34,6 +44,8 @@ calibration note before future ablation claims.
 - `pace_muon` wraps the official KellerJordan/Muon optimizer; this preserves the official baseline and adds PACE EMA evaluation.
 - `normuon_adamw` and `pace_normuon` are explicitly non-official vendored optimizer-experiments ablations using this repo's audited parameter split.
 - WSD is trainer-side and reported separately from optimizer family.
+- These rows do not show Muon behavior for FFF replacement banks. Under the current
+  split, assembled-student FFF bank tensors use AdamW fallback.
 
 ## Provenance
 

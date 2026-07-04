@@ -97,6 +97,17 @@ MAIN_LOSS_ROUTER_RECIPES: tuple[str, ...] = (
     "hard_em_utility_ste",
     "expert_choice_imitation",
 )
+DISTILL_CONFIG_TOP_LEVEL_KEYS = {
+    "seed",
+    "teacher_checkpoint",
+    "mode",
+    "eligible_linear",
+    "distill",
+    "fff",
+    "balance",
+    "router",
+    "locoprop",
+}
 
 
 def _parse_distill_bool(value: object, *, key: str) -> bool:
@@ -105,6 +116,12 @@ def _parse_distill_bool(value: object, *, key: str) -> bool:
     if isinstance(value, str):
         return bool_arg(value)
     raise ValueError(f"distill.{key} must be a bool")
+
+
+def reject_unknown_distill_config_keys(config: dict[str, Any]) -> None:
+    unknown = sorted(set(config) - DISTILL_CONFIG_TOP_LEVEL_KEYS)
+    if unknown:
+        raise ValueError(f"distill config has unknown top-level keys: {', '.join(unknown)}")
 
 
 @dataclass(frozen=True)
@@ -1218,6 +1235,69 @@ def _capture_autocast_context(distill_config: LinearDistillConfig):
     return nullcontext()
 
 
+def _evaluate_replacement_report(
+    replacement: FFFLinear,
+    x_metric: torch.Tensor,
+    y_metric: torch.Tensor,
+    *,
+    distill_config: LinearDistillConfig,
+    router_config: RouterDistillConfig,
+    balance_config: BalanceDistillConfig,
+) -> dict[str, object]:
+    previous_training = replacement.training
+    replacement.eval()
+    try:
+        with torch.no_grad():
+            pred = replacement(x_metric)
+            loss = distillation_loss(
+                pred,
+                y_metric,
+                normalized_mse_weight=distill_config.normalized_mse_weight,
+                cosine_weight=distill_config.cosine_weight,
+                variance_weight=distill_config.variance_weight,
+            )
+            normalized_mse = distillation_loss(
+                pred,
+                y_metric,
+                normalized_mse_weight=1.0,
+                cosine_weight=0.0,
+                variance_weight=0.0,
+            )
+            alignment = _cosine_alignment_metrics(pred, y_metric)
+            diag_tokens = min(int(x_metric.shape[0]), distill_config.batch_size)
+            diag_x = x_metric[:diag_tokens]
+            diag_y = y_metric[:diag_tokens]
+            router = _router_auxiliary_loss(
+                replacement,
+                diag_x,
+                diag_y,
+                router_config,
+            )[1]
+            balance = _balance_auxiliary_loss(
+                replacement,
+                diag_x,
+                balance_config,
+                total_tokens=diag_x.shape[0],
+            )[1]
+            diagnostics = _diagnostics_record(replacement, diag_x)
+    finally:
+        replacement.train(previous_training)
+
+    return {
+        "loss": float(loss.item()),
+        "normalized_mse": float(normalized_mse.item()),
+        "final_cosine_similarity": alignment["final_cosine_similarity"],
+        "final_cosine_loss": alignment["final_cosine_loss"],
+        "diagnostics": diagnostics,
+        "router": router,
+        "balance": balance,
+        "metric_mode": "eval",
+        "metric_hard_routing": True,
+        "metric_loss_includes_auxiliary": False,
+        "diagnostics_tokens": diag_tokens,
+    }
+
+
 def distill_linear_from_tensors(
     name: str,
     linear: nn.Linear,
@@ -1283,40 +1363,33 @@ def distill_linear_from_tensors(
         )
         return main_loss + router_loss + balance_loss
 
-    with torch.no_grad():
-        initial_loss_tensor = compute_loss(x_metric, y_metric)
-        initial_mse = distillation_loss(
-            replacement(x_metric),
-            y_metric,
-            normalized_mse_weight=1.0,
-            cosine_weight=0.0,
-            variance_weight=0.0,
-        )
+    initial_report = _evaluate_replacement_report(
+        replacement,
+        x_metric,
+        y_metric,
+        distill_config=distill_config,
+        router_config=router_config,
+        balance_config=balance_config,
+    )
     append_jsonl(
         metrics_path,
         {
             "layer": name,
             "phase": "initial",
-            "loss": float(initial_loss_tensor.item()),
-            "normalized_mse": float(initial_mse.item()),
+            "loss": initial_report["loss"],
+            "normalized_mse": initial_report["normalized_mse"],
             "tokens": int(x_metric.shape[0]),
             "fit_tokens": int(x_train.shape[0]),
             "metric_tokens": int(x_metric.shape[0]),
             "metric_split": metric_split,
             "metric_holdout_fraction": distill_config.metric_holdout_fraction,
-            "diagnostics": _diagnostics_record(replacement, x_train[: distill_config.batch_size]),
-            "router": _router_auxiliary_loss(
-                replacement,
-                x_train[: distill_config.batch_size],
-                y_train[: distill_config.batch_size],
-                router_config,
-            )[1],
-            "balance": _balance_auxiliary_loss(
-                replacement,
-                x_train[: distill_config.batch_size],
-                balance_config,
-                total_tokens=x_train.shape[0],
-            )[1],
+            "metric_mode": initial_report["metric_mode"],
+            "metric_hard_routing": initial_report["metric_hard_routing"],
+            "metric_loss_includes_auxiliary": initial_report["metric_loss_includes_auxiliary"],
+            "diagnostics_tokens": initial_report["diagnostics_tokens"],
+            "diagnostics": initial_report["diagnostics"],
+            "router": initial_report["router"],
+            "balance": initial_report["balance"],
         },
     )
 
@@ -1369,28 +1442,26 @@ def distill_linear_from_tensors(
             },
         )
 
-    with torch.no_grad():
-        final_loss_tensor = compute_loss(x_metric, y_metric)
-        final_mse = distillation_loss(
-            replacement(x_metric),
-            y_metric,
-            normalized_mse_weight=1.0,
-            cosine_weight=0.0,
-            variance_weight=0.0,
-        )
-        final_alignment = _cosine_alignment_metrics(replacement(x_metric), y_metric)
+    final_report = _evaluate_replacement_report(
+        replacement,
+        x_metric,
+        y_metric,
+        distill_config=distill_config,
+        router_config=router_config,
+        balance_config=balance_config,
+    )
     layer_dir = output_dir / "layers" / name.replace(".", "__")
     layer_dir.mkdir(parents=True, exist_ok=True)
     state_path = layer_dir / "fff_state.pt"
     torch.save(replacement.state_dict(), state_path)
     result = LayerDistillResult(
         name=name,
-        initial_loss=float(initial_loss_tensor.item()),
-        final_loss=float(final_loss_tensor.item()),
-        initial_normalized_mse=float(initial_mse.item()),
-        final_normalized_mse=float(final_mse.item()),
-        final_cosine_similarity=final_alignment["final_cosine_similarity"],
-        final_cosine_loss=final_alignment["final_cosine_loss"],
+        initial_loss=float(initial_report["loss"]),
+        final_loss=float(final_report["loss"]),
+        initial_normalized_mse=float(initial_report["normalized_mse"]),
+        final_normalized_mse=float(final_report["normalized_mse"]),
+        final_cosine_similarity=float(final_report["final_cosine_similarity"]),
+        final_cosine_loss=float(final_report["final_cosine_loss"]),
         train_seconds=float(train_seconds),
         tokens_per_second=float(tokens_per_second),
         captured_tokens=int(x_all.shape[0]),
@@ -1418,19 +1489,13 @@ def distill_linear_from_tensors(
             "metric_tokens": result.metric_tokens,
             "metric_split": result.metric_split,
             "metric_holdout_fraction": result.metric_holdout_fraction,
-            "diagnostics": _diagnostics_record(replacement, x_train[: distill_config.batch_size]),
-            "router": _router_auxiliary_loss(
-                replacement,
-                x_train[: distill_config.batch_size],
-                y_train[: distill_config.batch_size],
-                router_config,
-            )[1],
-            "balance": _balance_auxiliary_loss(
-                replacement,
-                x_train[: distill_config.batch_size],
-                balance_config,
-                total_tokens=x_train.shape[0],
-            )[1],
+            "metric_mode": final_report["metric_mode"],
+            "metric_hard_routing": final_report["metric_hard_routing"],
+            "metric_loss_includes_auxiliary": final_report["metric_loss_includes_auxiliary"],
+            "diagnostics_tokens": final_report["diagnostics_tokens"],
+            "diagnostics": final_report["diagnostics"],
+            "router": final_report["router"],
+            "balance": final_report["balance"],
             "locoprop": locoprop_record,
             "replacement_path": result.replacement_path,
         },
@@ -1447,6 +1512,7 @@ def run_layerwise_distillation(
     progressive_step: int | None = None,
     progressive_step_size: int = 1,
 ) -> list[LayerDistillResult]:
+    reject_unknown_distill_config_keys(config)
     distill_config = LinearDistillConfig.from_mapping(config.get("distill"))
     router_config = RouterDistillConfig.from_mapping(config.get("router"))
     balance_config = BalanceDistillConfig.from_mapping(config.get("balance"))
@@ -1544,6 +1610,7 @@ def main() -> int:
         step_size=args.progressive_step_size,
     )
     config = load_yaml(args.config)
+    reject_unknown_distill_config_keys(config)
     context = RunContext(
         Path(args.output_dir),
         seed=int(config.get("seed", 1337)),

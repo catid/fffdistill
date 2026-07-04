@@ -61,6 +61,14 @@ The teacher is a roughly 10M-parameter official Mamba-3 CIFAR-10 model trained f
 
 Start with simple official Muon plus AdamW fallback until the teacher, distillation, and fine-tuning paths are stable. Insert optimizer ablations after the simple-Muon teacher and layerwise distillation baseline are working, before final KD/fairness/reporting.
 
+Current optimizer policy: the audited split sends hidden 2D matrix parameters to
+Muon and sends biases, excluded names, and non-2D tensors to AdamW fallback. FFF
+replacement banks such as `route_weight`, `route_output`, `route_result_weight`,
+`route_result_output`, `leaf_weight`, and `leaf_output` are 3D tensors, so they use
+AdamW fallback in assembled FFF student fine-tuning unless a future tested
+bank-specific Muon grouping is implemented. Optimizer conclusions for assembled
+FFF students must state whether replacement banks used AdamW fallback or Muon.
+
 Planned optimizer/schedule ablations:
 
 - Official `muon_adamw` / `official_muon`: unchanged KellerJordan/Muon

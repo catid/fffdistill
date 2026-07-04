@@ -559,11 +559,16 @@ def build_lr_scheduler(
     train_config: TeacherTrainConfig,
     *,
     steps_per_epoch: int,
+    total_steps: int | None = None,
 ) -> LambdaLR:
     _positive_int("steps_per_epoch", steps_per_epoch)
-    total_steps = max(1, train_config.epochs * steps_per_epoch)
-    warmup_steps = min(total_steps, train_config.warmup_epochs * steps_per_epoch)
-    stable_end = int(total_steps * train_config.wsd_stable_fraction)
+    if total_steps is None:
+        scheduler_total_steps = max(1, train_config.epochs * steps_per_epoch)
+    else:
+        _positive_int("total_steps", total_steps)
+        scheduler_total_steps = total_steps
+    warmup_steps = min(scheduler_total_steps, train_config.warmup_epochs * steps_per_epoch)
+    stable_end = int(scheduler_total_steps * train_config.wsd_stable_fraction)
 
     def lr_factor(step: int) -> float:
         current = step + 1
@@ -575,11 +580,33 @@ def build_lr_scheduler(
             decay_start = max(warmup_steps, stable_end)
         else:
             decay_start = warmup_steps
-        decay_steps = max(1, total_steps - decay_start)
+        decay_steps = max(1, scheduler_total_steps - decay_start)
         progress = min(1.0, max(0.0, (current - decay_start) / decay_steps))
         return 0.5 * (1.0 + math.cos(math.pi * progress))
 
     return LambdaLR(optimizer, lr_factor)
+
+
+def resolve_scheduler_total_steps(
+    train_config: TeacherTrainConfig,
+    *,
+    steps_per_epoch: int,
+    max_train_steps: int | None,
+    quick_smoke: bool,
+) -> int:
+    _positive_int("steps_per_epoch", steps_per_epoch)
+    if max_train_steps is not None:
+        _positive_int("max_train_steps", max_train_steps)
+    if quick_smoke:
+        return 1
+    full_train_steps = max(1, train_config.epochs * steps_per_epoch)
+    if max_train_steps is None:
+        return full_train_steps
+    return min(full_train_steps, max_train_steps)
+
+
+def _reached_train_step_limit(total_train_steps: int, train_step_limit: int | None) -> bool:
+    return train_step_limit is not None and total_train_steps >= train_step_limit
 
 
 def _label_distribution(
@@ -769,11 +796,18 @@ def run_teacher_training(
         run_config.train,
         assignment_log_path=output_dir / "param_assignments.txt",
     )
-    steps_per_epoch = len(train_loader) if max_train_steps is None else min(len(train_loader), max_train_steps)
+    steps_per_epoch = max(1, len(train_loader))
+    scheduler_total_steps = resolve_scheduler_total_steps(
+        run_config.train,
+        steps_per_epoch=steps_per_epoch,
+        max_train_steps=max_train_steps,
+        quick_smoke=quick_smoke,
+    )
     scheduler = build_lr_scheduler(
         _scheduler_optimizer(optimizer),
         run_config.train,
-        steps_per_epoch=max(1, steps_per_epoch),
+        steps_per_epoch=steps_per_epoch,
+        total_steps=scheduler_total_steps,
     )
     metrics_path = output_dir / "metrics.jsonl"
     checkpoint_path = output_dir / "teacher_best.pt"
@@ -793,12 +827,14 @@ def run_teacher_training(
     train_elapsed_seconds = 0.0
 
     for epoch in range(epochs):
+        if _reached_train_step_limit(total_train_steps, train_step_limit):
+            break
         epoch_start = time.perf_counter()
         train_metrics: dict[str, float] | None = None
         epoch_train_images_seen = 0
         epoch_train_elapsed_seconds = 0.0
-        for step, batch in enumerate(train_loader):
-            if train_step_limit is not None and step >= train_step_limit:
+        for batch in train_loader:
+            if _reached_train_step_limit(total_train_steps, train_step_limit):
                 break
             train_step_start = time.perf_counter()
             train_metrics = _train_one_step(model, batch, optimizer, scheduler, run_config, device)

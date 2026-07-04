@@ -140,6 +140,7 @@ Route-output contribution ablation on one representative layer
 | `none_routing_only` | `routing_only` | 0 | 108 | 232 | 0.300582 | 0.853248 | 36521.3 | 0.9404 |
 | `shared_one_per_node` | `shared_routing_and_output` | 1 | 113 | 232 | 0.293318 | 0.857536 | 29078.7 | 0.9406 |
 | `shared_all` | `shared_routing_and_output` | 2 | 118 | 232 | 0.287133 | 0.860755 | 28094.1 | 0.9404 |
+| `shared_half_fraction` | `shared_routing_and_output` | 1 | 113 | 232 | 0.293337 | 0.857533 | 28063.3 | 0.9404 |
 | `split_one_per_node` | `split_routing_output` | 1 | 113 | 263 | 0.292199 | 0.857408 | 34295.6 | 0.9396 |
 | `split_all` | `split_routing_output` | 2 | 118 | 294 | 0.284449 | 0.861225 | 28240.1 | 0.9398 |
 | `split_half_fraction` | `split_routing_output` | 1 | 113 | 263 | 0.292116 | 0.857402 | 37399.5 | 0.9396 |
@@ -172,7 +173,12 @@ T14 implemented the assembled FFF student fine-tuning path:
 
 - All 64 eligible linears can be replaced from Stage F artifacts.
 - BF16 CUDA official Mamba-3 KD forward/backward/optimizer step passes.
-- Optimizer: official Muon plus AdamW fallback.
+- Optimizer: official Muon plus AdamW fallback. Under the current audited split,
+  hidden 2D matrix parameters use Muon, while biases, excluded names, and non-2D
+  tensors use AdamW fallback. The assembled FFF student's 3D replacement banks
+  (`route_weight`, `route_output`, `route_result_weight`, `route_result_output`,
+  `leaf_weight`, and `leaf_output`) therefore used AdamW fallback; no
+  Muon-specific conclusion is claimed for those banks.
 - Losses: CE, KD KL, optional hidden MSE, balance regularization.
 - `FFFLinear` now respects CUDA autocast output dtype, preventing accidental FP32
   activations from selecting the official Mamba-3 FP32 TileLang backward kernel.
@@ -204,12 +210,13 @@ T15 generated fairness tables from committed evidence only:
 - `docs/t15_fairness_summary.csv`
 
 The table contains 28 rows and enforces that `test_accessed=true` appears only on
-`final_test` or `partial_final_test` rows. It includes explicit `not_run` rows for
+`final_test` or `partial_final_test` rows. Exactly 2 fairness rows have
+`test_accessed=true`. It includes explicit `not_run` rows for
 dense-copy student, shared-only rows baseline, matched low-rank Linear, and matched
 smaller dense Linear. These are limitations, not hidden successes.
-The final-report validator also checks the committed fairness CSV row count and
-test-access row count, then regenerates fairness rows from source evidence and
-rejects a stale CSV.
+The final-report validator also checks the committed fairness CSV row count,
+test-access row count, and key prose metrics against their source CSV/Markdown
+artifacts, then regenerates fairness rows from source evidence and rejects a stale CSV.
 
 Optimizer ablation smoke:
 
@@ -217,6 +224,10 @@ Optimizer ablation smoke:
 - PACE+Muon, NorMuon, and PACE+NorMuon are present as optimizer-experiments ablations.
 - Equal budget: 2 train steps, 512 images, train/validation only.
 - These are correctness/provenance smoke runs, not optimizer quality rankings. T18 fixed the future T19 protocol so every optimizer/schedule case iterates the same explicit seed list, and NorMuon/PACE+NorMuon rows require an update-RMS calibration note or optimizer-specific LR sweep before quality claims.
+- Current FFF-bank optimizer policy: assembled-student 3D replacement banks use
+  AdamW fallback under the audited split. Future FFF-student optimizer comparisons
+  must state whether replacement banks used AdamW fallback or a tested Muon bank
+  grouping. The T19 rows are dense-teacher smoke rows, not FFF-bank evidence.
 
 Detailed optimizer report: `docs/t19_optimizer_ablation_summary.md`.
 
@@ -270,6 +281,9 @@ Within the evidence that exists:
 - Several required baselines are not run: dense teacher-copied student, shared-only rows baseline, matched low-rank Linear, matched smaller dense Linear.
 - Utility-targeted, hard-EM, expert-choice, and ST-Gumbel router recipes are implemented but not fully compared under equal final budgets.
 - Grouped FFF is much faster than naive but still far slower than dense Linear in current PyTorch implementation.
+- FFF-bank optimizer policy is currently AdamW fallback for 3D replacement banks;
+  optimizer conclusions for assembled FFF students must remain labeled accordingly
+  until a bank-specific Muon grouping is implemented and validated.
 - Remote GitHub SSH auth failed earlier on remote hosts; rsync from `work` was used for remote sync.
 - Remote artifact collection was hardened after several compact summaries were generated; older summaries may depend on pre-hardening tail-only artifact collection. See `docs/t18_artifact_integrity.md`.
 - Some GPUs were intentionally excluded during runs due occupied/anomalous utilization.

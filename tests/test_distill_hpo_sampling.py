@@ -260,6 +260,73 @@ def test_default_distill_hpo_sampler_still_uses_random_sampling(
     ]
 
 
+def test_random_sampler_grid_offset_avoids_replaying_first_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def sample_with_offset(grid_offset: int) -> list[distill_hpo.DistillHpoCandidate]:
+        sampled = iter(
+            [
+                {"route_row_role": "routing_only"},
+                {"route_row_role": "shared_routing_and_output"},
+            ]
+        )
+
+        def fake_sample(_search_space: Mapping[str, object], *, rng: random.Random) -> dict[str, object]:
+            assert isinstance(rng, random.Random)
+            return next(sampled)
+
+        monkeypatch.setattr(distill_hpo, "sample_distill_overrides", fake_sample)
+        return sample_valid_distill_hpo_candidates(
+            {},
+            max_trials=1,
+            max_attempts=2,
+            rng=random.Random(123),
+            grid_offset=grid_offset,
+        )
+
+    first_slot = sample_with_offset(0)
+    second_slot = sample_with_offset(1)
+
+    assert [candidate.attempt_index for candidate in first_slot] == [0]
+    assert [candidate.attempt_index for candidate in second_slot] == [1]
+    assert first_slot[0].overrides != second_slot[0].overrides
+
+
+def test_random_sampler_grid_offset_skips_only_valid_candidates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sampled = iter(
+        [
+            {"route_row_role": "invalid"},
+            {"route_row_role": "routing_only"},
+            {"route_row_role": "shared_routing_and_output"},
+            {"route_row_role": "split_routing_output"},
+        ]
+    )
+
+    def fake_sample(_search_space: Mapping[str, object], *, rng: random.Random) -> dict[str, object]:
+        del rng
+        return next(sampled)
+
+    monkeypatch.setattr(distill_hpo, "sample_distill_overrides", fake_sample)
+
+    candidates = sample_valid_distill_hpo_candidates(
+        {},
+        max_trials=2,
+        max_attempts=4,
+        rng=random.Random(123),
+        grid_offset=1,
+        validate_fn=lambda overrides: overrides["route_row_role"] != "invalid",
+    )
+
+    assert [candidate.trial_index for candidate in candidates] == [0, 1]
+    assert [candidate.attempt_index for candidate in candidates] == [2, 3]
+    assert [candidate.overrides["route_row_role"] for candidate in candidates] == [
+        "shared_routing_and_output",
+        "split_routing_output",
+    ]
+
+
 def test_grid_sampler_writes_unique_stage_c_router_trials(tmp_path) -> None:
     summary = write_distill_hpo_trial_plan(
         base_config=load_yaml("configs/fff_distill_default.yaml"),
@@ -579,11 +646,14 @@ def test_distill_hpo_trial_plan_writes_configs_without_test_access(tmp_path) -> 
         max_attempts=16,
         seed=123,
         teacher_checkpoint="/tmp/teacher_best.pt",
+        grid_offset=2,
     )
 
     assert summary["accepted_trials"] == 3
+    assert summary["grid_offset"] == 2
     assert summary["teacher_checkpoint"] == "/tmp/teacher_best.pt"
     assert summary["test_accessed"] is False
+    assert [trial["attempt_index"] for trial in summary["trials"]] == [2, 3, 4]
     for trial in summary["trials"]:
         config_path = tmp_path / "trials" / f"trial_{trial['trial_index']:06d}" / "distill_config.yaml"
         record_path = tmp_path / "trials" / f"trial_{trial['trial_index']:06d}" / "trial_config.json"
@@ -594,6 +664,7 @@ def test_distill_hpo_trial_plan_writes_configs_without_test_access(tmp_path) -> 
         assert record["execute_ready"] is True
     written_summary = json.loads((tmp_path / "distill_hpo_summary.json").read_text(encoding="utf-8"))
     assert written_summary["accepted_trials"] == 3
+    assert written_summary["grid_offset"] == 2
     assert written_summary["test_accessed"] is False
 
 

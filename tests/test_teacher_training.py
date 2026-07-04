@@ -32,6 +32,7 @@ from cifar_mamba_fff.train_teacher import (
     evaluate_teacher_candidate,
     load_teacher_run_config,
     parse_teacher_run_config,
+    resolve_scheduler_total_steps,
 )
 
 
@@ -581,7 +582,13 @@ def test_hpo_runner_records_pruned_failed_and_successful_trials(
         encoding="utf-8",
     )
 
-    sampled = iter([{"d_model": 224}, {"d_model": 224}, {"d_model": 224}])
+    sampled = iter(
+        [
+            {"d_model": 224, "warmup_epochs": 0},
+            {"d_model": 224, "warmup_epochs": 0},
+            {"d_model": 224, "warmup_epochs": 0},
+        ]
+    )
 
     def fake_sample(_search_space, *, rng):
         del rng
@@ -643,6 +650,103 @@ def test_hpo_runner_records_pruned_failed_and_successful_trials(
         for line in (tmp_path / "hpo" / "teacher_hpo_events.jsonl").read_text(encoding="utf-8").splitlines()
     ]
     assert "trial_pruned" in events
+
+
+def test_hpo_prune_callback_waits_for_min_epochs(tmp_path: Path) -> None:
+    callback = teacher_hpo._make_prune_callback(
+        trial_index=0,
+        prune_on="val_accuracy",
+        prune_min_value=0.5,
+        prune_min_epochs=2,
+        event_log_path=tmp_path / "events.jsonl",
+    )
+    assert callback is not None
+
+    callback({"epoch": 0, "val_accuracy": 0.1})
+    assert not (tmp_path / "events.jsonl").exists()
+
+    with pytest.raises(teacher_hpo.HpoTrialPruned, match="trial 0 pruned"):
+        callback({"epoch": 1, "val_accuracy": 0.1})
+
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert events == [
+        {
+            "event": "trial_pruned",
+            "trial_index": 0,
+            "epoch": 1,
+            "metric": "val_accuracy",
+            "value": 0.1,
+            "threshold": 0.5,
+        }
+    ]
+
+
+def test_hpo_runner_uses_warmup_epochs_as_prune_guard(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_config = tmp_path / "teacher.yaml"
+    hpo_config = tmp_path / "hpo.yaml"
+    base_config.write_text(Path("configs/teacher_default.yaml").read_text(encoding="utf-8"), encoding="utf-8")
+    hpo_config.write_text("prune_on: val_accuracy\nsearch_space:\n  d_model: [224]\n", encoding="utf-8")
+    sampled = iter(
+        [
+            {"d_model": 224, "warmup_epochs": 2},
+            {"d_model": 224, "warmup_epochs": 0},
+        ]
+    )
+
+    monkeypatch.setattr(teacher_hpo, "sample_teacher_overrides", lambda _search_space, *, rng: next(sampled))
+    monkeypatch.setattr(
+        teacher_hpo,
+        "evaluate_teacher_candidate",
+        lambda config: TeacherCandidateResult(True, 10_000_000, "accepted"),
+    )
+
+    def fake_training_fn(
+        run_config,
+        *,
+        output_dir,
+        quick_smoke,
+        max_train_steps,
+        max_val_steps,
+        save_checkpoint,
+        epoch_callback,
+    ):
+        del run_config, quick_smoke, max_train_steps, max_val_steps, save_checkpoint
+        output_dir.mkdir(parents=True, exist_ok=True)
+        assert epoch_callback is not None
+        trial_index = int(output_dir.name.rsplit("_", maxsplit=1)[1])
+        if trial_index == 0:
+            epoch_callback({"epoch": 0, "val_accuracy": 0.1})
+            epoch_callback({"epoch": 1, "val_accuracy": 0.1})
+            raise AssertionError("warmup-delayed prune callback should raise")
+        epoch_callback({"epoch": 0, "val_accuracy": 0.9})
+        return {"best_val_accuracy": 0.9, "train_steps_total": 1}
+
+    summary = run_teacher_hpo(
+        base_config_path=base_config,
+        hpo_config_path=hpo_config,
+        output_dir=tmp_path / "hpo",
+        quick_smoke=True,
+        max_trials=2,
+        max_attempts=2,
+        prune_min_value=0.5,
+        training_fn=fake_training_fn,
+    )
+
+    assert summary["pruned"] == 1
+    assert summary["succeeded"] == 1
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "hpo" / "teacher_hpo_events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    pruned_events = [event for event in events if event["event"] == "trial_pruned"]
+    assert len(pruned_events) == 1
+    assert pruned_events[0]["epoch"] == 1
 
 
 def test_hpo_runner_fails_when_no_valid_candidates(
@@ -843,6 +947,154 @@ def test_scheduler_supports_wsd_warmup_stable_and_decay() -> None:
     )
 
 
+def test_scheduler_total_steps_matches_global_train_step_cap() -> None:
+    parameter = torch.nn.Parameter(torch.ones(1))
+    optimizer = torch.optim.SGD([parameter], lr=1.0)
+    train_config = TeacherTrainConfig(epochs=5, warmup_epochs=1, schedule="cosine")
+    capped_total_steps = resolve_scheduler_total_steps(
+        train_config,
+        steps_per_epoch=10,
+        max_train_steps=3,
+        quick_smoke=False,
+    )
+
+    scheduler = build_lr_scheduler(
+        optimizer,
+        train_config,
+        steps_per_epoch=10,
+        total_steps=capped_total_steps,
+    )
+
+    assert capped_total_steps == 3
+    assert _step_scheduler_lrs(scheduler, optimizer, steps=3) == pytest.approx(
+        [1.0 / 3.0, 2.0 / 3.0, 1.0, 0.0]
+    )
+    assert (
+        resolve_scheduler_total_steps(
+            train_config,
+            steps_per_epoch=10,
+            max_train_steps=None,
+            quick_smoke=False,
+        )
+        == 50
+    )
+    assert (
+        resolve_scheduler_total_steps(
+            train_config,
+            steps_per_epoch=10,
+            max_train_steps=3,
+            quick_smoke=True,
+        )
+        == 1
+    )
+
+
+def test_teacher_training_global_max_train_steps_caps_loop_and_scheduler(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_config = TeacherRunConfig(
+        seed=2026,
+        dataset_name="cifar10",
+        data=Cifar10DataConfig(
+            data_dir=tmp_path / "data",
+            batch_size=2,
+            num_workers=0,
+            quick_smoke=False,
+            download=False,
+            use_test=False,
+        ),
+        model=Mamba3CifarConfig(),
+        train=TeacherTrainConfig(
+            epochs=3,
+            batch_size_per_gpu=2,
+            num_workers=0,
+            mixup=0.0,
+            cutmix=0.0,
+        ),
+    )
+    optimizer = torch.optim.SGD([torch.nn.Parameter(torch.ones(()))], lr=0.01)
+    scheduler_calls: list[tuple[int, int | None]] = []
+    train_batches: list[object] = []
+
+    _patch_cuda_training_runtime(monkeypatch)
+    monkeypatch.setattr(train_teacher, "seed_everything", lambda seed: None)
+    monkeypatch.setattr(
+        train_teacher,
+        "build_cifar10_loaders",
+        lambda config: (["batch0", "batch1"], ["val"]),
+    )
+    monkeypatch.setattr(
+        train_teacher,
+        "build_teacher_model",
+        lambda model_config, *, device=None, enforce_target_params=True: (object(), 10_000_000),
+    )
+    monkeypatch.setattr(
+        train_teacher,
+        "build_training_optimizer",
+        lambda model, train_config, *, assignment_log_path=None: (
+            optimizer,
+            {
+                "muon_tensors": 1,
+                "adamw_tensors": 1,
+                "muon_parameters": 9_000_000,
+                "adamw_parameters": 1_000_000,
+            },
+        ),
+    )
+
+    def fake_scheduler(
+        optimizer,
+        train_config,
+        *,
+        steps_per_epoch,
+        total_steps=None,
+    ):
+        del optimizer, train_config
+        scheduler_calls.append((steps_per_epoch, total_steps))
+        return object()
+
+    def fake_train_one_step(model, batch, optimizer, scheduler, run_config, device):
+        del model, optimizer, scheduler, run_config, device
+        train_batches.append(batch)
+        return {
+            "train_batch_size": 2.0,
+            "train_loss": 2.3,
+            "train_accuracy_hard_labels": 0.125,
+            "lr_muon": 0.02,
+            "lr_adamw": 0.001,
+        }
+
+    monkeypatch.setattr(train_teacher, "build_lr_scheduler", fake_scheduler)
+    monkeypatch.setattr(train_teacher, "_train_one_step", fake_train_one_step)
+    monkeypatch.setattr(
+        train_teacher,
+        "_evaluate_steps",
+        lambda model, loader, run_config, device, *, max_steps: {
+            "val_loss": 2.2,
+            "val_accuracy": 0.25,
+            "val_steps": 1.0,
+        },
+    )
+
+    summary = train_teacher.run_teacher_training(
+        run_config,
+        output_dir=tmp_path / "teacher",
+        quick_smoke=False,
+        max_train_steps=3,
+        save_checkpoint=False,
+    )
+
+    assert scheduler_calls == [(2, 3)]
+    assert train_batches == ["batch0", "batch1", "batch0"]
+    assert summary["train_steps_total"] == 3
+    metrics = [
+        json.loads(line)
+        for line in (tmp_path / "teacher" / "metrics.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [row["train_steps_total"] for row in metrics] == [2, 3]
+
+
 def test_metadata_smoke_writes_resolved_config_without_touching_data(tmp_path: Path) -> None:
     env = os.environ.copy()
     src_path = str(Path(__file__).resolve().parents[1] / "src")
@@ -943,7 +1195,7 @@ def test_run_context_and_training_metrics_output_shape(
     monkeypatch.setattr(
         train_teacher,
         "build_lr_scheduler",
-        lambda optimizer, train_config, *, steps_per_epoch: object(),
+        lambda optimizer, train_config, *, steps_per_epoch, total_steps=None: object(),
     )
     monkeypatch.setattr(
         train_teacher,
@@ -1097,7 +1349,7 @@ def test_teacher_checkpoint_is_best_only_and_uses_atomic_helper(
     monkeypatch.setattr(
         train_teacher,
         "build_lr_scheduler",
-        lambda optimizer, train_config, *, steps_per_epoch: object(),
+        lambda optimizer, train_config, *, steps_per_epoch, total_steps=None: object(),
     )
     monkeypatch.setattr(
         train_teacher,

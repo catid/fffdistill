@@ -233,7 +233,7 @@ def test_run_teacher_training_saves_checkpoint_only_for_strictly_best_validation
     monkeypatch.setattr(
         train_teacher,
         "build_lr_scheduler",
-        lambda optimizer, train_config, *, steps_per_epoch: object(),
+        lambda optimizer, train_config, *, steps_per_epoch, total_steps=None: object(),
     )
     monkeypatch.setattr(
         train_teacher,

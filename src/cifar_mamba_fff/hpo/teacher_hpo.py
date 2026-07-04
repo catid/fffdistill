@@ -93,6 +93,14 @@ def _parse_optional_positive_int(value: object, *, key: str, default: int) -> in
     return value
 
 
+def _parse_optional_nonnegative_int(value: object, *, key: str, default: int) -> int:
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"{key} must be a non-negative integer")
+    return value
+
+
 def parse_candidate_filter_config(raw: Mapping[str, object]) -> CandidateFilterConfig:
     value = raw.get("candidate_filter", {})
     if value is None:
@@ -538,12 +546,21 @@ def _make_prune_callback(
     trial_index: int,
     prune_on: str,
     prune_min_value: float | None,
+    prune_min_epochs: int,
     event_log_path: Path,
 ):
+    _parse_optional_nonnegative_int(prune_min_epochs, key="prune_min_epochs", default=0)
     if prune_min_value is None:
         return None
 
     def callback(metrics: dict[str, object]) -> None:
+        if prune_min_epochs > 0:
+            epoch_value = metrics.get("epoch")
+            if epoch_value is None:
+                return
+            completed_epochs = int(epoch_value) + 1
+            if completed_epochs < prune_min_epochs:
+                return
         metric = float(metrics[prune_on])
         if metric < prune_min_value:
             _locked_append_jsonl(
@@ -575,6 +592,7 @@ def run_teacher_hpo(
     max_train_steps: int | None = None,
     max_val_steps: int | None = None,
     prune_min_value: float | None = None,
+    prune_min_epochs: int | None = None,
     seed: int | None = None,
     training_fn=run_teacher_training,
 ) -> dict[str, object]:
@@ -583,6 +601,11 @@ def run_teacher_hpo(
     search_space = _expect_mapping(hpo_config.get("search_space"), "search_space")
     candidate_filter = parse_candidate_filter_config(hpo_config)
     prune_on = str(hpo_config.get("prune_on", "val_accuracy"))
+    configured_prune_min_epochs = _parse_optional_nonnegative_int(
+        prune_min_epochs if prune_min_epochs is not None else hpo_config.get("prune_min_epochs"),
+        key="prune_min_epochs",
+        default=0,
+    )
     event_log_path = output_dir / "teacher_hpo_events.jsonl"
     output_dir.mkdir(parents=True, exist_ok=True)
     hpo_seed = _resolve_hpo_seed(hpo_config, base_seed=base_run.seed, seed_override=seed)
@@ -616,6 +639,7 @@ def run_teacher_hpo(
             "seed": hpo_seed,
             "quick_smoke": quick_smoke,
             "candidate_filter": _jsonable(candidate_filter),
+            "prune_min_epochs": configured_prune_min_epochs,
         }
         write_json(output_dir / "teacher_hpo_summary.json", _jsonable(summary))
         _locked_append_jsonl(
@@ -668,6 +692,10 @@ def run_teacher_hpo(
                     trial_index=candidate.trial_index,
                     prune_on=prune_on,
                     prune_min_value=prune_min_value,
+                    prune_min_epochs=max(
+                        configured_prune_min_epochs,
+                        candidate.run_config.train.warmup_epochs,
+                    ),
                     event_log_path=event_log_path,
                 ),
             )
@@ -725,6 +753,7 @@ def run_teacher_hpo(
         "seed": hpo_seed,
         "quick_smoke": quick_smoke,
         "candidate_filter": _jsonable(candidate_filter),
+        "prune_min_epochs": configured_prune_min_epochs,
     }
     write_json(output_dir / "teacher_hpo_summary.json", _jsonable(summary))
     if succeeded == 0:
@@ -746,6 +775,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--max-train-steps", type=int, default=None)
     parser.add_argument("--max-val-steps", type=int, default=None)
     parser.add_argument("--prune-min-value", type=float, default=None)
+    parser.add_argument("--prune-min-epochs", type=int, default=None)
     parser.add_argument(
         "--seed",
         type=int,
@@ -790,6 +820,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             max_train_steps=args.max_train_steps,
             max_val_steps=args.max_val_steps,
             prune_min_value=args.prune_min_value,
+            prune_min_epochs=args.prune_min_epochs,
             seed=hpo_seed,
         )
         print(f"teacher HPO run complete: {summary}")

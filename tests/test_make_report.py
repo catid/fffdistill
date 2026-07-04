@@ -22,6 +22,25 @@ def test_validate_final_report_rejects_missing_sections(tmp_path: Path) -> None:
         validate_final_report(report)
 
 
+def test_validate_final_report_rejects_source_metric_mismatch(tmp_path: Path) -> None:
+    docs_dir = tmp_path / "docs"
+    shutil.copytree(Path("docs"), docs_dir)
+    write_fairness_reports(docs_dir=docs_dir)
+
+    report = docs_dir / "final_report.md"
+    text = report.read_text(encoding="utf-8")
+    report.write_text(
+        text.replace(
+            "Selected validation accuracy: `0.9418`",
+            "Selected validation accuracy: `0.0000`",
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="teacher selected validation accuracy"):
+        validate_final_report(report)
+
+
 def test_validate_final_report_rejects_stale_fairness_csv(tmp_path: Path) -> None:
     docs_dir = tmp_path / "docs"
     shutil.copytree(Path("docs"), docs_dir)

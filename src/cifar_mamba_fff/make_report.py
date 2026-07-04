@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import re
+import statistics
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
@@ -67,6 +69,494 @@ def _canonical_fairness_rows(rows: Sequence[Mapping[str, object]]) -> list[dict[
     return canonical
 
 
+def _read_csv(path: Path, *, expected_rows: int | None = None) -> list[dict[str, str]]:
+    if not path.exists():
+        raise FileNotFoundError(f"required report source CSV is missing: {path}")
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    if expected_rows is not None and len(rows) != expected_rows:
+        raise ValueError(f"{path} expected {expected_rows} rows, found {len(rows)}")
+    return rows
+
+
+def _float(row: Mapping[str, object], key: str, *, source: Path) -> float:
+    try:
+        return float(str(row[key]).replace(",", ""))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"{source} has invalid numeric value for {key!r}") from exc
+
+
+def _mean_float(rows: Sequence[Mapping[str, object]], key: str, *, source: Path) -> float:
+    values = [_float(row, key, source=source) for row in rows]
+    if not values:
+        raise ValueError(f"{source} has no values for {key!r}")
+    return sum(values) / len(values)
+
+
+def _median_float(rows: Sequence[Mapping[str, object]], key: str, *, source: Path) -> float:
+    values = [_float(row, key, source=source) for row in rows]
+    if not values:
+        raise ValueError(f"{source} has no values for {key!r}")
+    return float(statistics.median(values))
+
+
+def _bool(value: object, *, field: str, source: Path) -> bool:
+    try:
+        return bool_arg(str(value))
+    except argparse.ArgumentTypeError as exc:
+        raise ValueError(f"{source} has invalid boolean value for {field!r}: {value!r}") from exc
+
+
+def _require_all_false(rows: Sequence[Mapping[str, object]], key: str, *, source: Path) -> None:
+    bad_rows = [row for row in rows if _bool(row.get(key), field=key, source=source)]
+    if bad_rows:
+        raise ValueError(f"{source} expected all {key} values to be false")
+
+
+def _fmt_float(value: float, digits: int, *, comma: bool = False) -> str:
+    return f"{value:,.{digits}f}" if comma else f"{value:.{digits}f}"
+
+
+def _fmt_int(value: object) -> str:
+    return str(int(float(str(value).replace(",", ""))))
+
+
+def _fmt_g(value: object) -> str:
+    return f"{float(str(value).replace(',', '')):g}"
+
+
+def _unbacktick(text: str) -> str:
+    text = text.strip()
+    if len(text) >= 2 and text[0] == "`" and text[-1] == "`":
+        return text[1:-1]
+    return text
+
+
+def _extract(pattern_text: str, pattern: str, *, label: str) -> str:
+    match = re.search(pattern, pattern_text, flags=re.MULTILINE | re.DOTALL)
+    if match is None:
+        raise ValueError(f"final report is missing checked prose metric: {label}")
+    return match.group(1)
+
+
+def _expect_metric(
+    report_text: str,
+    pattern: str,
+    expected: str,
+    *,
+    label: str,
+    source: Path,
+) -> None:
+    actual = _extract(report_text, pattern, label=label)
+    if actual != expected:
+        raise ValueError(
+            f"final report metric mismatch for {label}: expected {expected} "
+            f"from {source}, found {actual}"
+        )
+
+
+def _expect_contains(report_text: str, expected: str, *, label: str, source: Path) -> None:
+    if expected not in report_text:
+        raise ValueError(
+            f"final report metric mismatch for {label}: expected text from {source}: {expected}"
+        )
+
+
+def _parse_markdown_rows(report_text: str, *, cells: int) -> dict[str, list[str]]:
+    rows: dict[str, list[str]] = {}
+    for line in report_text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("| `"):
+            continue
+        parts = [_unbacktick(part.strip()) for part in stripped.strip("|").split("|")]
+        if len(parts) == cells:
+            rows[parts[0]] = parts
+    return rows
+
+
+def _validate_teacher_metrics(report_text: str, docs_dir: Path) -> None:
+    source = docs_dir / "t06_teacher_hpo_final_summary.md"
+    if not source.exists():
+        raise FileNotFoundError(f"required teacher summary is missing: {source}")
+    source_text = source.read_text(encoding="utf-8")
+    selected_val = float(
+        _extract(source_text, r"Best validation accuracy: `([0-9.]+)`", label="teacher val")
+    )
+    final_test = float(
+        _extract(source_text, r"Final test accuracy: `([0-9.]+)`", label="teacher test")
+    )
+    _expect_metric(
+        report_text,
+        r"Selected validation accuracy: `([^`]+)`",
+        _fmt_float(selected_val, 4),
+        label="teacher selected validation accuracy",
+        source=source,
+    )
+    _expect_metric(
+        report_text,
+        r"Final CIFAR-10 test accuracy: `([^`]+)`",
+        _fmt_float(final_test, 4),
+        label="teacher final CIFAR-10 test accuracy",
+        source=source,
+    )
+
+
+def _validate_stage_c_metrics(report_text: str, docs_dir: Path) -> None:
+    source = docs_dir / "t13_stage_c_router_summary.csv"
+    rows = _read_csv(source, expected_rows=7)
+    _require_all_false(rows, "test_accessed", source=source)
+    table = _parse_markdown_rows(report_text, cells=5)
+    expected_names = {row["router_recipe"] for row in rows}
+    actual_names = expected_names & set(table)
+    if actual_names != expected_names:
+        missing = sorted(expected_names - actual_names)
+        raise ValueError(f"final report is missing Stage C router rows from {source}: {missing}")
+    for row in rows:
+        name = row["router_recipe"]
+        expected = [
+            name,
+            _fmt_float(_float(row, "final_nmse", source=source), 6),
+            _fmt_float(_float(row, "final_cosine_similarity", source=source), 6),
+            _fmt_float(_float(row, "tokens_per_second", source=source), 1),
+            _fmt_int(row["dead_leaves"]),
+        ]
+        if table[name] != expected:
+            raise ValueError(
+                f"final report metric mismatch for Stage C router row {name}: "
+                f"expected {expected} from {source}, found {table[name]}"
+            )
+
+
+def _validate_stage_d_metrics(report_text: str, docs_dir: Path) -> None:
+    source = docs_dir / "t13_stage_d_arch_summary.csv"
+    rows = _read_csv(source, expected_rows=10)
+    _require_all_false(rows, "test_accessed", source=source)
+    best = min(rows, key=lambda row: _float(row, "final_nmse", source=source))
+    _expect_metric(
+        report_text,
+        r"Stage D swept ([0-9]+) one-layer architecture/recipe trials",
+        str(len(rows)),
+        label="Stage D trial count",
+        source=source,
+    )
+    expected_recipe = (
+        f"`{best['router_recipe']}`, `{best['route_row_role']}`, "
+        f"depth `{_fmt_int(best['depth'])}`, shared fraction `{_fmt_g(best['shared_unrouted_frac'])}`,"
+    )
+    _expect_contains(report_text, expected_recipe, label="Stage D best recipe", source=source)
+    expected_recipe_tail = (
+        f"route rows `{_fmt_int(best['route_rows'])}`, leaf rows `{_fmt_int(best['leaf_rows'])}`, "
+        f"LocoProp `{best['locoprop_refit']}`"
+    )
+    _expect_contains(
+        report_text,
+        expected_recipe_tail,
+        label="Stage D best recipe rows",
+        source=source,
+    )
+    _expect_metric(
+        report_text,
+        r"- Final NMSE: `([^`]+)`",
+        _fmt_float(_float(best, "final_nmse", source=source), 6),
+        label="Stage D best final NMSE",
+        source=source,
+    )
+    _expect_metric(
+        report_text,
+        r"- Cosine: `([^`]+)`",
+        _fmt_float(_float(best, "final_cosine_similarity", source=source), 6),
+        label="Stage D best cosine similarity",
+        source=source,
+    )
+    _expect_metric(
+        report_text,
+        r"- Throughput: `([^`]+)` tokens/s",
+        _fmt_float(_float(best, "tokens_per_second", source=source), 1),
+        label="Stage D best throughput",
+        source=source,
+    )
+    active_rows = _extract(
+        report_text,
+        r"- Active rows/token: `([^`]+)`; stored rows: `([^`]+)`",
+        label="Stage D active rows",
+    )
+    stored_rows = re.search(
+        r"- Active rows/token: `[^`]+`; stored rows: `([^`]+)`", report_text
+    )
+    if active_rows != _fmt_float(_float(best, "active_rows_per_token", source=source), 1):
+        raise ValueError(
+            "final report metric mismatch for Stage D active rows/token: "
+            f"expected {_fmt_float(_float(best, 'active_rows_per_token', source=source), 1)} "
+            f"from {source}, found {active_rows}"
+        )
+    if stored_rows is None or stored_rows.group(1) != _fmt_int(best["stored_rows"]):
+        found = "" if stored_rows is None else stored_rows.group(1)
+        raise ValueError(
+            "final report metric mismatch for Stage D stored rows: "
+            f"expected {_fmt_int(best['stored_rows'])} from {source}, found {found}"
+        )
+
+
+def _validate_stage_f_metrics(report_text: str, docs_dir: Path) -> None:
+    source = docs_dir / "t13_stage_f_layerwise_summary.csv"
+    rows = _read_csv(source, expected_rows=64)
+    _require_all_false(rows, "test_accessed", source=source)
+    _expect_metric(
+        report_text,
+        r"Stage F distilled all ([0-9]+) eligible Linear layers",
+        str(len(rows)),
+        label="Stage F eligible layer count",
+        source=source,
+    )
+    _expect_metric(
+        report_text,
+        r"Mean final normalized MSE: `([^`]+)`",
+        _fmt_float(_mean_float(rows, "final_nmse", source=source), 6),
+        label="Stage F mean final normalized MSE",
+        source=source,
+    )
+    _expect_metric(
+        report_text,
+        r"Median final normalized MSE: `([^`]+)`",
+        _fmt_float(_median_float(rows, "final_nmse", source=source), 6),
+        label="Stage F median final normalized MSE",
+        source=source,
+    )
+    _expect_metric(
+        report_text,
+        r"Mean cosine similarity: `([^`]+)`",
+        _fmt_float(_mean_float(rows, "final_cosine_similarity", source=source), 6),
+        label="Stage F mean cosine similarity",
+        source=source,
+    )
+    _expect_metric(
+        report_text,
+        r"Mean throughput: `([^`]+)` tokens/s",
+        _fmt_float(_mean_float(rows, "tokens_per_second", source=source), 1, comma=True),
+        label="Stage F mean throughput",
+        source=source,
+    )
+    _expect_metric(
+        report_text,
+        r"Mean dead leaves: `([^`]+)`",
+        _fmt_float(_mean_float(rows, "dead_leaves", source=source), 2),
+        label="Stage F mean dead leaves",
+        source=source,
+    )
+    _expect_metric(
+        report_text,
+        r"Mean local MSE before refit: `([^`]+)`",
+        _fmt_float(_mean_float(rows, "locoprop_mse_before", source=source), 6),
+        label="Stage F mean LocoProp-S MSE before",
+        source=source,
+    )
+    _expect_metric(
+        report_text,
+        r"after refit: `([^`]+)`",
+        _fmt_float(_mean_float(rows, "locoprop_mse_after", source=source), 6),
+        label="Stage F mean LocoProp-S MSE after",
+        source=source,
+    )
+    worst = max(rows, key=lambda row: _float(row, "final_nmse", source=source))
+    _expect_metric(
+        report_text,
+        r"worst final NMSE was `([^`]+)`",
+        _fmt_float(_float(worst, "final_nmse", source=source), 6),
+        label="Stage F worst final NMSE",
+        source=source,
+    )
+    nonincreasing = all(_bool(row.get("locoprop_nonincreasing"), field="locoprop_nonincreasing", source=source) for row in rows)
+    if not nonincreasing:
+        raise ValueError(f"{source} has a LocoProp-S refit that increased local MSE")
+
+
+def _validate_t20_metrics(report_text: str, docs_dir: Path) -> None:
+    source = docs_dir / "t20_route_row_output_ablation_results.csv"
+    rows = _read_csv(source, expected_rows=7)
+    _require_all_false(rows, "test_accessed", source=source)
+    table = _parse_markdown_rows(report_text, cells=9)
+    expected_names = {row["case_name"] for row in rows}
+    actual_names = expected_names & set(table)
+    if actual_names != expected_names:
+        missing = sorted(expected_names - actual_names)
+        raise ValueError(f"final report is missing T20 route-output rows from {source}: {missing}")
+    for row in rows:
+        name = row["case_name"]
+        expected = [
+            name,
+            row["route_row_role"],
+            _fmt_int(row["route_output_rows_per_node"]),
+            _fmt_int(row["active_rows_per_token"]),
+            _fmt_int(row["effective_stored_rows"]),
+            _fmt_float(_float(row, "final_nmse", source=source), 6),
+            _fmt_float(_float(row, "final_cosine_similarity", source=source), 6),
+            _fmt_float(_float(row, "tokens_per_second", source=source), 1),
+            _fmt_float(_float(row, "validation_accuracy_after_replacement", source=source), 4),
+        ]
+        if table[name] != expected:
+            raise ValueError(
+                f"final report metric mismatch for T20 route-output row {name}: "
+                f"expected {expected} from {source}, found {table[name]}"
+            )
+    best = min(rows, key=lambda row: _float(row, "final_nmse", source=source))
+    contributing = [row for row in rows if _bool(row["route_output_contributes"], field="route_output_contributes", source=source)]
+    fastest = max(contributing, key=lambda row: _float(row, "tokens_per_second", source=source))
+    _expect_metric(
+        report_text,
+        r"Best single-layer route-output MSE: `([^`]+)`, final NMSE `[^`]+`",
+        best["case_name"],
+        label="T20 best local MSE case",
+        source=source,
+    )
+    _expect_metric(
+        report_text,
+        r"Best single-layer route-output MSE: `[^`]+`, final NMSE `([^`]+)`",
+        _fmt_float(_float(best, "final_nmse", source=source), 6),
+        label="T20 best local MSE value",
+        source=source,
+    )
+    _expect_metric(
+        report_text,
+        r"Best single-layer route-output speed among contributing cases: `([^`]+)`, `[^`]+` tokens/s",
+        fastest["case_name"],
+        label="T20 fastest contributing case",
+        source=source,
+    )
+    _expect_metric(
+        report_text,
+        r"Best single-layer route-output speed among contributing cases: `[^`]+`, `([^`]+)` tokens/s",
+        _fmt_float(_float(fastest, "tokens_per_second", source=source), 1),
+        label="T20 fastest contributing tokens/s",
+        source=source,
+    )
+
+
+def _validate_t14_metrics(report_text: str, docs_dir: Path) -> None:
+    source = docs_dir / "t14_finetune_summary.csv"
+    rows = _read_csv(source, expected_rows=8)
+    test_rows = [row for row in rows if _bool(row.get("test_accessed"), field="test_accessed", source=source)]
+    if len(test_rows) != 1:
+        raise ValueError(f"{source} expected one partial-final test row, found {len(test_rows)}")
+    partial = test_rows[0]
+    status = partial.get("status", "")
+    match = re.search(r"partial_test_accuracy=([0-9.]+)", status)
+    if match is None:
+        raise ValueError(f"{source} partial test row is missing partial_test_accuracy")
+    max_steps_match = re.search(r"max_test_steps=([0-9]+)", partial.get("purpose", ""))
+    if max_steps_match is None:
+        raise ValueError(f"{source} partial test row is missing max_test_steps in purpose")
+    _expect_metric(
+        report_text,
+        r"Partial selected-checkpoint CIFAR-10 test evaluation: `max_test_steps=([^`]+)`",
+        max_steps_match.group(1),
+        label="T14 partial test max_test_steps",
+        source=source,
+    )
+    _expect_metric(
+        report_text,
+        r"`test_accuracy_partial=([^`]+)`",
+        _fmt_g(match.group(1)),
+        label="T14 partial test accuracy",
+        source=source,
+    )
+    _expect_metric(
+        report_text,
+        r"`test_accessed=([^`]+)`",
+        "true",
+        label="T14 partial test access",
+        source=source,
+    )
+
+
+def _validate_t15_metrics(
+    report_text: str,
+    fairness_rows: Sequence[Mapping[str, str]],
+    *,
+    source: Path,
+) -> None:
+    _expect_metric(
+        report_text,
+        r"The table contains ([0-9]+) rows",
+        str(len(fairness_rows)),
+        label="T15 fairness row count",
+        source=source,
+    )
+    test_rows = [
+        row
+        for row in fairness_rows
+        if str(row.get("test_accessed", "")).strip().lower() == "true"
+    ]
+    _expect_metric(
+        report_text,
+        r"Exactly ([0-9]+) fairness rows have\s+`test_accessed=true`",
+        str(len(test_rows)),
+        label="T15 fairness test-access row count",
+        source=source,
+    )
+
+
+def _validate_t19_metrics(report_text: str, docs_dir: Path) -> None:
+    source = docs_dir / "t19_optimizer_ablation_summary.csv"
+    rows = _read_csv(source, expected_rows=6)
+    _require_all_false(rows, "test_accessed", source=source)
+    steps = {_fmt_int(row["train_steps_total"]) for row in rows}
+    images = {_fmt_int(row["train_images_seen"]) for row in rows}
+    if len(steps) != 1 or len(images) != 1:
+        raise ValueError(f"{source} T19 rows do not share a single equal smoke budget")
+    _expect_metric(
+        report_text,
+        r"Equal budget: ([0-9]+) train steps",
+        next(iter(steps)),
+        label="T19 equal train-step budget",
+        source=source,
+    )
+    _expect_metric(
+        report_text,
+        r"Equal budget: [0-9]+ train steps, ([0-9]+) images",
+        next(iter(images)),
+        label="T19 equal image budget",
+        source=source,
+    )
+    case_names = {row["case"] for row in rows}
+    expected_cases = {
+        "official_muon_cosine",
+        "official_muon_wsd",
+        "pace_muon_ema_control",
+        "pace_muon_c1e3",
+        "normuon_wsd",
+        "pace_normuon_c1e3",
+    }
+    if case_names != expected_cases:
+        raise ValueError(f"{source} has unexpected T19 smoke cases: {sorted(case_names)}")
+    _expect_contains(
+        report_text,
+        "Official Muon + cosine and Official Muon + WSD are both present.",
+        label="T19 official Muon schedule summary",
+        source=source,
+    )
+    _expect_contains(
+        report_text,
+        "PACE+Muon, NorMuon, and PACE+NorMuon are present as optimizer-experiments ablations.",
+        label="T19 optimizer family summary",
+        source=source,
+    )
+
+
+def _validate_source_metrics(
+    report_text: str,
+    docs_dir: Path,
+    fairness_rows: Sequence[Mapping[str, str]],
+) -> None:
+    _validate_teacher_metrics(report_text, docs_dir)
+    _validate_stage_c_metrics(report_text, docs_dir)
+    _validate_stage_d_metrics(report_text, docs_dir)
+    _validate_stage_f_metrics(report_text, docs_dir)
+    _validate_t20_metrics(report_text, docs_dir)
+    _validate_t14_metrics(report_text, docs_dir)
+    _validate_t15_metrics(report_text, fairness_rows, source=docs_dir / "t15_fairness_summary.csv")
+    _validate_t19_metrics(report_text, docs_dir)
+
+
 def validate_final_report(report: Path = Path("docs/final_report.md")) -> None:
     if not report.exists():
         raise FileNotFoundError("docs/final_report.md is missing")
@@ -102,6 +592,7 @@ def validate_final_report(report: Path = Path("docs/final_report.md")) -> None:
     committed_rows = _canonical_fairness_rows(fairness_rows)
     if committed_rows != regenerated_rows:
         raise ValueError("fairness CSV is stale relative to source evidence")
+    _validate_source_metrics(text, report.parent, fairness_rows)
 
 
 def main() -> int:
