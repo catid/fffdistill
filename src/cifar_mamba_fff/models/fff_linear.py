@@ -460,12 +460,7 @@ class FFFLinear(nn.Module):
             )
             out = out + shared_values @ self.shared_output
 
-        leaf_values = self._activation(
-            torch.einsum("ni,lri->nlr", flat, self.leaf_weight[: self.leaves])
-            + self.leaf_bias[: self.leaves]
-        )
-        leaf_outputs = torch.einsum("nlr,lro->nlo", leaf_values, self.leaf_output[: self.leaves])
-        out = out + (leaf_outputs * route_info.leaf_weights.unsqueeze(-1)).sum(dim=1)
+        out = out + self._regular_leaf_output_grouped(flat, route_info)
         out = out + self._extra_leaf_output_grouped(flat, fallback_weight=self._fallback_weight())
         out = out + self._route_output_grouped(route_info)
 
@@ -565,6 +560,9 @@ class FFFLinear(nn.Module):
                 "max_route_output_rows_per_token": self.max_route_output_rows_per_token,
                 "route_output_rows_per_token": self.route_output_rows_per_token,
                 "active_rows_per_token": self._static_active_rows_per_token(),
+                "grouped_leaf_path": (
+                    "selected_leaf" if self._can_use_selected_leaf_grouped_path() else "all_leaves"
+                ),
             }
         route_info = self._route_flat(self._flatten_input(x)[0], hard=self.config.hard_routing)
         leading_shape = x.shape[:-1]
@@ -746,6 +744,40 @@ class FFFLinear(nn.Module):
         values = self._activation(self.leaf_weight[bank_idx] @ token + self.leaf_bias[bank_idx])
         return values @ self.leaf_output[bank_idx]
 
+    def _regular_leaf_output_grouped(self, flat: Tensor, route_info: _FlatRouteInfo) -> Tensor:
+        if self._can_use_selected_leaf_grouped_path():
+            return self._selected_leaf_output_grouped(flat, route_info)
+
+        leaf_values = self._activation(
+            torch.einsum("ni,lri->nlr", flat, self.leaf_weight[: self.leaves])
+            + self.leaf_bias[: self.leaves]
+        )
+        leaf_outputs = torch.einsum("nlr,lro->nlo", leaf_values, self.leaf_output[: self.leaves])
+        return (leaf_outputs * route_info.leaf_weights.unsqueeze(-1)).sum(dim=1)
+
+    def _can_use_selected_leaf_grouped_path(self) -> bool:
+        if not self.config.hard_routing:
+            return False
+        if self.config.region_leak == 0.0:
+            return True
+        return self.config.fallback_leaf
+
+    def _selected_leaf_output_grouped(self, flat: Tensor, route_info: _FlatRouteInfo) -> Tensor:
+        if flat.shape[0] == 0:
+            return flat.new_empty(0, self.out_features)
+        if self.config.fallback_leaf and self.config.region_leak == 1.0:
+            return flat.new_zeros(flat.shape[0], self.out_features)
+
+        weights = route_info.leaf_weights.gather(1, route_info.leaf_ids.unsqueeze(1)).squeeze(1)
+        selected_weight = self.leaf_weight[route_info.leaf_ids]
+        selected_bias = self.leaf_bias[route_info.leaf_ids]
+        selected_output = self.leaf_output[route_info.leaf_ids]
+        values = self._activation(
+            torch.bmm(selected_weight, flat.unsqueeze(-1)).squeeze(-1) + selected_bias
+        )
+        outputs = torch.bmm(values.unsqueeze(1), selected_output).squeeze(1)
+        return outputs * weights.unsqueeze(-1)
+
     def _extra_leaf_output_grouped(self, flat: Tensor, *, fallback_weight: float) -> Tensor:
         out = flat.new_zeros(flat.shape[0], self.out_features)
         master_idx = self.master_leaf_index
@@ -886,4 +918,7 @@ class FFFLinear(nn.Module):
             "route_output_rows_per_token": self._route_output_count(),
             "active_rows_per_token": active,
             "mean_active_rows_per_token": mean_active,
+            "grouped_leaf_path": (
+                "selected_leaf" if self._can_use_selected_leaf_grouped_path() else "all_leaves"
+            ),
         }

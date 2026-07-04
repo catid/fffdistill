@@ -11,6 +11,8 @@ MUON_COMMIT="f98f1cacc0263b04290753e32be8d498c1efc806"
 
 uv pip install --pre torch torchvision torchaudio \
     --index-url https://download.pytorch.org/whl/nightly/cu130 \
+    --extra-index-url https://pypi.org/simple \
+    --index-strategy unsafe-best-match \
     --constraint "${CONSTRAINTS}"
 
 uv pip install \
