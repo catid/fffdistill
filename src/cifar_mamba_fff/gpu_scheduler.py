@@ -433,6 +433,17 @@ def render_detached_launch_script(job: GpuJob) -> str:
     )
 
 
+def build_detached_launch_command(files: DetachedJobFiles) -> str:
+    script = quote(str(files.script))
+    status = quote(str(files.status))
+    return (
+        f"if command -v setsid >/dev/null 2>&1; then "
+        f"setsid -f bash {script} >/dev/null 2>&1 </dev/null; "
+        f"else nohup bash {script} >/dev/null 2>&1 </dev/null & fi; "
+        f"for i in 1 2 3 4 5; do test -s {status} && break; sleep 0.2; done"
+    )
+
+
 def launch_detached_job(spec: MachineSpec, job: GpuJob, *, timeout_s: int = 20) -> LaunchResult:
     files = detached_job_files(job)
     script = render_detached_launch_script(job)
@@ -448,7 +459,7 @@ def launch_detached_job(spec: MachineSpec, job: GpuJob, *, timeout_s: int = 20) 
             launch_stderr=str(write_result["stderr"]),
         )
 
-    launch_command = f"nohup bash {quote(str(files.script))} >/dev/null 2>&1 </dev/null & echo $!"
+    launch_command = build_detached_launch_command(files)
     launch_result = run_remote(spec, launch_command, timeout_s=timeout_s)
     if not launch_result["ok"]:
         status_probe = read_remote_text(spec, files.status, timeout_s=timeout_s)

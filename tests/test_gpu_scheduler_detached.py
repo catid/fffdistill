@@ -242,6 +242,7 @@ def test_preflight_machine_can_require_cifar10_train_readiness(monkeypatch) -> N
 
 def test_launch_detached_job_probes_status_after_launch_timeout(monkeypatch) -> None:
     launch_detached_job = _require_public_helper("launch_detached_job")
+    build_detached_launch_command = _require_public_helper("build_detached_launch_command")
     job = GpuJob(
         command="PYTHONPATH=src CUDA_VISIBLE_DEVICES=0 .venv/bin/python -m trainer",
         output_dir=Path("outputs/scheduler_smoke/work/0"),
@@ -250,6 +251,11 @@ def test_launch_detached_job_probes_status_after_launch_timeout(monkeypatch) -> 
     )
     spec = MachineSpec(name="work", host="localhost", gpus=2, role="local", workdir="/repo")
     launch_commands: list[str] = []
+    launch_command = build_detached_launch_command(gpu_scheduler.detached_job_files(job))
+    assert "setsid -f bash" in launch_command
+    assert "nohup bash" in launch_command
+    assert "</dev/null" in launch_command
+    assert "status.json" in launch_command
 
     monkeypatch.setattr(
         gpu_scheduler,
