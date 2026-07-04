@@ -107,6 +107,8 @@ DISTILL_CONFIG_TOP_LEVEL_KEYS = {
     "balance",
     "router",
     "locoprop",
+    # HPO trial configs keep the sampled knobs for provenance; runtime code ignores it.
+    "hpo_overrides",
 }
 
 

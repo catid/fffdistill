@@ -8,6 +8,7 @@ from copy import deepcopy
 import pytest
 
 import cifar_mamba_fff.hpo.distill_hpo as distill_hpo
+from cifar_mamba_fff.distill_linears import reject_unknown_distill_config_keys
 from cifar_mamba_fff.hpo.distill_hpo import (
     apply_distill_hpo_overrides,
     canonicalize_distill_route_overrides,
@@ -660,12 +661,51 @@ def test_distill_hpo_trial_plan_writes_configs_without_test_access(tmp_path) -> 
         config = load_yaml(config_path)
         record = json.loads(record_path.read_text(encoding="utf-8"))
         assert config["teacher_checkpoint"] == "/tmp/teacher_best.pt"
+        assert "hpo_overrides" in config
+        reject_unknown_distill_config_keys(config)
         assert record["test_accessed"] is False
         assert record["execute_ready"] is True
     written_summary = json.loads((tmp_path / "distill_hpo_summary.json").read_text(encoding="utf-8"))
     assert written_summary["accepted_trials"] == 3
     assert written_summary["grid_offset"] == 2
     assert written_summary["test_accessed"] is False
+
+
+def test_distill_hpo_generated_config_still_rejects_real_unknown_keys(tmp_path) -> None:
+    base = load_yaml("configs/fff_distill_default.yaml")
+    hpo_config = {
+        "sampler": "cases",
+        "cases": [
+            {
+                "name": "runtime_valid",
+                "overrides": {
+                    "include_indices": [35],
+                    "router_recipe": "vanilla_ste",
+                    "route_rows": 1,
+                    "route_row_role": "routing_only",
+                    "locoprop_refit": "off",
+                },
+            }
+        ],
+    }
+
+    write_distill_hpo_trial_plan(
+        base_config=base,
+        hpo_config=hpo_config,
+        output_dir=tmp_path,
+        max_trials=1,
+        max_attempts=1,
+        seed=123,
+        teacher_checkpoint="/tmp/teacher_best.pt",
+    )
+
+    config = load_yaml(tmp_path / "trials" / "trial_000000" / "distill_config.yaml")
+    assert config["hpo_overrides"]["case_name"] == "runtime_valid"
+    reject_unknown_distill_config_keys(config)
+
+    config["stale_typo"] = True
+    with pytest.raises(ValueError, match="unknown top-level keys: stale_typo"):
+        reject_unknown_distill_config_keys(config)
 
 
 def test_distill_hpo_execute_runs_trials_and_records_mixed_results(tmp_path) -> None:
