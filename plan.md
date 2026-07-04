@@ -149,6 +149,14 @@ Current Stage A status:
 
 Stage B: teacher HPO with all usable GPUs, validation pruning, and final CIFAR-10 test only after selection.
 
+- T06 selected `ripper:0` from `teacher_hpo_wave1_20260704_0618` as the teacher
+  checkpoint after validation accuracy reached `0.9418`. The gated final CIFAR-10
+  test evaluation was run once for that selected checkpoint and reached `0.9399`
+  test accuracy. See `docs/t06_teacher_hpo_final_summary.md`.
+- Downstream distillation should use the ignored local checkpoint copy
+  `checkpoints/teacher/ripper0_val9418_test9399_teacher_best.pt` and pass it via
+  `--teacher-checkpoint` or `--checkpoint`; do not commit the checkpoint.
+
 Stage C: STE/router smoke tests on one representative middle Linear layer.
 
 - Layerwise distillation now has CPU-tested executable HPO orchestration: dry-run planning
