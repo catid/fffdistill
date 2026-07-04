@@ -136,6 +136,13 @@ Current Stage A status:
   enable the parameter-count pool first, then reject official Mamba-3 candidates that
   fail the optimized TileLang CUDA path before they consume HPO trial slots. The CUDA
   smoke uses a synthetic batch size of 1 and never touches CIFAR-10 test data.
+- `configs/teacher_hpo_safe.yaml` is the refill config for keeping idle GPUs busy
+  while broad teacher HPO runs elsewhere: it pins the known CUDA-valid 9.5M
+  official Mamba-3 shape and searches only training hyperparameters, WSD/cosine,
+  augmentation, drop-path, and batch size.
+- The parameter-count prefilter scans only fields that change the teacher parameter
+  count; non-count knobs such as `drop_path` remain sampled per trial without
+  multiplying the official model-construction pool.
 - Long teacher HPO may start only after the current prefilter code is committed/pushed,
   remotes are synced to that commit, current GPU occupancy is rechecked, and unavailable
   slots are explicitly excluded.

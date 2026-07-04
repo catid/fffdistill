@@ -248,12 +248,37 @@ def test_teacher_hpo_smoke_config_uses_known_kernel_safe_default() -> None:
     assert run_config.train.batch_size_per_gpu == 512
 
 
+def test_teacher_hpo_safe_config_keeps_known_target_sized_model_shape() -> None:
+    base_run = load_teacher_run_config("configs/teacher_default.yaml", quick_smoke=True)
+    hpo_config = teacher_hpo.load_yaml("configs/teacher_hpo_safe.yaml")
+    search_space = hpo_config["search_space"]
+    overrides = teacher_hpo.sample_teacher_overrides(
+        search_space,
+        rng=teacher_hpo.random.Random(2026),
+    )
+
+    run_config = resolve_hpo_run_config(base_run, overrides, seed=2026, quick_smoke=True)
+    result = teacher_hpo.evaluate_hpo_candidate(base_run.model, overrides)[1]
+
+    assert run_config.model.d_model == 256
+    assert run_config.model.depth == 20
+    assert run_config.model.patch_size == 4
+    assert run_config.model.d_state == 64
+    assert run_config.model.headdim == 64
+    assert run_config.model.mimo_rank == 2
+    assert run_config.model.bidirectional is False
+    assert result.accepted is True
+    assert result.parameter_count == 9_527_370
+
+
 def test_parameter_count_prefilter_pool_keeps_only_target_sized_model_shapes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     base_model = Mamba3CifarConfig()
+    evaluated: list[tuple[int, int, float]] = []
 
     def fake_evaluate(config: Mamba3CifarConfig) -> TeacherCandidateResult:
+        evaluated.append((config.d_model, config.depth, config.drop_path))
         accepted = config.d_model == 224 and config.depth == 20
         return TeacherCandidateResult(
             accepted=accepted,
@@ -268,12 +293,15 @@ def test_parameter_count_prefilter_pool_keeps_only_target_sized_model_shapes(
         {
             "d_model": [160, 224],
             "depth": [8, 20],
+            "drop_path": [0.0, 0.1],
             "batch_size_per_gpu": [512, 1024],
             "lr_muon_loguniform": [0.003, 0.05],
         },
     )
 
     assert pool == [{"d_model": 224, "depth": 20}]
+    assert len(evaluated) == 4
+    assert {drop_path for _, _, drop_path in evaluated} == {base_model.drop_path}
 
 
 def test_parameter_count_prefilter_overrides_invalid_sampled_model_shape(

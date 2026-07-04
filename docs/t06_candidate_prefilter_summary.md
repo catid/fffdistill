@@ -119,5 +119,7 @@ Interpretation:
 - The original broad config was viable but inefficient: 9 of 10 jobs found a parameter-valid and kernel-safe candidate within 64 attempts.
 - One job exhausted all 64 attempts and failed with zero valid candidates. This was expected HPO accounting, not a training success.
 - Follow-up HPO code adds a parameter-count prefilter before the CUDA kernel smoke so future refill waves draw model dimensions only from 9M-11M official Mamba-3 candidates while still sampling optimizer/augmentation/schedule choices normally.
+- `configs/teacher_hpo_safe.yaml` pins the known CUDA-valid 9,527,370-parameter official Mamba-3 shape and keeps optimizer, augmentation, drop-path, batch size, and LR schedule searchable. Use it for refill waves on machines where broad candidate smoke spends too long in TileLang compilation/rejection before training.
+- The parameter-count prefilter now scans only count-affecting model fields. It deliberately does not multiply the pool by `drop_path`, so broad refill processes avoid redundant official model construction while still sampling drop-path normally for accepted trials.
 - Future real HPO launches should keep `--hpo-max-attempts-per-job` high enough for CUDA kernel-smoke failures, but should no longer spend most attempts on parameter-count-invalid model shapes.
 - Scheduler artifact collection was patched after this run so default collection paths include `--run-id`, preventing later HPO waves from overwriting collected summaries.

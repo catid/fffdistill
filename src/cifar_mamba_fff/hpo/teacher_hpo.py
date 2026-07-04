@@ -42,6 +42,22 @@ class CudaKernelSmokeUnavailable(RuntimeError):
     pass
 
 
+PARAMETER_COUNT_AFFECTING_MODEL_KEYS = frozenset(
+    {
+        "d_model",
+        "depth",
+        "patch_size",
+        "d_state",
+        "expand",
+        "headdim",
+        "is_mimo",
+        "mimo_rank",
+        "bidirectional",
+        "num_classes",
+    }
+)
+
+
 @dataclass(frozen=True)
 class CandidateFilterConfig:
     cuda_kernel_smoke: bool = False
@@ -210,11 +226,10 @@ def build_parameter_count_prefilter_pool(
     base_model: Mamba3CifarConfig,
     search_space: Mapping[str, object],
 ) -> list[dict[str, object]]:
-    model_fields = set(Mamba3CifarConfig.__dataclass_fields__)
     model_keys = [
         key
         for key in search_space
-        if key in model_fields and not key.endswith("_loguniform")
+        if key in PARAMETER_COUNT_AFFECTING_MODEL_KEYS and not key.endswith("_loguniform")
     ]
     if not model_keys:
         return [{}]
