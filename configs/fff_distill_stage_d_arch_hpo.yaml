@@ -1,0 +1,31 @@
+study_name: fff_distill_stage_d_arch_sweep
+objective: validation_normalized_mse
+direction: minimize
+max_trials: 80
+search_space:
+  router_recipe:
+    - vanilla_ste
+    - clipped_ste
+    - sigmoid_surrogate_ste
+    - st_gumbel
+  shared_unrouted_frac: [0.0, 0.05, 0.10, 0.20]
+  route_rows: [1, 2]
+  leaf_rows: [1, 2, 4]
+  depth: [3, 4, 5, 6, 7]
+  route_row_role: [routing_only, shared_routing_and_output, split_routing_output]
+  route_output_controls:
+    routing_only: {}
+    shared_routing_and_output:
+      route_rows_output_count: [1, all]
+      route_rows_output_fraction: [null, 0.5, 1.0]
+    split_routing_output:
+      route_result_rows: [1, 2]
+      route_rows_output_count: [1, all]
+      route_rows_output_fraction: [null, 0.5, 1.0]
+  activation: [silu, gelu]
+  region_leak: [0.0, 0.01]
+  master_leaf: [false]
+  balance_recipe: [none, split_minleaf, split_minleaf_margin]
+  balance_coeff: [0.0, 0.001, 0.003, 0.01]
+  min_leaf_tokens: [32, 64]
+  locoprop_refit: [off, every_500]
