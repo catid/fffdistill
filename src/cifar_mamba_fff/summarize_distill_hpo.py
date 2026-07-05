@@ -155,7 +155,16 @@ def collect_distill_hpo_rows(collected_root: Path) -> list[dict[str, Any]]:
         include_indices = list(overrides.get("include_indices") or [])
         sample_split = hpo_summary.get("sample_split", run_context.get("sample_split"))
         sample_batches = hpo_summary.get("max_sample_batches", run_context.get("max_sample_batches"))
-        test_accessed = bool(hpo_summary.get("test_accessed") or trial_result.get("test_accessed"))
+        result = trial_result.get("result") if isinstance(trial_result.get("result"), Mapping) else {}
+        result_summary = result.get("summary") if isinstance(result.get("summary"), Mapping) else {}
+        test_accessed = bool(
+            hpo_summary.get("test_accessed")
+            or trial_result.get("test_accessed")
+            or result.get("test_accessed")
+            or result_summary.get("test_accessed")
+        )
+        if test_accessed:
+            raise ValueError(f"validation distill summary refuses test_accessed=true in {trial_dir}")
         for layer_position, layer in enumerate(layer_summary):
             if not isinstance(layer, Mapping):
                 raise ValueError(f"{trial_dir / 'layer_summary.json'} contains a non-mapping row")

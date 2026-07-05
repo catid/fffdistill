@@ -709,6 +709,9 @@ def build_dry_run_jobs(
         if run_id is not None:
             resolved_output_root = resolved_output_root / run_id
         output_dir = resolved_output_root / machine / str(gpu_id)
+        hpo_grid_offset = queued_job_index * hpo_trials_per_job
+        distill_grid_offset = distill_grid_offset_base + hpo_grid_offset
+        finetune_grid_offset = finetune_grid_offset_base + hpo_grid_offset
         if job_kind == "teacher_hpo":
             command = build_teacher_hpo_command(
                 gpu_id=gpu_id,
@@ -738,7 +741,7 @@ def build_dry_run_jobs(
                 max_sample_batches=distill_max_sample_batches,
                 max_trials=hpo_trials_per_job,
                 max_attempts=hpo_max_attempts_per_job,
-                grid_offset=distill_grid_offset_base + queued_job_index,
+                grid_offset=distill_grid_offset,
             )
         elif job_kind == "finetune_hpo":
             command = build_finetune_hpo_command(
@@ -750,7 +753,7 @@ def build_dry_run_jobs(
                 base_config=finetune_base_config,
                 hpo_config=finetune_hpo_config,
                 max_trials=hpo_trials_per_job,
-                grid_offset=finetune_grid_offset_base + queued_job_index,
+                grid_offset=finetune_grid_offset,
                 max_train_steps=max_train_steps,
                 max_val_steps=max_val_steps,
             )
@@ -795,7 +798,7 @@ def build_dry_run_jobs(
                     "distill_max_sample_batches": distill_max_sample_batches
                     if job_kind == "distill_hpo"
                     else None,
-                    "distill_grid_offset": distill_grid_offset_base + queued_job_index
+                    "distill_grid_offset": distill_grid_offset
                     if job_kind == "distill_hpo"
                     else None,
                     "finetune_base_config": finetune_base_config
@@ -804,7 +807,7 @@ def build_dry_run_jobs(
                     "finetune_hpo_config": finetune_hpo_config
                     if job_kind == "finetune_hpo"
                     else None,
-                    "finetune_grid_offset": finetune_grid_offset_base + queued_job_index
+                    "finetune_grid_offset": finetune_grid_offset
                     if job_kind == "finetune_hpo"
                     else None,
                 },

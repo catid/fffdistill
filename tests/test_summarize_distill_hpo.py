@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from cifar_mamba_fff.summarize_distill_hpo import (
     collect_distill_hpo_rows,
     write_csv,
@@ -134,3 +136,31 @@ def test_summarize_distill_hpo_collects_layer_and_router_metrics(tmp_path) -> No
     write_markdown(md_out, rows, collected_root=tmp_path / "run_x")
     assert "case_a" in csv_out.read_text(encoding="utf-8")
     assert "CIFAR-10 test accessed: `false`" in md_out.read_text(encoding="utf-8")
+
+
+def test_summarize_distill_hpo_rejects_test_accessed_child_summary(tmp_path) -> None:
+    slot = tmp_path / "run_x" / "work" / "0"
+    trial = slot / "trials" / "trial_000000"
+    _write_json(slot / "status.json", {"status": "succeeded", "git_commit": "abc123"})
+    _write_json(
+        slot / "distill_hpo_summary.json",
+        {"sample_split": "train_eval", "max_sample_batches": 1, "test_accessed": False},
+    )
+    _write_json(
+        trial / "trial_result.json",
+        {
+            "status": "failed_logic",
+            "test_accessed": False,
+            "result": {"test_accessed": False, "summary": {"test_accessed": True}},
+            "overrides": {"case_name": "case_a"},
+        },
+    )
+    _write_json(trial / "run_context.json", {"sample_split": "train_eval", "max_sample_batches": 1})
+    _write_json(trial / "layer_summary.json", [{"name": "layer", "final_normalized_mse": 1.0}])
+    (trial / "layer_metrics.jsonl").write_text(
+        json.dumps({"phase": "final", "layer": "layer"}) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="test_accessed=true"):
+        collect_distill_hpo_rows(tmp_path / "run_x")

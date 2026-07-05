@@ -222,7 +222,10 @@ def run_finetune_trial_command(
         "test_accessed": False,
     }
     if summary_path.exists():
-        payload["summary"] = load_yaml(summary_path)
+        summary = load_yaml(summary_path)
+        payload["summary"] = summary
+        if isinstance(summary, Mapping) and bool(summary.get("test_accessed", False)):
+            payload["test_accessed"] = True
     return payload
 
 
@@ -299,7 +302,13 @@ def run_finetune_hpo_trials(
                 "test_accessed": False,
             }
         status = str(runner_result.get("status", "failed_logic"))
-        test_accessed = bool(runner_result.get("test_accessed", False))
+        result_summary = (
+            runner_result.get("summary") if isinstance(runner_result.get("summary"), Mapping) else {}
+        )
+        test_accessed = bool(
+            runner_result.get("test_accessed", False)
+            or (isinstance(result_summary, Mapping) and result_summary.get("test_accessed", False))
+        )
         if test_accessed:
             status = "failed_logic"
             runner_result = dict(runner_result) | {"reason": "trial reported CIFAR-10 test access"}

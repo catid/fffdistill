@@ -75,6 +75,100 @@ def test_discover_scheduler_jobs_reads_remote_status(monkeypatch) -> None:
     assert job.output_dir == status_path.parent
 
 
+def test_discover_scheduler_jobs_rejects_mismatched_status_output_dir(monkeypatch) -> None:
+    spec = MachineSpec(
+        name="work",
+        host="localhost",
+        gpus=2,
+        role="local",
+        workdir="/repo",
+    )
+    status_path = Path("outputs/scheduler_finetune_hpo/run-a/work/1/status.json")
+
+    monkeypatch.setattr(
+        collector,
+        "run_remote",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "returncode": 0,
+            "stdout": f"{status_path}\n",
+            "stderr": "",
+        },
+    )
+    monkeypatch.setattr(
+        collector,
+        "read_remote_text",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "returncode": 0,
+            "stdout": json.dumps(
+                {
+                    "output_dir": "outputs/scheduler_finetune_hpo/run-a/work/0",
+                    "machine": "work",
+                    "gpu_id": 1,
+                    "status": "succeeded",
+                    "metadata": {"job_kind": "finetune_hpo"},
+                }
+            ),
+            "stderr": "",
+        },
+    )
+
+    try:
+        collector.discover_scheduler_jobs([spec], job_kind="finetune_hpo", run_id="run-a")
+    except ValueError as exc:
+        assert "output_dir" in str(exc)
+    else:
+        raise AssertionError("mismatched status output_dir was accepted")
+
+
+def test_discover_scheduler_jobs_rejects_mismatched_status_job_kind(monkeypatch) -> None:
+    spec = MachineSpec(
+        name="work",
+        host="localhost",
+        gpus=2,
+        role="local",
+        workdir="/repo",
+    )
+    status_path = Path("outputs/scheduler_finetune_hpo/run-a/work/1/status.json")
+
+    monkeypatch.setattr(
+        collector,
+        "run_remote",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "returncode": 0,
+            "stdout": f"{status_path}\n",
+            "stderr": "",
+        },
+    )
+    monkeypatch.setattr(
+        collector,
+        "read_remote_text",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "returncode": 0,
+            "stdout": json.dumps(
+                {
+                    "output_dir": str(status_path.parent),
+                    "machine": "work",
+                    "gpu_id": 1,
+                    "status": "succeeded",
+                    "metadata": {"job_kind": "distill_hpo"},
+                }
+            ),
+            "stderr": "",
+        },
+    )
+
+    try:
+        collector.discover_scheduler_jobs([spec], job_kind="finetune_hpo", run_id="run-a")
+    except ValueError as exc:
+        assert "job_kind" in str(exc)
+    else:
+        raise AssertionError("mismatched status job kind was accepted")
+
+
 def test_collect_scheduler_run_skips_running_jobs_by_default(monkeypatch, tmp_path) -> None:
     spec = MachineSpec(
         name="work",

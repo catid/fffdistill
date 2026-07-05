@@ -1030,6 +1030,32 @@ def test_distill_hpo_execute_runs_trials_and_records_mixed_results(tmp_path) -> 
     assert second_result["status"] == "failed_logic"
 
 
+def test_distill_hpo_execute_rejects_test_accessed_child_summary(tmp_path) -> None:
+    def fake_runner(**_kwargs: object) -> dict[str, object]:
+        return {
+            "status": "succeeded",
+            "returncode": 0,
+            "summary": {"test_accessed": True},
+            "test_accessed": False,
+        }
+
+    with pytest.raises(RuntimeError, match="zero successful"):
+        run_distill_hpo_trials(
+            base_config=load_yaml("configs/fff_distill_default.yaml"),
+            hpo_config=load_yaml("configs/fff_distill_hpo.yaml"),
+            output_dir=tmp_path,
+            max_trials=1,
+            max_attempts=16,
+            seed=123,
+            teacher_checkpoint="/tmp/teacher_best.pt",
+            trial_runner=fake_runner,
+        )
+
+    result = json.loads((tmp_path / "trials" / "trial_000000" / "trial_result.json").read_text())
+    assert result["status"] == "failed_logic"
+    assert result["test_accessed"] is True
+
+
 def test_distill_hpo_execute_requires_teacher_checkpoint_for_non_smoke(tmp_path) -> None:
     with pytest.raises(RuntimeError, match="teacher_checkpoint is required"):
         run_distill_hpo_trials(

@@ -943,6 +943,39 @@ def test_finetune_hpo_rejects_test_accessed_trial(tmp_path: Path) -> None:
         )
 
 
+def test_finetune_hpo_rejects_test_accessed_child_summary(tmp_path: Path) -> None:
+    base = _minimal_config(tmp_path)
+    hpo = {"cases": [{"name": "bad_summary", "fine_tune_epochs": 1}]}
+
+    def fake_runner(**_kwargs: object) -> dict[str, object]:
+        return {
+            "status": "succeeded",
+            "test_accessed": False,
+            "summary": {"best_val_accuracy": 0.1, "test_accessed": True},
+        }
+
+    with pytest.raises(RuntimeError, match="zero successful"):
+        run_finetune_hpo_trials(
+            base_config=base,
+            hpo_config=hpo,
+            output_dir=tmp_path / "execute_summary",
+            max_trials=1,
+            trial_runner=fake_runner,
+        )
+
+    trial_result = json.loads(
+        (
+            tmp_path
+            / "execute_summary"
+            / "trials"
+            / "trial_000000_bad_summary"
+            / "trial_result.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert trial_result["status"] == "failed_logic"
+    assert trial_result["test_accessed"] is True
+
+
 def test_finetune_hpo_command_runs_training_for_non_smoke_trials(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

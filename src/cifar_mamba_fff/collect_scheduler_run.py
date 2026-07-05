@@ -72,22 +72,42 @@ def _status_payload(spec: MachineSpec, status_path: Path, *, timeout_s: int) -> 
     return loaded
 
 
-def _job_from_status(status_path: Path, payload: dict[str, Any]) -> GpuJob:
+def _job_from_status(status_path: Path, payload: dict[str, Any], *, job_kind: str) -> GpuJob:
     status_text = str(payload.get("status", JobStatus.RUNNING.value))
     try:
         status = JobStatus(status_text)
     except ValueError:
         status = JobStatus.FAILED_INFRA
-    output_dir = Path(str(payload.get("output_dir") or status_path.parent))
+    output_dir = status_path.parent
+    payload_output_dir = payload.get("output_dir")
+    if payload_output_dir not in (None, "") and Path(str(payload_output_dir)) != output_dir:
+        raise ValueError(
+            f"{status_path} has output_dir={payload_output_dir!r}, expected {str(output_dir)!r}"
+        )
+    expected_machine = status_path.parent.parent.name
+    payload_machine = payload.get("machine")
+    if payload_machine not in (None, "") and str(payload_machine) != expected_machine:
+        raise ValueError(
+            f"{status_path} has machine={payload_machine!r}, expected {expected_machine!r}"
+        )
+    expected_gpu_raw = status_path.parent.name
+    expected_gpu_id = int(expected_gpu_raw) if expected_gpu_raw.isdecimal() else None
     gpu_raw = payload.get("gpu_id", payload.get("gpu"))
     gpu_id = int(gpu_raw) if gpu_raw not in (None, "") else None
+    if gpu_id != expected_gpu_id:
+        raise ValueError(f"{status_path} has gpu_id={gpu_id!r}, expected {expected_gpu_id!r}")
     seed_raw = payload.get("seed")
     seed = int(seed_raw) if seed_raw not in (None, "") else None
     metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+    payload_job_kind = metadata.get("job_kind")
+    if payload_job_kind not in (None, "") and str(payload_job_kind) != job_kind:
+        raise ValueError(
+            f"{status_path} has metadata.job_kind={payload_job_kind!r}, expected {job_kind!r}"
+        )
     return GpuJob(
         command=str(payload.get("command", "")),
         output_dir=output_dir,
-        machine=str(payload.get("machine") or status_path.parent.parent.name),
+        machine=expected_machine,
         gpu_id=gpu_id,
         seed=seed,
         status=status,
@@ -109,7 +129,7 @@ def discover_scheduler_jobs(
     for spec in machines:
         for status_path in _status_paths(spec, run_root, timeout_s=timeout_s):
             payload = _status_payload(spec, status_path, timeout_s=timeout_s)
-            job = _job_from_status(status_path, payload)
+            job = _job_from_status(status_path, payload, job_kind=job_kind)
             key = (str(job.machine), job.gpu_id, str(job.output_dir))
             if key in seen:
                 continue

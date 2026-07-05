@@ -429,7 +429,7 @@ def test_scheduler_distill_hpo_jobs_bind_gpu_seed_checkpoint_config_and_samples(
         assert "--sample-split val" in job.command
         assert "--max-sample-batches 3" in job.command
         assert f"--seed {7000 + gpu_id}" in job.command
-        assert f"--grid-offset {gpu_id}" in job.command
+        assert f"--grid-offset {gpu_id * 2}" in job.command
         assert f"--output-dir {expected_output_dir}" in job.command
         assert job.seed == 7000 + gpu_id
         assert job.metadata["job_kind"] == "distill_hpo"
@@ -439,7 +439,7 @@ def test_scheduler_distill_hpo_jobs_bind_gpu_seed_checkpoint_config_and_samples(
         assert job.metadata["distill_hpo_config"] == "configs/distill hpo.yaml"
         assert job.metadata["distill_sample_split"] == "val"
         assert job.metadata["distill_max_sample_batches"] == 3
-        assert job.metadata["distill_grid_offset"] == gpu_id
+        assert job.metadata["distill_grid_offset"] == gpu_id * 2
     assert len({job.output_dir for job in jobs}) == len(jobs)
     assert len({job.seed for job in jobs}) == len(jobs)
 
@@ -483,7 +483,7 @@ def test_scheduler_finetune_hpo_jobs_bind_gpu_seed_config_and_offsets() -> None:
         assert "--base-config 'configs/finetune base.yaml'" in job.command
         assert "--hpo-config 'configs/finetune hpo.yaml'" in job.command
         assert f"--seed {8000 + gpu_id}" in job.command
-        assert f"--grid-offset {5 + gpu_id}" in job.command
+        assert f"--grid-offset {5 + gpu_id * 2}" in job.command
         assert "--max-train-steps 3" in job.command
         assert "--max-val-steps 1" in job.command
         assert f"--output-dir {expected_output_dir}" in job.command
@@ -492,7 +492,7 @@ def test_scheduler_finetune_hpo_jobs_bind_gpu_seed_config_and_offsets() -> None:
         assert job.metadata["seed_base"] == 8000
         assert job.metadata["finetune_base_config"] == "configs/finetune base.yaml"
         assert job.metadata["finetune_hpo_config"] == "configs/finetune hpo.yaml"
-        assert job.metadata["finetune_grid_offset"] == 5 + gpu_id
+        assert job.metadata["finetune_grid_offset"] == 5 + gpu_id * 2
     assert len({job.output_dir for job in jobs}) == len(jobs)
     assert len({job.seed for job in jobs}) == len(jobs)
 
