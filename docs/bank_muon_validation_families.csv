@@ -1,0 +1,3 @@
+family,trials,seed_count,seeds,mean_best_val_accuracy,std_best_val_accuracy,mean_train_steps,test_accessed,best_case,best_seed,best_val_accuracy,checkpoint_path
+adamw_fallback_banks,3,3,"32001,32002,32003",0.906467,0.005201,4218.000000,false,adamw_fallback_banks_seed32003,32003,0.911600,outputs/scheduler_finetune_hpo/bank_muon_validation_cd134e8_wave0_part1_offsets1_4/ripper/1/trials/trial_000002_adamw_fallback_banks_seed32003/student_best.pt
+muon_banks,3,3,"32001,32002,32003",0.897200,0.000872,4218.000000,false,muon_banks_seed32003,32003,0.898200,outputs/scheduler_finetune_hpo/bank_muon_validation_8d55431_wave0_part2_offset5_relaunch/foureyes_scratch/0/trials/trial_000005_muon_banks_seed32003/student_best.pt
