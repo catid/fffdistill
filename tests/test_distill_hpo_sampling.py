@@ -594,6 +594,7 @@ def test_distill_hpo_overrides_map_to_concrete_config_sections() -> None:
             "router_recipe": "hard_em_utility_ste",
             "utility_loss_coeff": 0.3,
             "utility_tau": 0.1,
+            "utility_hard": False,
             "locoprop_refit": "every_250",
             "ridge_lambda": 0.001,
             "locoprop_blend_alpha": 0.5,
@@ -616,6 +617,7 @@ def test_distill_hpo_overrides_map_to_concrete_config_sections() -> None:
     assert config["router"]["recipe"] == "hard_em_utility_ste"
     assert config["router"]["loss_coeff"] == 0.3
     assert config["router"]["utility_temperature"] == 0.1
+    assert config["router"]["utility_hard"] is False
     assert config["locoprop"]["enabled"] is True
     assert config["locoprop"]["interval_steps"] == 250
     assert config["locoprop"]["ridge_lambda"] == 0.001
@@ -741,6 +743,107 @@ def test_stage_f_train_eval_shards_cover_all_eligible_layers_once() -> None:
     assert search_space["router_recipe"] == ["vanilla_ste"]
     assert search_space["route_row_role"] == ["split_routing_output"]
     assert search_space["locoprop_refit"] == ["every_500"]
+
+
+@pytest.mark.parametrize(
+    ("base_path", "hpo_path", "route_row_role", "route_rows_contribute", "route_result_rows"),
+    [
+        (
+            "configs/fff_distill_route_output_routing_only.yaml",
+            "configs/fff_distill_route_output_routing_only_shards.yaml",
+            "routing_only",
+            False,
+            0,
+        ),
+        (
+            "configs/fff_distill_route_output_shared_all.yaml",
+            "configs/fff_distill_route_output_shared_all_shards.yaml",
+            "shared_routing_and_output",
+            True,
+            0,
+        ),
+        (
+            "configs/fff_distill_route_output_split_all.yaml",
+            "configs/fff_distill_route_output_split_all_shards.yaml",
+            "split_routing_output",
+            True,
+            2,
+        ),
+    ],
+)
+def test_full_student_route_output_shard_configs_plan_all_layers(
+    tmp_path,
+    base_path: str,
+    hpo_path: str,
+    route_row_role: str,
+    route_rows_contribute: bool,
+    route_result_rows: int,
+) -> None:
+    base = load_yaml(base_path)
+    hpo_config = load_yaml(hpo_path)
+
+    summary = write_distill_hpo_trial_plan(
+        base_config=base,
+        hpo_config=hpo_config,
+        output_dir=tmp_path,
+        max_trials=12,
+        max_attempts=12,
+        seed=123,
+    )
+
+    assert summary["test_accessed"] is False
+    assert summary["execution_contract"]["sample_split"] == "train_eval"
+    shards = [trial["overrides"]["include_indices"] for trial in summary["trials"]]
+    assert sorted(index for shard in shards for index in shard) == list(range(64))
+    for trial in summary["trials"]:
+        config = load_yaml(tmp_path / "trials" / f"trial_{trial['trial_index']:06d}" / "distill_config.yaml")
+        reject_unknown_distill_config_keys(config)
+        assert config["fff"]["route_row_role"] == route_row_role
+        assert config["fff"]["route_rows_contribute"] is route_rows_contribute
+        assert config["fff"]["route_result_rows"] == route_result_rows
+        assert config["fff"]["route_rows"] == 2
+        assert config["fff"]["leaf_rows"] == 2
+        assert config["hpo_overrides"]["include_indices"] == trial["overrides"]["include_indices"]
+
+
+@pytest.mark.parametrize(
+    ("hpo_path", "router_recipe"),
+    [
+        ("configs/fff_distill_router_st_gumbel_full_shards.yaml", "st_gumbel"),
+        ("configs/fff_distill_router_utility_targeted_full_shards.yaml", "utility_targeted_ste"),
+        ("configs/fff_distill_router_hard_em_full_shards.yaml", "hard_em_utility_ste"),
+        ("configs/fff_distill_router_expert_choice_full_shards.yaml", "expert_choice_imitation"),
+    ],
+)
+def test_full_student_router_family_shard_configs_plan_all_layers(
+    tmp_path,
+    hpo_path: str,
+    router_recipe: str,
+) -> None:
+    base = load_yaml("configs/fff_distill_stage_f.yaml")
+    hpo_config = load_yaml(hpo_path)
+
+    summary = write_distill_hpo_trial_plan(
+        base_config=base,
+        hpo_config=hpo_config,
+        output_dir=tmp_path,
+        max_trials=12,
+        max_attempts=12,
+        seed=123,
+    )
+
+    assert summary["test_accessed"] is False
+    assert summary["execution_contract"]["sample_split"] == "train_eval"
+    shards = [trial["overrides"]["include_indices"] for trial in summary["trials"]]
+    assert sorted(index for shard in shards for index in shard) == list(range(64))
+    for trial in summary["trials"]:
+        config = load_yaml(tmp_path / "trials" / f"trial_{trial['trial_index']:06d}" / "distill_config.yaml")
+        reject_unknown_distill_config_keys(config)
+        assert config["router"]["recipe"] == router_recipe
+        assert config["balance"]["recipe"] == "split_minleaf"
+        assert config["fff"]["route_row_role"] == "split_routing_output"
+        assert config["fff"]["route_result_rows"] == 2
+        assert config["hpo_overrides"]["include_indices"] == trial["overrides"]["include_indices"]
 
 
 def test_l7k_equal_budget_router_config_plans_strict_hard_layer_cases(tmp_path) -> None:

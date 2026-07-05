@@ -12,6 +12,7 @@ search_space:
     - utility_targeted_ste
     - hard_em_utility_ste
     - expert_choice_imitation
+  utility_hard: [false]
   shared_unrouted_frac: [0.10]
   route_rows: [1]
   leaf_rows: [2]

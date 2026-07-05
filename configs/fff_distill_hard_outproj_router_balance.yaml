@@ -64,6 +64,7 @@ cases:
       balance_recipe: split_minleaf
       utility_loss_coeff: 1.0
       utility_tau: 0.3
+      utility_hard: false
   - name: hard_em_split_minleaf
     overrides:
       <<: *base

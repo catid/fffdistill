@@ -211,6 +211,31 @@ def test_official_fff_regression_harness_does_not_leak_seed() -> None:
     torch.testing.assert_close(torch.rand(3), expected)
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_official_fff_regression_harness_does_not_leak_cuda_seed() -> None:
+    pytest.importorskip("fastfeedforward")
+    device = torch.device("cuda:0")
+    linear = nn.Linear(4, 3, device=device)
+    inputs = torch.randn(2, 4, device=device)
+    budget = official_fff_trainable_parameter_count(4, 1, 3, 1)
+
+    torch.cuda.manual_seed(2026)
+    expected = torch.rand(3, device=device)
+    torch.cuda.manual_seed(2026)
+    run_official_fff_layer_regression_baseline(
+        linear,
+        inputs,
+        parameter_budget=budget,
+        depth=1,
+        train_steps=0,
+        seed=99,
+        timing_iterations=1,
+        timing_warmup=0,
+    )
+
+    torch.testing.assert_close(torch.rand(3, device=device), expected)
+
+
 def test_cuda_synchronization_helper_only_syncs_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[torch.device] = []
 

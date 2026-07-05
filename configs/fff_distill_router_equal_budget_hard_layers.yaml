@@ -139,6 +139,7 @@ cases:
       router_recipe: utility_targeted_ste
       utility_loss_coeff: 1.0
       utility_tau: 0.3
+      utility_hard: false
   - name: utility_targeted_ste_seed21002
     launch_seed: 21002
     router_family: utility_targeted_ste

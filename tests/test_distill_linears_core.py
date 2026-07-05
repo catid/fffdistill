@@ -14,6 +14,7 @@ from cifar_mamba_fff.distill_linears import (
     LocoPropDistillConfig,
     RouterDistillConfig,
     _balance_auxiliary_loss,
+    _branch_routes_for_recipe,
     _capture_autocast_context,
     _replacement_prediction,
     _router_auxiliary_loss,
@@ -996,6 +997,48 @@ def test_main_distillation_loss_sends_recipe_gradients_to_route_weights(
     assert layer.route_weight.grad is not None
     assert torch.isfinite(layer.route_weight.grad).all()
     assert layer.route_weight.grad.abs().sum() > 0.0
+
+
+def test_utility_targeted_soft_routing_is_not_hard_em_alias() -> None:
+    torch.manual_seed(21)
+    layer = FFFLinear(
+        6,
+        4,
+        depth=2,
+        shared_rows=2,
+        route_rows=2,
+        leaf_rows=2,
+        hard_routing=True,
+        route_row_role="routing_only",
+        route_rows_output_count=0,
+        bias=False,
+    )
+    x = torch.randn(16, 6)
+    y = torch.randn(16, 4)
+
+    soft_utility_routes = _branch_routes_for_recipe(
+        layer,
+        x,
+        y,
+        RouterDistillConfig(
+            recipe="utility_targeted_ste",
+            loss_coeff=1.0,
+            utility_temperature=10.0,
+            utility_hard=False,
+        ),
+    )
+    hard_em_routes = _branch_routes_for_recipe(
+        layer,
+        x,
+        y,
+        RouterDistillConfig(recipe="hard_em_utility_ste", loss_coeff=1.0),
+    )
+
+    assert torch.isfinite(soft_utility_routes).all()
+    assert torch.isfinite(hard_em_routes).all()
+    assert torch.all((hard_em_routes.detach() == 0.0) | (hard_em_routes.detach() == 1.0))
+    assert not torch.all((soft_utility_routes.detach() == 0.0) | (soft_utility_routes.detach() == 1.0))
+    assert not torch.allclose(soft_utility_routes.detach(), hard_em_routes.detach())
 
 
 @pytest.mark.parametrize(

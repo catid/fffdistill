@@ -1,0 +1,32 @@
+study_name: fff_route_output_split_all_full_student_shards
+sampler: grid
+objective: validation_normalized_mse
+direction: minimize
+max_trials: 12
+description: Full-student split-routing-output route-row ablation shards for fff-dza.
+execution_contract:
+  sample_split: train_eval
+  metric_split: holdout
+  metric_holdout_fraction: 0.10
+  test_accessed: false
+search_space:
+  route_rows: [2]
+  route_row_role: [split_routing_output]
+  route_output_controls:
+    split_routing_output:
+      route_result_rows: [2]
+      route_rows_output_count: [all]
+      route_rows_output_fraction: [null]
+  include_indices:
+    - [0, 1, 2, 3, 4, 5]
+    - [6, 7, 8, 9, 10, 11]
+    - [12, 13, 14, 15, 16, 17]
+    - [18, 19, 20, 21, 22, 23]
+    - [24, 25, 26, 27, 28]
+    - [29, 30, 31, 32, 33]
+    - [34, 35, 36, 37, 38]
+    - [39, 40, 41, 42, 43]
+    - [44, 45, 46, 47, 48]
+    - [49, 50, 51, 52, 53]
+    - [54, 55, 56, 57, 58]
+    - [59, 60, 61, 62, 63]

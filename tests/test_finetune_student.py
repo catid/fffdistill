@@ -28,6 +28,12 @@ from cifar_mamba_fff.models.baseline_linears import (
     SmallerDenseLinear,
 )
 from cifar_mamba_fff.models.replacement import make_fff_replacement
+from cifar_mamba_fff.models.sparse_row_column import (
+    CheckerboardSparseMoELinear,
+    CoupledRowColumnLinear,
+    SparseColumnLinear,
+    SparseRowLinear,
+)
 
 
 class TinyLinearModel(nn.Module):
@@ -231,6 +237,114 @@ def test_matched_linear_baseline_requires_explicit_opt_in(tmp_path: Path) -> Non
 
     with pytest.raises(ValueError, match="allow_matched_linear_baseline"):
         parse_finetune_run_config(raw, quick_smoke=True)
+
+
+def test_generated_baseline_hpo_overrides_student_section(tmp_path: Path) -> None:
+    base = _minimal_config(tmp_path)
+    hpo = {
+        "cases": [
+            {
+                "name": "sparse_row",
+                "student_source": "sparse_row",
+                "allow_matched_linear_baseline": True,
+                "baseline_budget_source": "dense_fraction",
+                "baseline_parameter_budget_fraction": 0.5,
+                "sparse_row_banks": 16,
+                "sparse_rows_per_token": 2,
+                "sparse_activation": "gelu",
+            }
+        ]
+    }
+
+    plan = write_finetune_hpo_trial_plan(
+        base_config=base,
+        hpo_config=hpo,
+        output_dir=tmp_path / "plan",
+        max_trials=1,
+    )
+
+    trial_config = yaml.safe_load(
+        Path(str(plan["trials"][0]["config_path"])).read_text(encoding="utf-8")
+    )
+    assert trial_config["student"]["source"] == "sparse_row"
+    assert trial_config["student"]["allow_matched_linear_baseline"] is True
+    assert trial_config["student"]["baseline_budget_source"] == "dense_fraction"
+    assert trial_config["student"]["sparse_row_banks"] == 16
+    assert trial_config["student"]["sparse_rows_per_token"] == 2
+    assert trial_config["student"]["sparse_activation"] == "gelu"
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_type"),
+    [
+        ("sparse_row", SparseRowLinear),
+        ("sparse_column", SparseColumnLinear),
+        ("sparse_row_column", CoupledRowColumnLinear),
+        ("checkerboard_moe", CheckerboardSparseMoELinear),
+    ],
+)
+def test_generated_sparse_baseline_build_paths_replace_eligible_linears(
+    source: str,
+    expected_type: type[nn.Module],
+) -> None:
+    raw = _minimal_config(Path("/tmp"))
+    raw["student"] = {
+        "source": source,
+        "min_in_features": 1,
+        "min_out_features": 1,
+        "allow_matched_linear_baseline": True,
+        "baseline_budget_source": "dense_fraction",
+        "baseline_parameter_budget_fraction": 1.0,
+        "sparse_row_banks": 4,
+        "sparse_rows_per_token": 2,
+        "sparse_column_blocks": 4,
+        "sparse_column_blocks_per_token": 1,
+    }
+    config = parse_finetune_run_config(raw, quick_smoke=True)
+    teacher = TinyConfigModel({"width": 8})
+
+    result = build_student_model(
+        loaded_teacher_model=teacher,
+        config=config,
+        device=torch.device("cpu"),
+    )
+
+    assert result.source == source
+    assert result.replacement_count == 1
+    assert result.eligible_count == 1
+    assert isinstance(result.model.proj, expected_type)
+    assert result.manifest[0].replacement_path.startswith(f"generated:{source}")
+    x = torch.randn(3, 8)
+    assert torch.isfinite(result.model(x)).all()
+
+
+def test_generated_official_fastfeedforward_build_path_replaces_eligible_linears() -> None:
+    pytest.importorskip("fastfeedforward")
+    raw = _minimal_config(Path("/tmp"))
+    raw["student"] = {
+        "source": "official_fastfeedforward",
+        "min_in_features": 1,
+        "min_out_features": 1,
+        "allow_matched_linear_baseline": True,
+        "baseline_budget_source": "dense_fraction",
+        "baseline_parameter_budget_fraction": 1.0,
+    }
+    config = parse_finetune_run_config(raw, quick_smoke=True)
+    teacher = TinyConfigModel({"width": 8})
+
+    result = build_student_model(
+        loaded_teacher_model=teacher,
+        config=config,
+        device=torch.device("cpu"),
+    )
+
+    assert result.source == "official_fastfeedforward"
+    assert result.replacement_count == 1
+    assert result.eligible_count == 1
+    assert type(result.model.proj).__name__ == "FFF"
+    assert result.manifest[0].replacement_path.startswith("generated:official_fastfeedforward")
+    x = torch.randn(3, 8)
+    assert torch.isfinite(result.model(x)).all()
 
 
 def test_matched_low_rank_build_path_replaces_eligible_linears() -> None:

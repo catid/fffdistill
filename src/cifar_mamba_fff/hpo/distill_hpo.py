@@ -74,6 +74,7 @@ ROUTER_OVERRIDE_MAP = {
     "tau": "temperature",
     "clip_margin": "clip",
     "utility_tau": "utility_temperature",
+    "utility_hard": "utility_hard",
     "capacity_factor": "expert_choice_capacity_factor",
 }
 LOCO_PROP_OVERRIDE_MAP = {

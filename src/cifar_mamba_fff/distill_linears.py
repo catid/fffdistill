@@ -222,6 +222,7 @@ class RouterDistillConfig:
     loss_coeff: float = 0.0
     temperature: float = 1.0
     utility_temperature: float = 1.0
+    utility_hard: bool = True
     clip: float = 1.0
     expert_choice_capacity_factor: float = 1.25
 
@@ -239,6 +240,10 @@ class RouterDistillConfig:
             temperature=float(raw.get("temperature", raw.get("tau", cls.temperature))),
             utility_temperature=float(
                 raw.get("utility_temperature", cls.utility_temperature)
+            ),
+            utility_hard=_parse_distill_bool(
+                raw.get("utility_hard", cls.utility_hard),
+                key="router.utility_hard",
             ),
             clip=float(raw.get("clip", cls.clip)),
             expert_choice_capacity_factor=float(
@@ -733,6 +738,7 @@ def _branch_routes_for_recipe(
                 utility,
                 temperature=config.temperature,
                 utility_temperature=config.utility_temperature,
+                hard=config.utility_hard,
                 return_diagnostics=True,
             )
             return routed
@@ -855,6 +861,7 @@ def _router_auxiliary_loss(
                 utility,
                 temperature=config.temperature,
                 utility_temperature=config.utility_temperature,
+                hard=config.utility_hard,
                 return_diagnostics=True,
             )
             raw_loss = utility_targeted_ce(

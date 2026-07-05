@@ -49,8 +49,25 @@ LOSS_OVERRIDE_KEYS = {
     "balance_recipe": "balance_recipe",
     "min_leaf_tokens": "min_leaf_tokens",
 }
+STUDENT_OVERRIDE_KEYS = {
+    "student_source": "source",
+    "baseline_parameter_budget_fraction": "baseline_parameter_budget_fraction",
+    "baseline_budget_source": "baseline_budget_source",
+    "allow_matched_linear_baseline": "allow_matched_linear_baseline",
+    "sparse_row_banks": "sparse_row_banks",
+    "sparse_rows_per_token": "sparse_rows_per_token",
+    "sparse_column_blocks": "sparse_column_blocks",
+    "sparse_column_blocks_per_token": "sparse_column_blocks_per_token",
+    "sparse_activation": "sparse_activation",
+}
 IGNORED_RECORDED_KEYS = {"keep_locoprop_refits"}
-KNOWN_OVERRIDE_KEYS = set(TRAIN_OVERRIDE_KEYS) | set(LOSS_OVERRIDE_KEYS) | IGNORED_RECORDED_KEYS | {"case_name", "seed"}
+KNOWN_OVERRIDE_KEYS = (
+    set(TRAIN_OVERRIDE_KEYS)
+    | set(LOSS_OVERRIDE_KEYS)
+    | set(STUDENT_OVERRIDE_KEYS)
+    | IGNORED_RECORDED_KEYS
+    | {"case_name", "seed"}
+)
 
 
 def _write_yaml(path: Path, payload: Mapping[str, object]) -> None:
@@ -72,6 +89,7 @@ def _apply_overrides(base_config: Mapping[str, object], overrides: Mapping[str, 
     config = dict(base_config)
     train = dict(_expect_mapping(config.get("train", {}), "base.train"))
     losses = dict(_expect_mapping(config.get("losses", {}), "base.losses"))
+    student = dict(_expect_mapping(config.get("student", {}), "base.student"))
     recorded: dict[str, object] = {}
     for key, value in overrides.items():
         if key == "seed":
@@ -80,10 +98,13 @@ def _apply_overrides(base_config: Mapping[str, object], overrides: Mapping[str, 
             train[TRAIN_OVERRIDE_KEYS[key]] = value
         elif key in LOSS_OVERRIDE_KEYS:
             losses[LOSS_OVERRIDE_KEYS[key]] = value
+        elif key in STUDENT_OVERRIDE_KEYS:
+            student[STUDENT_OVERRIDE_KEYS[key]] = value
         elif key in IGNORED_RECORDED_KEYS:
             recorded[key] = value
     config["train"] = train
     config["losses"] = losses
+    config["student"] = student
     if recorded:
         config["hpo_recorded_options"] = recorded
     return config

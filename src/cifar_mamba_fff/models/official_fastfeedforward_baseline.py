@@ -301,6 +301,12 @@ def _synchronize_if_cuda(device: torch.device) -> None:
         torch.cuda.synchronize(device)
 
 
+def _fork_rng_devices_for_device(device: torch.device) -> list[int]:
+    if device.type != "cuda":
+        return []
+    return [torch.cuda.current_device() if device.index is None else device.index]
+
+
 def run_official_fff_layer_regression_baseline(
     linear: nn.Linear,
     inputs: Tensor,
@@ -335,7 +341,7 @@ def run_official_fff_layer_regression_baseline(
     budget = parameter_budget
     if budget is None:
         budget = sum(parameter.numel() for parameter in linear.parameters())
-    with torch.random.fork_rng(devices=[]):
+    with torch.random.fork_rng(devices=_fork_rng_devices_for_device(linear.weight.device)):
         torch.manual_seed(seed)
         official, capability = make_matched_official_fff(
             linear,

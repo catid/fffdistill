@@ -16,11 +16,10 @@ The teacher is a roughly 10M-parameter official Mamba-3 CIFAR-10 model trained f
 - Do not substitute fake Mamba blocks, Mamba-2, Transformer, ResNet, AdamW-only, CPU-only, smaller models, another dataset, or fake dependencies.
 - If official Mamba-3 or official Muon fails to install/import/run, stop, diagnose, and report failure.
 - CIFAR-10 test set is used only for final selected checkpoints after validation/HPO.
-  Current allowed test accesses are the selected dense teacher full final test,
-  the T14 selected-checkpoint one-step partial final-test plumbing check, and
-  the validation-selected Stage H `no_balance_cosine` full final test. GC5
-  optimizer/WSD validation, shared-only baseline rows, and Stage H selection
-  records remain `test_accessed=false`.
+  Allowed test accesses must be backed by selection manifests and summarized in
+  `docs/final_report.md` and the fairness tables. Current open optimizer,
+  router-family, route-output, official-FFF, and row/column sparse baseline
+  tasks remain validation-only until their own selection records exist.
 - Do not claim success without saved logs, configs, metrics, tests, profiler outputs, Beads task records, git commits, and reproducible commands.
 
 ## Hardware Assumption
@@ -69,13 +68,10 @@ The 2026-07-04 audit found that the repository has strong smoke, validation, and
 
 - `fff-i6e`: run validation-selected full-student final-test router-family comparisons.
 - `fff-dza`: run full-student route-output ablations with active-FLOP accounting.
-- `fff-bbx`: final-evaluate validation-selected dense-copy, low-rank, smaller-dense, shared-only, and related required baselines.
 - `fff-5sa`: run the official `fastfeedforward` matched-budget baseline where shape-compatible.
 - `fff-ytn`: run multi-seed matched-budget optimizer/WSD selection and final evaluation.
 - `fff-v9q`: evaluate a bank-specific Muon grouping or explicit optimizer policy for 3D FFF replacement banks.
 - `fff-rcs`: generate full-student Pareto source data for accuracy, active rows/FLOPs, and throughput after the comparison tasks complete.
-- `fff-o3w`: recollect or regenerate pre-hardening remote summaries from full logs, or keep them explicitly provenance-limited.
-- `fff-u2p`: formalize remote git sync or hardened rsync fallback for cluster jobs.
 - `fff-6rw`: evaluate row-plus-column sparse activation and checkerboard MoE/sublinear baselines.
 
 ## Optimizer Plan Amendment
@@ -123,6 +119,10 @@ Current GC5 optimizer/WSD validation status:
 - Committed evidence is in `docs/fff_gc5_optimizer_wsd_validation_trials.csv`,
   `docs/fff_gc5_optimizer_wsd_validation_families.csv`, and
   `docs/fff_gc5_optimizer_wsd_validation_summary.md`.
+- A 15-cell, 3-seed follow-up validation config is staged in
+  `configs/finetune_optimizer_hpo_multiseed.yaml`; the first 12 jobs were
+  launched on all 12 GPUs at commit `88c624b` and remain validation-only until
+  summarized and selected.
 
 ## Core Research Axes
 
@@ -152,6 +152,14 @@ Router recipes:
 - hard_concrete_row_gates;
 - optional dselect_k_leaf_router if core tree experiments already work.
 
+Forward-looking router-family comparisons must treat `utility_targeted_ste` and
+`hard_em_utility_ste` as distinct algorithms. A Fable review found older
+distillation paths always called `utility_targeted_ste(..., hard=True)`, making
+it effectively hard-EM for the main route target. The staged fix adds
+`router.utility_hard` and sets utility-targeted full-student configs to
+`utility_hard: false`; older L7K utility-vs-hard-EM rows are caveated and should
+not be used as decisive evidence that two independent algorithms agree.
+
 LocoProp-S means fixed routes, fixed input-side row activations, teacher Linear output as local target, local ridge solve for output vectors, and optional blend back into the trainable model.
 
 Route-row contribution ablation:
@@ -172,6 +180,12 @@ Sparse row/column activation ablation:
 - Include variants where the router selects row experts only, column experts only, and coupled row/column blocks; include a checkerboard MoE baseline that activates sparse row banks and sparse column banks jointly.
 - Keep the same official Mamba-3 teacher, CIFAR-10 split policy, distillation token budget, optimizer/schedule budget, validation-selection protocol, and test-access rules as the FFF experiments.
 - Report local distillation MSE/cosine, validation accuracy after replacement or assembled-student fine-tune, selected final-test accuracy only after validation selection, active rows, active columns, active FLOPs, stored rows/columns, throughput, GPU utilization, router/load balance, dead experts/leaves, and fairness budget notes.
+- Generated validation baselines are staged through the normal fine-tune HPO path
+  using `student.source` values `official_fastfeedforward`, `sparse_row`,
+  `sparse_column`, `sparse_row_column`, and `checkerboard_moe`. The first
+  launchable validation grid is `configs/finetune_generated_sublinear_baselines_hpo.yaml`.
+  These sparse baselines have explicit budget notes and are not a substitute for
+  distilled FFF replacements.
 
 Current T20 status:
 

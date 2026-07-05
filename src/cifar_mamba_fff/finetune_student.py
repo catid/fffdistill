@@ -32,12 +32,19 @@ from .models.baseline_linears import (
     make_matched_smaller_dense_linear,
 )
 from .models.fff_linear import FFFLinear
+from .models.official_fastfeedforward_baseline import make_matched_official_fff
 from .models.replacement import (
     discover_linear_layers,
     get_module,
     linear_parameter_count,
     make_fff_replacement,
     replace_module,
+)
+from .models.sparse_row_column import (
+    CheckerboardSparseMoELinear,
+    CoupledRowColumnLinear,
+    SparseColumnLinear,
+    SparseRowLinear,
 )
 from .train_teacher import (
     ALL_OPTIMIZERS,
@@ -135,6 +142,11 @@ class StudentAssemblyConfig:
     baseline_parameter_budget_fraction: float = 0.25
     baseline_budget_source: str = "dense_fraction"
     allow_matched_linear_baseline: bool = False
+    sparse_row_banks: int = 32
+    sparse_rows_per_token: int = 4
+    sparse_column_blocks: int = 4
+    sparse_column_blocks_per_token: int = 1
+    sparse_activation: str = "silu"
 
     def validate(self, *, quick_smoke: bool) -> None:
         valid_sources = {
@@ -144,6 +156,11 @@ class StudentAssemblyConfig:
             "matched_low_rank",
             "matched_shared_only",
             "matched_smaller_dense",
+            "official_fastfeedforward",
+            "sparse_row",
+            "sparse_column",
+            "sparse_row_column",
+            "checkerboard_moe",
         }
         if self.source not in valid_sources:
             raise ValueError("student.source must be one of: " + ", ".join(sorted(valid_sources)))
@@ -164,12 +181,34 @@ class StudentAssemblyConfig:
         if self.source == "dense_copy" and not self.allow_dense_copy:
             raise ValueError("student.allow_dense_copy must be true to run dense-copy sanity fine-tuning")
         if (
-            self.source in {"matched_low_rank", "matched_shared_only", "matched_smaller_dense"}
+            self.source
+            in {
+                "matched_low_rank",
+                "matched_shared_only",
+                "matched_smaller_dense",
+                "official_fastfeedforward",
+                "sparse_row",
+                "sparse_column",
+                "sparse_row_column",
+                "checkerboard_moe",
+            }
             and not self.allow_matched_linear_baseline
         ):
             raise ValueError(
-                "student.allow_matched_linear_baseline must be true to run matched Linear baselines"
+                "student.allow_matched_linear_baseline must be true to run generated baselines"
             )
+        _positive_int("student.sparse_row_banks", self.sparse_row_banks)
+        _positive_int("student.sparse_rows_per_token", self.sparse_rows_per_token)
+        _positive_int("student.sparse_column_blocks", self.sparse_column_blocks)
+        _positive_int("student.sparse_column_blocks_per_token", self.sparse_column_blocks_per_token)
+        if self.sparse_rows_per_token > self.sparse_row_banks:
+            raise ValueError("student.sparse_rows_per_token must be <= student.sparse_row_banks")
+        if self.sparse_column_blocks_per_token > self.sparse_column_blocks:
+            raise ValueError(
+                "student.sparse_column_blocks_per_token must be <= student.sparse_column_blocks"
+            )
+        if self.sparse_activation not in {"silu", "gelu", "relu"}:
+            raise ValueError("student.sparse_activation must be one of: silu, gelu, relu")
 
 
 @dataclass(frozen=True)
@@ -760,6 +799,156 @@ def assemble_matched_linear_baseline_student(
     )
 
 
+def _official_fff_depth(fff_config: Mapping[str, object] | None) -> int:
+    if fff_config is None:
+        return 1
+    return int(fff_config.get("depth", 1))
+
+
+def _make_generated_sublinear_replacement(
+    original: nn.Linear,
+    *,
+    source: str,
+    parameter_budget: int,
+    fff_config: Mapping[str, object] | None,
+    config: StudentAssemblyConfig,
+) -> tuple[nn.Module, str]:
+    if source == "official_fastfeedforward":
+        replacement, capability = make_matched_official_fff(
+            original,
+            parameter_budget=parameter_budget,
+            depth=_official_fff_depth(fff_config),
+            require_eval=True,
+        )
+        return replacement, (
+            "official_fastfeedforward:"
+            f"depth={capability.depth}:leaf_width={capability.leaf_width}:"
+            f"budget={parameter_budget}:stored_rows={capability.stored_rows}:"
+            f"active_rows={capability.active_rows_per_token_eval}"
+        )
+    if source == "sparse_row":
+        replacement = SparseRowLinear(
+            original.in_features,
+            original.out_features,
+            row_banks=config.sparse_row_banks,
+            rows_per_token=config.sparse_rows_per_token,
+            activation=config.sparse_activation,  # type: ignore[arg-type]
+            bias=original.bias is not None,
+            device=original.weight.device,
+            dtype=original.weight.dtype,
+        )
+    elif source == "sparse_column":
+        replacement = SparseColumnLinear(
+            original.in_features,
+            original.out_features,
+            column_blocks=config.sparse_column_blocks,
+            column_blocks_per_token=config.sparse_column_blocks_per_token,
+            bias=original.bias is not None,
+            device=original.weight.device,
+            dtype=original.weight.dtype,
+        )
+    elif source == "sparse_row_column":
+        replacement = CoupledRowColumnLinear(
+            original.in_features,
+            original.out_features,
+            row_banks=config.sparse_row_banks,
+            rows_per_token=config.sparse_rows_per_token,
+            column_blocks=config.sparse_column_blocks,
+            column_blocks_per_token=config.sparse_column_blocks_per_token,
+            activation=config.sparse_activation,  # type: ignore[arg-type]
+            bias=original.bias is not None,
+            device=original.weight.device,
+            dtype=original.weight.dtype,
+        )
+    elif source == "checkerboard_moe":
+        replacement = CheckerboardSparseMoELinear(
+            original.in_features,
+            original.out_features,
+            row_experts=config.sparse_row_banks,
+            rows_per_token=config.sparse_rows_per_token,
+            column_blocks=config.sparse_column_blocks,
+            column_blocks_per_token=config.sparse_column_blocks_per_token,
+            bias=original.bias is not None,
+            device=original.weight.device,
+            dtype=original.weight.dtype,
+        )
+    else:
+        raise ValueError(f"unsupported generated sublinear source: {source}")
+    replacement.train(original.training)
+    diagnostics = replacement.diagnostics() if hasattr(replacement, "diagnostics") else {}
+    return replacement, (
+        f"{source}:budget={parameter_budget}:row_banks={config.sparse_row_banks}:"
+        f"rows_per_token={config.sparse_rows_per_token}:"
+        f"column_blocks={config.sparse_column_blocks}:"
+        f"column_blocks_per_token={config.sparse_column_blocks_per_token}:"
+        f"diagnostics={_jsonable(diagnostics)}"
+    )
+
+
+def assemble_generated_sublinear_baseline_student(
+    model: nn.Module,
+    *,
+    config: StudentAssemblyConfig,
+) -> StudentAssemblyResult:
+    valid_sources = {
+        "official_fastfeedforward",
+        "sparse_row",
+        "sparse_column",
+        "sparse_row_column",
+        "checkerboard_moe",
+    }
+    if config.source not in valid_sources:
+        raise ValueError("source must be one of: " + ", ".join(sorted(valid_sources)))
+    fff_config = (
+        _load_fff_budget_config(config.distill_config)
+        if config.baseline_budget_source == "fff_config"
+        else None
+    )
+    reports = discover_linear_layers(
+        model,
+        min_in_features=config.min_in_features,
+        min_out_features=config.min_out_features,
+    )
+    eligible = [report for report in reports if report.included]
+    manifest: list[AssemblyRecord] = []
+    for report in eligible:
+        original = get_module(model, report.name)
+        if not isinstance(original, nn.Linear):
+            raise TypeError(f"{report.name!r} is {type(original).__name__}, not nn.Linear")
+        parameter_budget = _matched_baseline_parameter_budget(
+            original,
+            parameter_budget_fraction=config.baseline_parameter_budget_fraction,
+            budget_source=config.baseline_budget_source,
+            fff_config=fff_config,
+        )
+        replacement, descriptor = _make_generated_sublinear_replacement(
+            original,
+            source=config.source,
+            parameter_budget=parameter_budget,
+            fff_config=fff_config,
+            config=config,
+        )
+        replace_module(model, report.name, replacement)
+        manifest.append(
+            AssemblyRecord(
+                name=report.name,
+                replacement_path=f"generated:{descriptor}",
+                in_features=report.in_features,
+                out_features=report.out_features,
+                parameters=sum(parameter.numel() for parameter in replacement.parameters()),
+                final_normalized_mse=None,
+                final_cosine_similarity=None,
+            )
+        )
+    return StudentAssemblyResult(
+        model=model,
+        source=config.source,
+        replacement_count=len(manifest),
+        eligible_count=len(eligible),
+        manifest=manifest,
+    )
+
+
 def build_student_model(
     *,
     loaded_teacher_model: nn.Module,
@@ -797,6 +986,14 @@ def build_student_model(
             budget_source=config.student.baseline_budget_source,
             distill_config_path=config.student.distill_config,
         )
+    if config.student.source in {
+        "official_fastfeedforward",
+        "sparse_row",
+        "sparse_column",
+        "sparse_row_column",
+        "checkerboard_moe",
+    }:
+        return assemble_generated_sublinear_baseline_student(student, config=config.student)
     if config.student.distill_artifact_root is None:
         raise RuntimeError("distill artifact source selected without artifact root")
     return assemble_fff_student_from_artifacts(
