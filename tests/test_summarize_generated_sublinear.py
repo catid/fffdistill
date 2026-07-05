@@ -102,6 +102,91 @@ def test_generated_sublinear_summary_extracts_budget_accounting(tmp_path: Path) 
     assert row["cosine_available"] is False
 
 
+def test_checkerboard_mlp_shared_summary_preserves_family_and_router_budget(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "collected" / "generated_run"
+    trial = _trial_dir(root, "ripper", 1, "trial_000015_checkerboard_mlp_shared_seed31001")
+    _write_json(
+        root / "ripper" / "1" / "status.json",
+        {"machine": "ripper", "gpu_id": 1, "status": "succeeded"},
+    )
+    _write_json(
+        trial / "trial_result.json",
+        {
+            "case": "checkerboard_mlp_shared_seed31001",
+            "overrides": {
+                "seed": 31001,
+                "student_source": "checkerboard_moe",
+                "checkerboard_router_type": "mlp",
+                "checkerboard_router_hidden_features": 32,
+                "checkerboard_always_on_rows": 4,
+            },
+            "status": "succeeded",
+            "test_accessed": False,
+            "result": {
+                "status": "succeeded",
+                "test_accessed": False,
+                "summary": {
+                    "best_val_accuracy": 0.42,
+                    "train_steps_total": 7,
+                    "test_accessed": False,
+                    "student_source": "checkerboard_moe",
+                    "student_replacement_count": 1,
+                    "eligible_linear_count": 1,
+                },
+            },
+        },
+    )
+    descriptor = (
+        "generated:checkerboard_moe:budget=1000:row_banks=2:"
+        "budget_tolerance_frac=0:rows_per_token=1:column_blocks=2:"
+        "column_blocks_per_token=1:checkerboard_router_type=mlp:"
+        "checkerboard_router_hidden_features=32:checkerboard_always_on_rows=4:"
+        "diagnostics={'mode': 'checkerboard_moe', 'stored_rows': 6, "
+        "'stored_columns': 8, 'column_blocks': 2, 'router_type': 'mlp', "
+        "'router_hidden_features': 32, 'always_on_rows': 4, "
+        "'active_rows_per_token': 5, 'active_columns_per_token': 4, "
+        "'active_sparse_tiles_per_token': 1, "
+        "'estimated_active_flops_per_token': 256, "
+        "'estimated_routing_flops_per_token': 128, "
+        "'estimated_dense_flops_per_token': 512}"
+    )
+    _write_json(
+        trial / "student_assembly_manifest.json",
+        {
+            "source": "checkerboard_moe",
+            "replacement_count": 1,
+            "eligible_count": 1,
+            "layers": [
+                {
+                    "name": "proj",
+                    "replacement_path": descriptor,
+                    "in_features": 8,
+                    "out_features": 8,
+                    "parameters": 1000,
+                    "final_normalized_mse": None,
+                    "final_cosine_similarity": None,
+                }
+            ],
+        },
+    )
+
+    rows, skipped = collect_rows([root])
+
+    assert skipped == 0
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["family"] == "checkerboard_mlp_shared"
+    assert row["student_source"] == "checkerboard_moe"
+    assert row["checkerboard_router_type"] == "mlp"
+    assert row["checkerboard_router_hidden_features"] == pytest.approx(32)
+    assert row["checkerboard_always_on_rows"] == pytest.approx(4)
+    assert row["mean_active_sparse_tiles_per_token"] == pytest.approx(1)
+    assert row["router_parameters_total"] == pytest.approx(32 * 9 + 2 * 33 + 2 * 33)
+    assert row["always_on_parameters_total"] == pytest.approx(4 * (8 + 1 + 8))
+
+
 def test_generated_sublinear_cli_skips_failed_and_writes_docs(tmp_path: Path) -> None:
     root = tmp_path / "collected" / "generated_run"
     trial = _trial_dir(root, "ai", 1, "trial_000006_sparse_column_seed31001")

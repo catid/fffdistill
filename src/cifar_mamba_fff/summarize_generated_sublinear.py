@@ -26,14 +26,20 @@ TRIAL_COLUMNS = [
     "train_steps",
     "test_accessed",
     "student_source",
+    "checkerboard_router_type",
+    "checkerboard_router_hidden_features",
+    "checkerboard_always_on_rows",
     "replacement_count",
     "eligible_linear_count",
     "replacement_parameters_total",
+    "router_parameters_total",
+    "always_on_parameters_total",
     "total_active_flops_per_token",
     "total_routing_flops_per_token",
     "total_dense_flops_per_token",
     "mean_active_rows_per_token",
     "mean_active_columns_per_token",
+    "mean_active_sparse_tiles_per_token",
     "mean_active_flops_per_token",
     "mean_routing_flops_per_token",
     "mean_dense_flops_per_token",
@@ -59,10 +65,15 @@ FAMILY_COLUMNS = [
     "std_best_val_accuracy",
     "mean_active_rows_per_token",
     "mean_active_columns_per_token",
+    "mean_active_sparse_tiles_per_token",
     "mean_active_flops_per_token",
     "mean_total_active_flops_per_token",
     "mean_total_routing_flops_per_token",
     "mean_total_dense_flops_per_token",
+    "mean_router_parameters_total",
+    "mean_always_on_parameters_total",
+    "checkerboard_router_types",
+    "mean_checkerboard_always_on_rows",
     "mean_train_images_per_second",
     "test_accessed",
     "best_case",
@@ -130,12 +141,14 @@ def _markdown_table(headers: Sequence[str], rows: Sequence[Sequence[object]]) ->
 
 
 def infer_family(case: str, trial_result: Mapping[str, Any]) -> str:
+    stripped = _SEED_SUFFIX_RE.sub("", case)
+    if stripped and not stripped.startswith("trial_"):
+        return stripped
     overrides = trial_result.get("overrides")
     if isinstance(overrides, Mapping):
         family = overrides.get("student_source")
         if isinstance(family, str) and family:
             return family
-    stripped = _SEED_SUFFIX_RE.sub("", case)
     return stripped or case
 
 
@@ -216,6 +229,60 @@ def _descriptor_diagnostics(descriptor: str) -> Mapping[str, Any]:
     return loaded if isinstance(loaded, Mapping) else {}
 
 
+def _first_nonempty(*values: object) -> object | None:
+    for value in values:
+        if value not in (None, ""):
+            return value
+    return None
+
+
+def _checkerboard_router_parameters(
+    *,
+    in_features: float,
+    row_experts: int | None,
+    column_blocks: int | None,
+    router_type: str | None,
+    router_hidden_features: int | None,
+) -> float | None:
+    if not router_type or row_experts is None or column_blocks is None or in_features <= 0:
+        return None
+    if router_type == "linear":
+        return (row_experts + column_blocks) * (in_features + 1.0)
+    if router_type == "mlp":
+        if router_hidden_features is None:
+            return None
+        return (
+            router_hidden_features * (in_features + 1.0)
+            + row_experts * (router_hidden_features + 1.0)
+            + column_blocks * (router_hidden_features + 1.0)
+        )
+    return None
+
+
+def _always_on_parameters(
+    *,
+    in_features: float,
+    out_features: float,
+    always_on_rows: int | None,
+) -> float | None:
+    if always_on_rows is None or always_on_rows <= 0:
+        return 0.0
+    if in_features <= 0 or out_features <= 0:
+        return None
+    return always_on_rows * (in_features + 1.0 + out_features)
+
+
+def _unique_text(rows: Sequence[Mapping[str, Any]], key: str) -> str:
+    values = sorted(
+        {
+            str(value)
+            for row in rows
+            if (value := row.get(key)) not in (None, "")
+        }
+    )
+    return ",".join(values)
+
+
 def _layer_budget_rows(manifest_path: Path) -> list[dict[str, Any]]:
     if not manifest_path.exists():
         return []
@@ -232,6 +299,27 @@ def _layer_budget_rows(manifest_path: Path) -> list[dict[str, Any]]:
         diagnostics = _descriptor_diagnostics(descriptor)
         in_features = _as_float(raw.get("in_features")) or 0.0
         out_features = _as_float(raw.get("out_features")) or 0.0
+        row_experts = _as_int(_first_nonempty(kv.get("row_banks"), diagnostics.get("row_experts")))
+        column_blocks = _as_int(_first_nonempty(kv.get("column_blocks"), diagnostics.get("column_blocks")))
+        router_type_value = _first_nonempty(
+            kv.get("checkerboard_router_type"),
+            diagnostics.get("router_type"),
+        )
+        router_type = str(router_type_value) if router_type_value not in (None, "") else None
+        router_hidden_features = _as_int(
+            _first_nonempty(
+                kv.get("checkerboard_router_hidden_features"),
+                diagnostics.get("router_hidden_features"),
+            )
+        )
+        always_on_rows = _as_int(
+            _first_nonempty(
+                kv.get("checkerboard_always_on_rows"),
+                diagnostics.get("always_on_rows"),
+            )
+        )
+        if router_hidden_features == 0:
+            router_hidden_features = None
         active_rows = _as_float(diagnostics.get("active_rows_per_token"))
         if active_rows is None:
             active_rows = _as_float(kv.get("active_rows"))
@@ -251,10 +339,28 @@ def _layer_budget_rows(manifest_path: Path) -> list[dict[str, Any]]:
         rows.append(
             {
                 "parameters": _as_float(raw.get("parameters")),
+                "router_parameters": _checkerboard_router_parameters(
+                    in_features=in_features,
+                    row_experts=row_experts,
+                    column_blocks=column_blocks,
+                    router_type=router_type,
+                    router_hidden_features=router_hidden_features,
+                ),
+                "always_on_parameters": _always_on_parameters(
+                    in_features=in_features,
+                    out_features=out_features,
+                    always_on_rows=always_on_rows,
+                ),
+                "checkerboard_router_type": router_type,
+                "checkerboard_router_hidden_features": router_hidden_features,
+                "checkerboard_always_on_rows": always_on_rows,
                 "final_normalized_mse": _as_float(raw.get("final_normalized_mse")),
                 "final_cosine_similarity": _as_float(raw.get("final_cosine_similarity")),
                 "active_rows_per_token": active_rows,
                 "active_columns_per_token": active_columns,
+                "active_sparse_tiles_per_token": _as_float(
+                    diagnostics.get("active_sparse_tiles_per_token")
+                ),
                 "active_flops_per_token": active_flops,
                 "routing_flops_per_token": _as_float(
                     diagnostics.get("estimated_routing_flops_per_token")
@@ -317,14 +423,26 @@ def _trial_row(run_root: Path, trial_result_path: Path) -> dict[str, Any] | None
             else result.get("test_accessed", trial_result.get("test_accessed", False))
         ),
         "student_source": summary.get("student_source") or overrides.get("student_source") or "",
+        "checkerboard_router_type": _unique_text(layer_rows, "checkerboard_router_type"),
+        "checkerboard_router_hidden_features": _mean(
+            layer_rows,
+            "checkerboard_router_hidden_features",
+        ),
+        "checkerboard_always_on_rows": _mean(layer_rows, "checkerboard_always_on_rows"),
         "replacement_count": summary.get("student_replacement_count") or "",
         "eligible_linear_count": summary.get("eligible_linear_count") or "",
         "replacement_parameters_total": _sum(layer_rows, "parameters"),
+        "router_parameters_total": _sum(layer_rows, "router_parameters"),
+        "always_on_parameters_total": _sum(layer_rows, "always_on_parameters"),
         "total_active_flops_per_token": _sum(layer_rows, "active_flops_per_token"),
         "total_routing_flops_per_token": _sum(layer_rows, "routing_flops_per_token"),
         "total_dense_flops_per_token": _sum(layer_rows, "dense_flops_per_token"),
         "mean_active_rows_per_token": _mean(layer_rows, "active_rows_per_token"),
         "mean_active_columns_per_token": _mean(layer_rows, "active_columns_per_token"),
+        "mean_active_sparse_tiles_per_token": _mean(
+            layer_rows,
+            "active_sparse_tiles_per_token",
+        ),
         "mean_active_flops_per_token": _mean(layer_rows, "active_flops_per_token"),
         "mean_routing_flops_per_token": _mean(layer_rows, "routing_flops_per_token"),
         "mean_dense_flops_per_token": _mean(layer_rows, "dense_flops_per_token"),
@@ -391,6 +509,10 @@ def aggregate_by_family(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any
                 "std_best_val_accuracy": statistics.stdev(val_acc) if len(val_acc) > 1 else 0.0,
                 "mean_active_rows_per_token": _mean(group, "mean_active_rows_per_token"),
                 "mean_active_columns_per_token": _mean(group, "mean_active_columns_per_token"),
+                "mean_active_sparse_tiles_per_token": _mean(
+                    group,
+                    "mean_active_sparse_tiles_per_token",
+                ),
                 "mean_active_flops_per_token": _mean(group, "mean_active_flops_per_token"),
                 "mean_total_active_flops_per_token": _mean(
                     group,
@@ -404,6 +526,10 @@ def aggregate_by_family(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any
                     group,
                     "total_dense_flops_per_token",
                 ),
+                "mean_router_parameters_total": _mean(group, "router_parameters_total"),
+                "mean_always_on_parameters_total": _mean(group, "always_on_parameters_total"),
+                "checkerboard_router_types": _unique_text(group, "checkerboard_router_type"),
+                "mean_checkerboard_always_on_rows": _mean(group, "checkerboard_always_on_rows"),
                 "mean_train_images_per_second": _mean(group, "train_images_per_second"),
                 "test_accessed": any(_as_bool(row.get("test_accessed")) for row in group),
                 "best_case": best.get("case", ""),
@@ -456,8 +582,13 @@ def write_markdown(
                 "Std val acc",
                 "Mean active rows",
                 "Mean active columns",
+                "Mean sparse tiles",
                 "Mean active FLOPs/token",
                 "Mean total active FLOPs/token",
+                "Router types",
+                "Always-on rows",
+                "Router params",
+                "Always-on params",
                 "Mean img/s",
                 "Best case",
                 "Best val acc",
@@ -471,8 +602,13 @@ def write_markdown(
                     row["std_best_val_accuracy"],
                     row["mean_active_rows_per_token"],
                     row["mean_active_columns_per_token"],
+                    row["mean_active_sparse_tiles_per_token"],
                     row["mean_active_flops_per_token"],
                     row["mean_total_active_flops_per_token"],
+                    row["checkerboard_router_types"],
+                    row["mean_checkerboard_always_on_rows"],
+                    row["mean_router_parameters_total"],
+                    row["mean_always_on_parameters_total"],
                     row["mean_train_images_per_second"],
                     row["best_case"],
                     row["best_val_accuracy"],
@@ -491,8 +627,13 @@ def write_markdown(
                 "Val acc",
                 "Active rows",
                 "Active columns",
+                "Sparse tiles",
+                "Router type",
+                "Always-on rows",
                 "Active FLOPs/token",
                 "Total active FLOPs/token",
+                "Router params",
+                "Always-on params",
                 "Img/s",
                 "Params",
                 "MSE",
@@ -506,8 +647,13 @@ def write_markdown(
                     row.get("best_val_accuracy"),
                     row.get("mean_active_rows_per_token"),
                     row.get("mean_active_columns_per_token"),
+                    row.get("mean_active_sparse_tiles_per_token"),
+                    row.get("checkerboard_router_type"),
+                    row.get("checkerboard_always_on_rows"),
                     row.get("mean_active_flops_per_token"),
                     row.get("total_active_flops_per_token"),
+                    row.get("router_parameters_total"),
+                    row.get("always_on_parameters_total"),
                     row.get("train_images_per_second"),
                     row.get("replacement_parameters_total"),
                     row.get("mean_final_normalized_mse"),
