@@ -125,6 +125,28 @@ def test_make_matched_official_fff_moves_parameters_to_linear_dtype() -> None:
     assert {parameter.device for parameter in replacement.parameters()} == {linear.weight.device}
 
 
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is required")
+def test_make_matched_official_fff_returns_bf16_under_cuda_autocast() -> None:
+    pytest.importorskip("fastfeedforward")
+    linear = nn.Linear(8, 6, device="cuda")
+    budget = official_fff_trainable_parameter_count(8, 2, 6, 1)
+    replacement, _ = make_matched_official_fff(
+        linear,
+        parameter_budget=budget,
+        depth=1,
+    )
+    x = torch.randn(4, 8, device="cuda", requires_grad=True)
+
+    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        y = replacement(x)
+        loss = y.float().square().mean()
+    loss.backward()
+
+    assert y.dtype == torch.bfloat16
+    assert x.grad is not None
+    assert torch.isfinite(x.grad).all()
+
+
 def test_official_fff_regression_harness_is_deterministic_for_layer_metrics() -> None:
     pytest.importorskip("fastfeedforward")
     torch.manual_seed(123)

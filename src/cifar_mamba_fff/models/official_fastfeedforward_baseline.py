@@ -49,6 +49,47 @@ class OfficialFFFRegressionResult:
         return record
 
 
+class AutocastOutputFFF(nn.Module):
+    """Wrap upstream ``fastfeedforward.FFF`` without changing its parameters.
+
+    The installed official FFF returns FP32 activations under CUDA BF16 autocast.
+    Dense ``nn.Linear`` and the custom ``FFFLinear`` return the active autocast
+    dtype in the same regime; keeping FP32 activations can select the official
+    Mamba-3 FP32 TileLang backward specialization and hit dynamic shared-memory
+    limits. This wrapper preserves the upstream module and only normalizes the
+    public forward output dtype.
+    """
+
+    def __init__(self, module: nn.Module) -> None:
+        super().__init__()
+        self.module = module
+
+    @property
+    def input_width(self) -> object:
+        return self.module.input_width  # type: ignore[attr-defined]
+
+    @property
+    def leaf_width(self) -> object:
+        return self.module.leaf_width  # type: ignore[attr-defined]
+
+    @property
+    def output_width(self) -> object:
+        return self.module.output_width  # type: ignore[attr-defined]
+
+    @property
+    def depth(self) -> object:
+        return self.module.depth  # type: ignore[attr-defined]
+
+    def forward(self, input: Tensor) -> Tensor:
+        output = self.module(input)
+        if not output.is_floating_point():
+            return output
+        target_dtype = _active_autocast_dtype(input.device.type) or input.dtype
+        if output.dtype != target_dtype:
+            output = output.to(dtype=target_dtype)
+        return output.contiguous()
+
+
 def _require_positive_int(name: str, value: int) -> None:
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
         raise ValueError(f"{name} must be a positive integer")
@@ -57,6 +98,23 @@ def _require_positive_int(name: str, value: int) -> None:
 def _require_non_negative_int(name: str, value: int) -> None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"{name} must be a non-negative integer")
+
+
+def _active_autocast_dtype(device_type: str) -> torch.dtype | None:
+    try:
+        enabled = torch.is_autocast_enabled(device_type)
+    except TypeError:  # pragma: no cover - compatibility with older torch APIs
+        enabled = device_type == "cuda" and torch.is_autocast_enabled()
+    if not enabled:
+        return None
+    try:
+        return torch.get_autocast_dtype(device_type)
+    except (AttributeError, TypeError):  # pragma: no cover - compatibility fallback
+        if device_type == "cuda":
+            return torch.get_autocast_gpu_dtype()
+        if device_type == "cpu":
+            return torch.get_autocast_cpu_dtype()
+        return None
 
 
 def official_fff_trainable_parameter_count(
@@ -280,7 +338,9 @@ def make_matched_official_fff(
     )
     module.to(device=linear.weight.device, dtype=linear.weight.dtype)
     module.train(linear.training)
-    return module, capability
+    wrapped = AutocastOutputFFF(module)
+    wrapped.train(linear.training)
+    return wrapped, capability
 
 
 def forward_smoke(module: nn.Module, input_width: int, device: str = "cuda") -> tuple[int, ...]:

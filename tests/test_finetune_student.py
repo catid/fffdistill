@@ -425,7 +425,7 @@ def test_generated_official_fastfeedforward_build_path_replaces_eligible_linears
     assert result.source == "official_fastfeedforward"
     assert result.replacement_count == 1
     assert result.eligible_count == 1
-    assert type(result.model.proj).__name__ == "FFF"
+    assert type(result.model.proj.module).__name__ == "FFF"
     assert result.manifest[0].replacement_path.startswith("generated:official_fastfeedforward")
     x = torch.randn(3, 8)
     assert torch.isfinite(result.model(x)).all()
