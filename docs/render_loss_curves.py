@@ -80,7 +80,7 @@ def _rel(path: Path | None) -> str:
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
     if not path.exists():
-        return []
+        raise FileNotFoundError(f"required loss-curve source CSV is missing: {_rel(path)}")
     with path.open("r", encoding="utf-8", newline="") as handle:
         return list(csv.DictReader(handle))
 
@@ -201,8 +201,13 @@ def _find_metrics_path(
 def _load_trials(outputs_root: Path) -> list[TrialCurve]:
     metric_index = _indexed_metric_paths(outputs_root)
     trials: list[TrialCurve] = []
-    for suite, trials_csv, _families_csv in SOURCES:
+    for suite, trials_csv, families_csv in SOURCES:
         rows = _read_csv(trials_csv)
+        family_rows = _read_csv(families_csv)
+        if not rows:
+            raise ValueError(f"required loss-curve source CSV has no rows: {_rel(trials_csv)}")
+        if not family_rows:
+            raise ValueError(f"required loss-curve family CSV has no rows: {_rel(families_csv)}")
         for row in rows:
             metrics_path, source_note = _find_metrics_path(row, suite, outputs_root, metric_index)
             records: tuple[dict[str, Any], ...] = ()

@@ -662,6 +662,72 @@ def test_gc5_optimizer_hpo_config_plans_matched_lr_budget(tmp_path: Path) -> Non
     }
 
 
+def test_optimizer_multiseed_hpo_config_uses_shared_seed_budget(tmp_path: Path) -> None:
+    base = yaml.safe_load(Path("configs/finetune_stage_h_train_eval.yaml").read_text())
+    hpo = yaml.safe_load(Path("configs/finetune_optimizer_hpo_multiseed.yaml").read_text())
+
+    plan = write_finetune_hpo_trial_plan(
+        base_config=base,
+        hpo_config=hpo,
+        output_dir=tmp_path / "optimizer_multiseed_plan",
+        max_trials=15,
+    )
+
+    assert plan["test_accessed"] is False
+    assert len(plan["trials"]) == 15
+    configs = [
+        yaml.safe_load(Path(str(trial["config_path"])).read_text(encoding="utf-8"))
+        for trial in plan["trials"]
+    ]
+    cases = [str(trial["case"]) for trial in plan["trials"]]
+    families = {case.rsplit("_seed", maxsplit=1)[0] for case in cases}
+    assert families == {
+        "official_muon_cosine",
+        "official_muon_wsd",
+        "pace_muon_cosine",
+        "normuon_cosine",
+        "pace_normuon_cosine",
+    }
+    assert {
+        int(case.rsplit("_seed", maxsplit=1)[1])
+        for case in cases
+        if case.startswith("official_muon_cosine")
+    } == {31001, 31002, 31003}
+    assert {config["dataset"].get("use_test", False) for config in configs} == {False}
+    assert {config["train"]["epochs"] for config in configs} == {3}
+    assert {config["train"]["optimizer"] for config in configs} == {
+        "muon_adamw",
+        "pace_muon",
+        "normuon_adamw",
+        "pace_normuon",
+    }
+    assert {config["train"]["schedule"] for config in configs} == {"cosine", "wsd"}
+
+
+def test_bank_muon_hpo_config_writes_bank_policy_override(tmp_path: Path) -> None:
+    base = yaml.safe_load(Path("configs/finetune_stage_h_train_eval.yaml").read_text())
+    hpo = yaml.safe_load(Path("configs/finetune_bank_muon_hpo.yaml").read_text())
+
+    plan = write_finetune_hpo_trial_plan(
+        base_config=base,
+        hpo_config=hpo,
+        output_dir=tmp_path / "bank_muon_plan",
+        max_trials=6,
+    )
+
+    configs = [
+        yaml.safe_load(Path(str(trial["config_path"])).read_text(encoding="utf-8"))
+        for trial in plan["trials"]
+    ]
+    by_case = {
+        str(trial["case"]): config["train"]["fff_bank_muon"]
+        for trial, config in zip(plan["trials"], configs, strict=True)
+    }
+    assert {value for case, value in by_case.items() if case.startswith("adamw_fallback")} == {False}
+    assert {value for case, value in by_case.items() if case.startswith("muon_banks")} == {True}
+    assert {config["dataset"].get("use_test", False) for config in configs} == {False}
+
+
 def test_finetune_hpo_rejects_test_accessed_trial(tmp_path: Path) -> None:
     base = _minimal_config(tmp_path)
     hpo = {"cases": [{"name": "bad", "fine_tune_epochs": 1}]}

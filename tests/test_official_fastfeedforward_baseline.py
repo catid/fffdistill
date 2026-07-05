@@ -5,6 +5,7 @@ import torch
 from torch import nn
 
 from cifar_mamba_fff.models.official_fastfeedforward_baseline import (
+    _synchronize_if_cuda,
     detect_official_fff_capability,
     forward_smoke,
     make_matched_official_fff,
@@ -105,6 +106,25 @@ def test_make_matched_official_fff_preserves_shape_and_training_mode() -> None:
     )
 
 
+def test_make_matched_official_fff_moves_parameters_to_linear_dtype() -> None:
+    pytest.importorskip("fastfeedforward")
+    linear = nn.Linear(4, 5, dtype=torch.float64)
+    budget = official_fff_trainable_parameter_count(4, 2, 5, 1)
+
+    replacement, _ = make_matched_official_fff(
+        linear,
+        parameter_budget=budget,
+        depth=1,
+    )
+
+    floating_parameters = [
+        parameter for parameter in replacement.parameters() if parameter.is_floating_point()
+    ]
+    assert floating_parameters
+    assert {parameter.dtype for parameter in floating_parameters} == {torch.float64}
+    assert {parameter.device for parameter in replacement.parameters()} == {linear.weight.device}
+
+
 def test_official_fff_regression_harness_is_deterministic_for_layer_metrics() -> None:
     pytest.importorskip("fastfeedforward")
     torch.manual_seed(123)
@@ -147,6 +167,27 @@ def test_official_fff_regression_harness_is_deterministic_for_layer_metrics() ->
     assert first.log_record()["capability"]["leaf_width"] == 2
 
 
+def test_official_fff_regression_harness_accepts_non_contiguous_inputs() -> None:
+    pytest.importorskip("fastfeedforward")
+    linear = nn.Linear(4, 3)
+    inputs = torch.randn(3, 2, 4).transpose(0, 1)
+    budget = official_fff_trainable_parameter_count(4, 1, 3, 1)
+
+    result = run_official_fff_layer_regression_baseline(
+        linear,
+        inputs,
+        parameter_budget=budget,
+        depth=1,
+        train_steps=0,
+        timing_iterations=1,
+        timing_warmup=0,
+    )
+
+    assert not inputs.is_contiguous()
+    assert result.token_count == 6
+    assert result.output_shape == (2, 3, 3)
+
+
 def test_official_fff_regression_harness_does_not_leak_seed() -> None:
     pytest.importorskip("fastfeedforward")
     linear = nn.Linear(4, 3)
@@ -168,3 +209,19 @@ def test_official_fff_regression_harness_does_not_leak_seed() -> None:
     )
 
     torch.testing.assert_close(torch.rand(3), expected)
+
+
+def test_cuda_synchronization_helper_only_syncs_cuda(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[torch.device] = []
+
+    def fake_synchronize(device: torch.device) -> None:
+        calls.append(device)
+
+    monkeypatch.setattr(torch.cuda, "synchronize", fake_synchronize)
+
+    _synchronize_if_cuda(torch.device("cpu"))
+    assert calls == []
+
+    cuda_device = torch.device("cuda:0")
+    _synchronize_if_cuda(cuda_device)
+    assert calls == [cuda_device]

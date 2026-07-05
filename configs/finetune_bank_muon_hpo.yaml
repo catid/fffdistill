@@ -1,0 +1,101 @@
+study_name: fff_bank_muon_validation
+objective: val_accuracy
+direction: maximize
+max_trials: 6
+cases:
+  - name: adamw_fallback_banks_seed32001
+    seed: 32001
+    fine_tune_epochs: 3
+    batch_size_per_gpu: 32
+    num_workers: 4
+    optimizer_family: muon_adamw
+    schedule: cosine
+    lr_muon: 0.001
+    lr_adamw: 0.0001
+    fff_bank_muon: false
+    kd_temperature: 4
+    lambda_kd: 0.7
+    lambda_ce: 0.3
+    lambda_hidden: 0.05
+    lambda_balance: 0.001
+    balance_recipe: split_minleaf
+  - name: adamw_fallback_banks_seed32002
+    seed: 32002
+    fine_tune_epochs: 3
+    batch_size_per_gpu: 32
+    num_workers: 4
+    optimizer_family: muon_adamw
+    schedule: cosine
+    lr_muon: 0.001
+    lr_adamw: 0.0001
+    fff_bank_muon: false
+    kd_temperature: 4
+    lambda_kd: 0.7
+    lambda_ce: 0.3
+    lambda_hidden: 0.05
+    lambda_balance: 0.001
+    balance_recipe: split_minleaf
+  - name: adamw_fallback_banks_seed32003
+    seed: 32003
+    fine_tune_epochs: 3
+    batch_size_per_gpu: 32
+    num_workers: 4
+    optimizer_family: muon_adamw
+    schedule: cosine
+    lr_muon: 0.001
+    lr_adamw: 0.0001
+    fff_bank_muon: false
+    kd_temperature: 4
+    lambda_kd: 0.7
+    lambda_ce: 0.3
+    lambda_hidden: 0.05
+    lambda_balance: 0.001
+    balance_recipe: split_minleaf
+  - name: muon_banks_seed32001
+    seed: 32001
+    fine_tune_epochs: 3
+    batch_size_per_gpu: 32
+    num_workers: 4
+    optimizer_family: muon_adamw
+    schedule: cosine
+    lr_muon: 0.001
+    lr_adamw: 0.0001
+    fff_bank_muon: true
+    kd_temperature: 4
+    lambda_kd: 0.7
+    lambda_ce: 0.3
+    lambda_hidden: 0.05
+    lambda_balance: 0.001
+    balance_recipe: split_minleaf
+  - name: muon_banks_seed32002
+    seed: 32002
+    fine_tune_epochs: 3
+    batch_size_per_gpu: 32
+    num_workers: 4
+    optimizer_family: muon_adamw
+    schedule: cosine
+    lr_muon: 0.001
+    lr_adamw: 0.0001
+    fff_bank_muon: true
+    kd_temperature: 4
+    lambda_kd: 0.7
+    lambda_ce: 0.3
+    lambda_hidden: 0.05
+    lambda_balance: 0.001
+    balance_recipe: split_minleaf
+  - name: muon_banks_seed32003
+    seed: 32003
+    fine_tune_epochs: 3
+    batch_size_per_gpu: 32
+    num_workers: 4
+    optimizer_family: muon_adamw
+    schedule: cosine
+    lr_muon: 0.001
+    lr_adamw: 0.0001
+    fff_bank_muon: true
+    kd_temperature: 4
+    lambda_kd: 0.7
+    lambda_ce: 0.3
+    lambda_hidden: 0.05
+    lambda_balance: 0.001
+    balance_recipe: split_minleaf

@@ -372,8 +372,8 @@ Stage H: final repeated runs for validation-selected recipes.
 
 - The validation-selected `no_balance_cosine` Stage H FFF student family has a
   full CIFAR-10 final-test evaluation after validation selection. Its three-seed
-  validation mean is `0.914800`, final-test mean accuracy is `0.914933`, and
-  final-test standard deviation is `0.004022`.
+  validation mean is `0.914800`, final-test mean accuracy is `0.915133`, and
+  final-test standard deviation is `0.003421`.
 - Other router, architecture, optimizer, and baseline rows remain validation-only
   unless their evidence split is explicitly marked `final_test` or
   `partial_final_test`.
@@ -387,17 +387,17 @@ Fairness and baselines:
   Stage F provenance, T20 route-output single-layer ablations, T19 optimizer/schedule
   smoke ablations, GC5 matched-budget optimizer/WSD validation rows, T14 KD/final-eval
   artifacts, official `fastfeedforward.FFF` shape
-  smoke, three-seed validation-only dense-copy/low-rank/smaller-dense baseline
+  smoke, three-seed final-test dense-copy/low-rank/shared-only/smaller-dense baseline
   evidence, and explicit limitation rows when required baselines lack metrics.
 - Fairness validation enforces that CIFAR-10 test access is reported only on
   `final_test` or `partial_final_test` rows. The shared-only rows full-student
-  baseline now has three-seed validation-only evidence with validation accuracy
-  `0.910000`; it has not been used for final-test claims.
+  baseline now has validation-selected three-seed final-test evidence with mean
+  validation accuracy `0.910000` and mean final-test accuracy `0.906267`.
 - T18/GC5 hardened fairness/report provenance checks: required source CSVs and teacher
   summary files must exist with expected row counts, the base fairness table must
-  contain exactly 30 rows, the optional GC5 family summary must contain exactly
-  15 rows when present, the committed fairness table must contain 45 rows with
-  GC5 included, exactly three rows may report test access, test-access booleans
+  contain exactly 33 rows, the optional GC5 family summary must contain exactly
+  15 rows when present, the committed fairness table must contain 48 rows with
+  GC5 included, exactly 10 rows may report test access, test-access booleans
   must parse canonically, and final-report validation rejects stale committed
   fairness CSVs by regenerating rows from the source evidence.
 

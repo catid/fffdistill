@@ -278,7 +278,7 @@ def make_matched_official_fff(
         depth=capability.depth,
         **kwargs,
     )
-    module.to(device=linear.weight.device)
+    module.to(device=linear.weight.device, dtype=linear.weight.dtype)
     module.train(linear.training)
     return module, capability
 
@@ -294,6 +294,11 @@ def _cosine_similarity(prediction: Tensor, target: Tensor) -> float:
         return math.nan
     cosine = F.cosine_similarity(prediction.reshape(1, -1), target.reshape(1, -1), dim=1)
     return float(cosine.item())
+
+
+def _synchronize_if_cuda(device: torch.device) -> None:
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
 
 
 def run_official_fff_layer_regression_baseline(
@@ -338,8 +343,8 @@ def run_official_fff_layer_regression_baseline(
             depth=depth,
             require_eval=True,
         )
-    inputs = inputs.detach().to(device=linear.weight.device, dtype=linear.weight.dtype)
-    official = official.to(device=inputs.device)
+    inputs = inputs.detach().to(device=linear.weight.device, dtype=linear.weight.dtype).contiguous()
+    official = official.to(device=inputs.device, dtype=inputs.dtype)
     with torch.no_grad():
         targets = linear(inputs).detach()
 
@@ -357,9 +362,11 @@ def run_official_fff_layer_regression_baseline(
     with torch.no_grad():
         for _ in range(timing_warmup):
             official(inputs)
+        _synchronize_if_cuda(inputs.device)
         start = time.perf_counter()
         for _ in range(timing_iterations):
             prediction = official(inputs)
+        _synchronize_if_cuda(inputs.device)
         elapsed = time.perf_counter() - start
 
     mse = float(F.mse_loss(prediction, targets).item())
