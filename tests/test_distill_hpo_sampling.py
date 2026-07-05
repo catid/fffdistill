@@ -802,7 +802,9 @@ def test_full_student_route_output_shard_configs_plan_all_layers(
         assert config["fff"]["route_rows_contribute"] is route_rows_contribute
         assert config["fff"]["route_result_rows"] == route_result_rows
         assert config["fff"]["route_rows"] == 2
-        assert config["fff"]["leaf_rows"] == 2
+        assert config["fff"]["leaf_rows"] == 4
+        assert config["fff"]["shared_unrouted_frac"] == pytest.approx(0.20)
+        assert config["fff"]["region_leak"] == pytest.approx(0.01)
         assert config["hpo_overrides"]["include_indices"] == trial["overrides"]["include_indices"]
 
 

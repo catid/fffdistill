@@ -17,10 +17,10 @@ distill:
   device: cuda
   capture_autocast_bf16: true
 fff:
-  shared_unrouted_frac: 0.10
+  shared_unrouted_frac: 0.20
   route_rows: 2
   route_result_rows: 0
-  leaf_rows: 2
+  leaf_rows: 4
   depth: 5
   route_rows_contribute: true
   route_row_role: shared_routing_and_output
@@ -29,7 +29,7 @@ fff:
   activation: silu
   hard_routing: true
   train_temperature: 1.0
-  region_leak: 0.0
+  region_leak: 0.01
   master_leaf: false
 balance:
   recipe: none
