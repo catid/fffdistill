@@ -336,6 +336,29 @@ GC5 matched-budget full-student optimizer/WSD validation:
 - Regenerate the GC5 summary with `--expect-rows 15` so missing or stale trial
   collection fails before reports are trusted.
 
+Multi-seed optimizer/WSD final selection:
+
+- Validation summary: `docs/optimizer_wsd_multiseed_validation_summary.md`.
+- Final-test summary: `docs/optimizer_wsd_multiseed_final_test_summary.md`.
+- Selection rule: the top validation family was selected before final-test
+  access, then evaluated on the CIFAR-10 test set across seeds
+  `31001,31002,31003`.
+- Selected family: `pace_normuon_cosine`.
+- Selected validation mean accuracy: `0.913867`.
+- Final-test mean accuracy: `0.910767`.
+- Final-test std accuracy: `0.000586`.
+- Final-test seed count: `3`.
+
+FFF bank-Muon validation:
+
+- Detailed bank-Muon report: `docs/bank_muon_validation_summary.md`.
+- AdamW fallback banks mean validation accuracy: `0.906467`.
+- Bank-specific Muon mean validation accuracy: `0.897200`.
+- Both families used three seeds, `4218` train steps, and `test_accessed=false`.
+- This is validation-only evidence. It does not establish a CIFAR-10 final-test
+  ranking for bank-specific Muon, and the observed validation comparison favored
+  keeping FFF replacement banks on AdamW fallback for the tested recipe.
+
 ## Pareto Inputs
 
 Plot-ready CSV inputs are committed:
@@ -396,6 +419,9 @@ Within the evidence that exists:
   eligible layers with train-eval capture and held-out token metrics.
 - Best Stage H all-family final-test FFF student: `no_balance_cosine`, with
   three-seed full final-test mean accuracy `0.915133`.
+- Best multi-seed optimizer/WSD final-test evidence: `pace_normuon_cosine`,
+  selected by validation mean `0.913867`, with three-seed CIFAR-10 test mean
+  accuracy `0.910767`.
 - Best overall Pareto FFF student across every router recipe is not established,
   because utility-targeted, hard-EM, expert-choice, and ST-Gumbel full-student
   final-test comparisons remain unrun.
@@ -420,11 +446,14 @@ Within the evidence that exists:
 - Utility-targeted, hard-EM, expert-choice, and ST-Gumbel router recipes have equal-budget hard-layer validation evidence, but not full-student final-test comparisons.
 - GC5 optimizer/WSD evidence is validation-only. It compares 15 matched-budget
   optimizer/schedule/LR cells, but no GC5-selected optimizer checkpoint has been
-  evaluated on the CIFAR-10 final test set.
+  evaluated on the CIFAR-10 final test set. A later multi-seed optimizer/WSD
+  selection did final-test the validation-selected `pace_normuon_cosine` family
+  across three seeds.
 - Grouped FFF is much faster than naive but still far slower than dense Linear in current PyTorch implementation.
-- FFF-bank optimizer policy is currently AdamW fallback for 3D replacement banks;
-  optimizer conclusions for assembled FFF students must remain labeled accordingly
-  until a bank-specific Muon grouping is implemented and validated.
+- The bank-specific Muon comparison is validation-only. In that comparison,
+  AdamW fallback banks outperformed bank-specific Muon, so optimizer conclusions
+  for assembled FFF students should continue to state whether replacement banks
+  used AdamW fallback or the tested bank-specific Muon grouping.
 - Remote GitHub SSH auth failed earlier on remote hosts; rsync from `work` was
   used for remote sync. The rsync fallback and scheduler commit-cleanliness
   preflight are test-covered. Scheduler preflight now also records and compares
