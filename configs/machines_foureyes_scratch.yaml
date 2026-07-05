@@ -1,0 +1,6 @@
+machines:
+  foureyes_scratch:
+    host: foureyes
+    workdir: /home/catid/fffdistill_backfill
+    gpus: 4
+    role: remote
