@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from cifar_mamba_fff import collect_scheduler_run as collector
 from cifar_mamba_fff.cluster import MachineSpec
 from cifar_mamba_fff.gpu_scheduler import GpuJob, JobStatus
@@ -73,6 +75,54 @@ def test_discover_scheduler_jobs_reads_remote_status(monkeypatch) -> None:
     assert job.seed == 123
     assert job.status == JobStatus.SUCCEEDED
     assert job.output_dir == status_path.parent
+
+
+def test_discover_scheduler_jobs_treats_missing_run_dir_as_empty(tmp_path) -> None:
+    spec = MachineSpec(
+        name="work",
+        host="localhost",
+        gpus=2,
+        role="local",
+        workdir=str(tmp_path),
+    )
+
+    jobs = collector.discover_scheduler_jobs(
+        [spec],
+        job_kind="finetune_hpo",
+        run_id="missing-run",
+        timeout_s=3,
+    )
+
+    assert jobs == []
+
+
+def test_discover_scheduler_jobs_fails_on_status_discovery_error(monkeypatch) -> None:
+    spec = MachineSpec(
+        name="work",
+        host="localhost",
+        gpus=2,
+        role="local",
+        workdir="/missing/repo",
+    )
+
+    monkeypatch.setattr(
+        collector,
+        "run_remote",
+        lambda *_args, **_kwargs: {
+            "ok": False,
+            "returncode": 1,
+            "stdout": "",
+            "stderr": "bash: line 1: cd: /missing/repo: No such file or directory",
+        },
+    )
+    monkeypatch.setattr(
+        collector,
+        "read_remote_text",
+        lambda *_args, **_kwargs: pytest.fail("status payloads should not be read"),
+    )
+
+    with pytest.raises(RuntimeError, match="could not discover scheduler statuses on work"):
+        collector.discover_scheduler_jobs([spec], job_kind="finetune_hpo", run_id="run-a")
 
 
 def test_discover_scheduler_jobs_rejects_mismatched_status_output_dir(monkeypatch) -> None:

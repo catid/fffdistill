@@ -48,15 +48,18 @@ def scheduler_run_root(*, job_kind: str, run_id: str, output_root: Path | None) 
 
 def _status_paths(spec: MachineSpec, run_root: Path, *, timeout_s: int) -> list[Path]:
     command = (
-        f"test -d {quote(str(run_root))} && "
-        f"find {quote(str(run_root))} -mindepth 3 -maxdepth 3 -name status.json -print"
+        f"if test -d {quote(str(run_root))}; then "
+        f"find {quote(str(run_root))} -mindepth 3 -maxdepth 3 -name status.json -print; "
+        "fi"
     )
     result = run_remote(spec, command, timeout_s=timeout_s)
     if not result["ok"]:
-        stderr = str(result["stderr"])
-        if "No such file or directory" in stderr:
-            return []
-        return []
+        stderr = str(result.get("stderr", "")).strip()
+        stdout = str(result.get("stdout", "")).strip()
+        detail = stderr or stdout or f"returncode={result.get('returncode')}"
+        raise RuntimeError(
+            f"could not discover scheduler statuses on {spec.name}:{run_root}: {detail}"
+        )
     return [Path(line.strip()) for line in str(result["stdout"]).splitlines() if line.strip()]
 
 
