@@ -142,15 +142,22 @@ def _curve_records(path: Path) -> tuple[dict[str, Any], ...]:
     return tuple(records)
 
 
+def _case_from_trial_dir_name(trial_name: str) -> str:
+    if not trial_name.startswith("trial_"):
+        return trial_name
+    parts = trial_name.split("_", 2)
+    if len(parts) == 3 and parts[1].isdigit():
+        return parts[2]
+    return trial_name
+
+
 def _indexed_metric_paths(outputs_root: Path) -> dict[str, list[Path]]:
     by_case: dict[str, list[Path]] = defaultdict(list)
     if not outputs_root.exists():
         return by_case
     for path in outputs_root.glob("**/metrics.jsonl"):
         trial_name = path.parent.name
-        if "_seed" not in trial_name:
-            continue
-        case = trial_name.split("_", 2)[-1] if trial_name.startswith("trial_") else trial_name
+        case = _case_from_trial_dir_name(trial_name)
         by_case[case].append(path)
     for paths in by_case.values():
         paths.sort()
