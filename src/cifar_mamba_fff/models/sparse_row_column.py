@@ -338,20 +338,31 @@ class SparseColumnLinear(nn.Module):
     def forward(self, input: Tensor) -> Tensor:
         flat_input, leading_shape = _validate_input(input, self.in_features)
         route_info = self.route(input)
-        active_columns = self.column_blocks_per_token * self.block_size
-        column_ids = route_info.column_ids.reshape(flat_input.shape[0], active_columns)
-        selected_weight = self.weight[column_ids]
-        values = torch.einsum("ni,nci->nc", flat_input, selected_weight)
-        if self.bias is not None:
-            values = values + self.bias[column_ids]
-        values = values.to(dtype=_forward_output_dtype(input))
+        block_ids = route_info.column_block_ids.reshape(
+            flat_input.shape[0],
+            self.column_blocks_per_token,
+        )
+        output_dtype = _forward_output_dtype(input)
         flat_output = torch.zeros(
             flat_input.shape[0],
             self.out_features,
             device=input.device,
-            dtype=values.dtype,
+            dtype=output_dtype,
         )
-        flat_output = _scatter_columns(flat_output, column_ids, values)
+        for block_position in range(self.column_blocks_per_token):
+            selected_blocks = block_ids[:, block_position]
+            for block_id in selected_blocks.unique(sorted=True):
+                block_index = int(block_id.item())
+                token_mask = selected_blocks == block_index
+                start = block_index * self.block_size
+                end = start + self.block_size
+                block_bias = self.bias[start:end] if self.bias is not None else None
+                block_values = F.linear(
+                    flat_input[token_mask],
+                    self.weight[start:end],
+                    block_bias,
+                ).to(dtype=output_dtype)
+                flat_output[token_mask, start:end] = flat_output[token_mask, start:end] + block_values
         return _finalize_forward_output(flat_output, leading_shape, input)
 
     def diagnostics(self, input: Tensor | None = None) -> dict[str, object]:

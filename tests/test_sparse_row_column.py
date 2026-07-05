@@ -72,6 +72,21 @@ def test_sparse_column_linear_activates_only_selected_output_blocks() -> None:
     assert route.diagnostics["estimated_active_flops_per_token"] == 12
 
 
+def test_sparse_column_linear_uses_block_grouped_matmuls(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = SparseColumnLinear(3, 6, column_blocks=3, column_blocks_per_token=1, bias=True)
+    x = torch.randn(4, 3)
+
+    def fail_einsum(*args: object, **kwargs: object) -> torch.Tensor:
+        raise AssertionError("SparseColumnLinear must not materialize token-column weights")
+
+    monkeypatch.setattr(torch, "einsum", fail_einsum)
+
+    y = module(x)
+
+    assert y.shape == (4, 6)
+    assert torch.isfinite(y).all()
+
+
 def test_coupled_row_column_linear_scatters_only_selected_intersections() -> None:
     module = CoupledRowColumnLinear(
         3,
