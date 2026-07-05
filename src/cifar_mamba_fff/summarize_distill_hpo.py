@@ -146,6 +146,13 @@ def collect_distill_hpo_rows(collected_root: Path) -> list[dict[str, Any]]:
         status = _load_json(slot_dir / "status.json")
         hpo_summary = _load_json(slot_dir / "distill_hpo_summary.json")
         trial_result = _load_json(trial_dir / "trial_result.json")
+        scheduler_status = str(status.get("status") or "")
+        trial_status = str(trial_result.get("status") or "")
+        if scheduler_status != "succeeded" or trial_status != "succeeded":
+            raise ValueError(
+                f"{trial_dir} is not a completed successful distill trial: "
+                f"scheduler_status={scheduler_status!r}, trial_status={trial_status!r}"
+            )
         run_context = _load_json(trial_dir / "run_context.json")
         layer_summary = _load_json(trial_dir / "layer_summary.json")
         if not isinstance(layer_summary, list):
@@ -525,7 +532,7 @@ def write_markdown(
         "",
         "## Interpretation",
         "",
-        "- The previous strict-config failure is resolved: every relaunched case reached `succeeded` and all records preserve `test_accessed=false`.",
+        "- All summarized records passed strict status checks: scheduler and trial status are `succeeded`, and all records preserve `test_accessed=false`.",
         "- The summary covers the layer and recipe records collected in this distillation-HPO run.",
         "- Dead-leaf and occupancy metrics should be used alongside NMSE before selecting a full-student recipe.",
         "- These results feed corrected Stage F train_eval selection and equal-budget router comparison. They do not close final Stage H because no full-student final CIFAR-10 test evaluation is included here.",

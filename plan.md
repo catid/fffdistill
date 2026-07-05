@@ -178,12 +178,14 @@ Sparse row/column activation ablation:
 - Evaluate FFF row activation against methods that sparsify both input rows and output columns, with matched active-FLOP, active-row, parameter, and training-token budgets where possible.
 - Compare custom FFF against alternative sublinear baselines such as token-choice MoE, expert-choice MoE, and checkerboard-style sparse row-and-column activation where a token activates a sparse set of rows and a sparse set of output columns/blocks.
 - Include variants where the router selects row experts only, column experts only, and coupled row/column blocks; include a checkerboard MoE baseline that activates sparse row banks and sparse column banks jointly.
+- Include a checkerboard variant with an MLP router that selects sparse tiles plus a small number of always-on/shared rows that contribute every token. Compare it as a distinct family against the linear-router checkerboard variant, with router parameters, always-on rows, active FLOPs, and throughput reported separately.
 - Keep the same official Mamba-3 teacher, CIFAR-10 split policy, distillation token budget, optimizer/schedule budget, validation-selection protocol, and test-access rules as the FFF experiments.
 - Report local distillation MSE/cosine, validation accuracy after replacement or assembled-student fine-tune, selected final-test accuracy only after validation selection, active rows, active columns, active FLOPs, stored rows/columns, throughput, GPU utilization, router/load balance, dead experts/leaves, and fairness budget notes.
 - Generated validation baselines are staged through the normal fine-tune HPO path
   using `student.source` values `official_fastfeedforward`, `sparse_row`,
   `sparse_column`, `sparse_row_column`, and `checkerboard_moe`. The first
-  launchable validation grid is `configs/finetune_generated_sublinear_baselines_hpo.yaml`.
+  launchable validation grid is `configs/finetune_generated_sublinear_baselines_hpo.yaml`,
+  including the appended `checkerboard_mlp_shared` family.
   These sparse baselines have explicit budget notes and are not a substitute for
   distilled FFF replacements.
 

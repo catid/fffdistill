@@ -87,6 +87,41 @@ def test_sparse_column_linear_uses_block_grouped_matmuls(monkeypatch: pytest.Mon
     assert torch.isfinite(y).all()
 
 
+@pytest.mark.parametrize(
+    ("module", "router_name"),
+    [
+        (
+            SparseColumnLinear(6, 8, column_blocks=4, column_blocks_per_token=2),
+            "column_router_weight",
+        ),
+        (
+            CoupledRowColumnLinear(
+                6,
+                8,
+                row_banks=4,
+                rows_per_token=2,
+                column_blocks=4,
+                column_blocks_per_token=2,
+            ),
+            "column_router_weight",
+        ),
+    ],
+)
+def test_sparse_column_routes_receive_surrogate_gradients(
+    module: torch.nn.Module,
+    router_name: str,
+) -> None:
+    x = torch.randn(5, 6, requires_grad=True)
+
+    loss = module(x).square().mean()
+    loss.backward()
+
+    router = getattr(module, router_name)
+    assert router.grad is not None
+    assert torch.isfinite(router.grad).all()
+    assert router.grad.abs().sum() > 0.0
+
+
 def test_coupled_row_column_linear_scatters_only_selected_intersections() -> None:
     module = CoupledRowColumnLinear(
         3,
@@ -176,8 +211,131 @@ def test_checkerboard_sparse_moe_matches_manual_expert_grid_forward() -> None:
 
     torch.testing.assert_close(y, expected)
     assert route.diagnostics["active_intersections_per_token"] == 1
+    assert route.diagnostics["active_sparse_tiles_per_token"] == 1
     assert route.diagnostics["expert_usage"].shape == (2, 2)
     assert route.diagnostics["dead_experts"] == 2
+
+
+@pytest.mark.parametrize(
+    ("router_type", "router_hidden_features"),
+    [("linear", None), ("mlp", 5)],
+)
+def test_checkerboard_routes_receive_surrogate_gradients(
+    router_type: str,
+    router_hidden_features: int | None,
+) -> None:
+    torch.manual_seed(1234)
+    module = CheckerboardSparseMoELinear(
+        6,
+        8,
+        row_experts=4,
+        rows_per_token=2,
+        column_blocks=4,
+        column_blocks_per_token=2,
+        router_type=router_type,  # type: ignore[arg-type]
+        router_hidden_features=router_hidden_features,
+        expert_rank=2,
+    )
+    x = torch.randn(7, 6, requires_grad=True)
+
+    loss = module(x).square().mean()
+    loss.backward()
+
+    router_params = [
+        (name, parameter)
+        for name, parameter in module.named_parameters()
+        if "router" in name and parameter.requires_grad
+    ]
+    assert router_params
+    for name, parameter in router_params:
+        assert parameter.grad is not None, name
+        assert torch.isfinite(parameter.grad).all(), name
+        assert parameter.grad.abs().sum() > 0.0, name
+
+
+def test_checkerboard_always_on_rows_accumulate_all_columns() -> None:
+    module = CheckerboardSparseMoELinear(
+        2,
+        4,
+        row_experts=2,
+        rows_per_token=1,
+        column_blocks=2,
+        column_blocks_per_token=1,
+        router_type="mlp",
+        router_hidden_features=3,
+        always_on_rows=2,
+        activation="relu",
+        bias=False,
+    )
+    with torch.no_grad():
+        if module.expert_weight is None:
+            raise AssertionError("test expects full-rank experts")
+        module.expert_weight.zero_()
+        if module.always_on_weight is None or module.always_on_bias is None:
+            raise AssertionError("always-on parameters were not initialized")
+        if module.always_on_output is None:
+            raise AssertionError("always-on output vectors were not initialized")
+        module.always_on_weight.copy_(torch.tensor([[1.0, 0.0], [0.0, 1.0]]))
+        module.always_on_bias.zero_()
+        module.always_on_output.copy_(
+            torch.tensor([[1.0, 2.0, 3.0, 4.0], [-1.0, 0.5, 0.0, 2.0]])
+        )
+    x = torch.tensor([[2.0, 3.0], [0.0, 4.0]])
+
+    y = module(x)
+    expected = F.relu(x) @ module.always_on_output
+
+    torch.testing.assert_close(y, expected)
+    route = module.route(x)
+    selected = torch.zeros_like(y, dtype=torch.bool)
+    selected.scatter_(1, route.column_ids, True)
+    assert (~selected).any()
+    torch.testing.assert_close(y[~selected], expected[~selected])
+
+
+def test_checkerboard_mlp_router_with_always_on_rows_trains_and_reports_budget() -> None:
+    module = CheckerboardSparseMoELinear(
+        6,
+        8,
+        row_experts=3,
+        rows_per_token=2,
+        column_blocks=4,
+        column_blocks_per_token=2,
+        router_type="mlp",
+        router_hidden_features=5,
+        always_on_rows=2,
+        expert_rank=2,
+        bias=True,
+    )
+    x = torch.randn(4, 6, requires_grad=True)
+
+    y = module(x)
+    loss = y.square().mean()
+    loss.backward()
+    diagnostics = module.diagnostics(x)
+
+    assert y.shape == (4, 8)
+    assert torch.isfinite(y).all()
+    assert diagnostics["router_type"] == "mlp"
+    assert diagnostics["router_hidden_features"] == 5
+    assert diagnostics["always_on_rows"] == 2
+    assert diagnostics["active_rows_per_token"] == 4
+    assert diagnostics["active_sparse_tiles_per_token"] == 4
+    assert diagnostics["stored_rows"] == 5
+    assert diagnostics["estimated_active_flops_per_token"] == (
+        (2 * 2) * (2 * 2 * (6 + 2)) + 2 * 2 * (6 + 8)
+    )
+    assert diagnostics["estimated_routing_flops_per_token"] == 2 * 5 * 6 + 2 * (3 + 4) * 5
+    assert diagnostics["estimated_total_flops_per_token"] == (
+        diagnostics["estimated_active_flops_per_token"]
+        + diagnostics["estimated_routing_flops_per_token"]
+    )
+    assert module.router_hidden_weight is not None
+    assert module.router_hidden_weight.grad is not None
+    assert module.router_hidden_weight.grad.abs().sum() > 0.0
+    assert module.always_on_weight is not None
+    assert module.always_on_weight.grad is not None
+    assert module.always_on_weight.grad.abs().sum() > 0.0
 
 
 def test_sparse_row_column_modules_preserve_leading_shape_and_empty_batches() -> None:
@@ -199,6 +357,17 @@ def test_sparse_row_column_modules_preserve_leading_shape_and_empty_batches() ->
             rows_per_token=2,
             column_blocks=2,
             column_blocks_per_token=1,
+        ),
+        CheckerboardSparseMoELinear(
+            5,
+            4,
+            row_experts=3,
+            rows_per_token=2,
+            column_blocks=2,
+            column_blocks_per_token=1,
+            router_type="mlp",
+            router_hidden_features=4,
+            always_on_rows=1,
         ),
     ]
 

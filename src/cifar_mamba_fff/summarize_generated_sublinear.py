@@ -29,6 +29,9 @@ TRIAL_COLUMNS = [
     "replacement_count",
     "eligible_linear_count",
     "replacement_parameters_total",
+    "total_active_flops_per_token",
+    "total_routing_flops_per_token",
+    "total_dense_flops_per_token",
     "mean_active_rows_per_token",
     "mean_active_columns_per_token",
     "mean_active_flops_per_token",
@@ -57,6 +60,9 @@ FAMILY_COLUMNS = [
     "mean_active_rows_per_token",
     "mean_active_columns_per_token",
     "mean_active_flops_per_token",
+    "mean_total_active_flops_per_token",
+    "mean_total_routing_flops_per_token",
+    "mean_total_dense_flops_per_token",
     "mean_train_images_per_second",
     "test_accessed",
     "best_case",
@@ -279,6 +285,9 @@ def _trial_row(run_root: Path, trial_result_path: Path) -> dict[str, Any] | None
     if status != "succeeded":
         return None
     run, machine, gpu, slot_status = _slot_status(run_root, trial_result_path)
+    slot_status_text = str(slot_status.get("status") or "")
+    if slot_status_text and slot_status_text != "succeeded":
+        return None
     case = str(trial_result.get("case") or trial_result_path.parent.name)
     overrides = trial_result.get("overrides") if isinstance(trial_result.get("overrides"), Mapping) else {}
     seed = _as_int(overrides.get("seed") or trial_result.get("seed") or summary.get("seed"))
@@ -311,6 +320,9 @@ def _trial_row(run_root: Path, trial_result_path: Path) -> dict[str, Any] | None
         "replacement_count": summary.get("student_replacement_count") or "",
         "eligible_linear_count": summary.get("eligible_linear_count") or "",
         "replacement_parameters_total": _sum(layer_rows, "parameters"),
+        "total_active_flops_per_token": _sum(layer_rows, "active_flops_per_token"),
+        "total_routing_flops_per_token": _sum(layer_rows, "routing_flops_per_token"),
+        "total_dense_flops_per_token": _sum(layer_rows, "dense_flops_per_token"),
         "mean_active_rows_per_token": _mean(layer_rows, "active_rows_per_token"),
         "mean_active_columns_per_token": _mean(layer_rows, "active_columns_per_token"),
         "mean_active_flops_per_token": _mean(layer_rows, "active_flops_per_token"),
@@ -380,6 +392,18 @@ def aggregate_by_family(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any
                 "mean_active_rows_per_token": _mean(group, "mean_active_rows_per_token"),
                 "mean_active_columns_per_token": _mean(group, "mean_active_columns_per_token"),
                 "mean_active_flops_per_token": _mean(group, "mean_active_flops_per_token"),
+                "mean_total_active_flops_per_token": _mean(
+                    group,
+                    "total_active_flops_per_token",
+                ),
+                "mean_total_routing_flops_per_token": _mean(
+                    group,
+                    "total_routing_flops_per_token",
+                ),
+                "mean_total_dense_flops_per_token": _mean(
+                    group,
+                    "total_dense_flops_per_token",
+                ),
                 "mean_train_images_per_second": _mean(group, "train_images_per_second"),
                 "test_accessed": any(_as_bool(row.get("test_accessed")) for row in group),
                 "best_case": best.get("case", ""),
@@ -433,6 +457,7 @@ def write_markdown(
                 "Mean active rows",
                 "Mean active columns",
                 "Mean active FLOPs/token",
+                "Mean total active FLOPs/token",
                 "Mean img/s",
                 "Best case",
                 "Best val acc",
@@ -447,6 +472,7 @@ def write_markdown(
                     row["mean_active_rows_per_token"],
                     row["mean_active_columns_per_token"],
                     row["mean_active_flops_per_token"],
+                    row["mean_total_active_flops_per_token"],
                     row["mean_train_images_per_second"],
                     row["best_case"],
                     row["best_val_accuracy"],
@@ -466,6 +492,7 @@ def write_markdown(
                 "Active rows",
                 "Active columns",
                 "Active FLOPs/token",
+                "Total active FLOPs/token",
                 "Img/s",
                 "Params",
                 "MSE",
@@ -480,6 +507,7 @@ def write_markdown(
                     row.get("mean_active_rows_per_token"),
                     row.get("mean_active_columns_per_token"),
                     row.get("mean_active_flops_per_token"),
+                    row.get("total_active_flops_per_token"),
                     row.get("train_images_per_second"),
                     row.get("replacement_parameters_total"),
                     row.get("mean_final_normalized_mse"),

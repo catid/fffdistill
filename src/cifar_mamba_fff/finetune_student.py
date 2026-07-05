@@ -149,6 +149,9 @@ class StudentAssemblyConfig:
     sparse_column_blocks_per_token: int = 1
     sparse_activation: str = "silu"
     checkerboard_expert_rank: int | None = None
+    checkerboard_router_type: str = "linear"
+    checkerboard_router_hidden_features: int | None = None
+    checkerboard_always_on_rows: int = 0
 
     def validate(self, *, quick_smoke: bool) -> None:
         valid_sources = {
@@ -218,6 +221,27 @@ class StudentAssemblyConfig:
             raise ValueError("student.sparse_activation must be one of: silu, gelu, relu")
         if self.checkerboard_expert_rank is not None:
             _positive_int("student.checkerboard_expert_rank", self.checkerboard_expert_rank)
+        if self.checkerboard_router_type not in {"linear", "mlp"}:
+            raise ValueError("student.checkerboard_router_type must be one of: linear, mlp")
+        if self.checkerboard_router_type == "mlp":
+            if self.checkerboard_router_hidden_features is None:
+                raise ValueError(
+                    "student.checkerboard_router_hidden_features is required for MLP checkerboard routers"
+                )
+            _positive_int(
+                "student.checkerboard_router_hidden_features",
+                self.checkerboard_router_hidden_features,
+            )
+        elif self.checkerboard_router_hidden_features is not None:
+            raise ValueError(
+                "student.checkerboard_router_hidden_features requires checkerboard_router_type=mlp"
+            )
+        if (
+            isinstance(self.checkerboard_always_on_rows, bool)
+            or not isinstance(self.checkerboard_always_on_rows, int)
+            or self.checkerboard_always_on_rows < 0
+        ):
+            raise ValueError("student.checkerboard_always_on_rows must be a non-negative integer")
 
 
 @dataclass(frozen=True)
@@ -833,21 +857,41 @@ def _checkerboard_expert_rank_for_budget(
 
     row_experts = config.sparse_row_banks
     column_blocks = config.sparse_column_blocks
-    router_parameters = (
-        row_experts * original.in_features
-        + row_experts
-        + column_blocks * original.in_features
-        + column_blocks
+    if config.checkerboard_router_type == "linear":
+        router_parameters = (
+            row_experts * original.in_features
+            + row_experts
+            + column_blocks * original.in_features
+            + column_blocks
+        )
+    else:
+        router_hidden = config.checkerboard_router_hidden_features
+        if router_hidden is None:
+            raise ValueError(
+                "student.checkerboard_router_hidden_features is required for MLP checkerboard routers"
+            )
+        router_parameters = (
+            router_hidden * original.in_features
+            + router_hidden
+            + row_experts * router_hidden
+            + row_experts
+            + column_blocks * router_hidden
+            + column_blocks
+        )
+    always_on_parameters = config.checkerboard_always_on_rows * (
+        original.in_features + original.out_features + 1
     )
     bias_parameters = row_experts * column_blocks * block_size if original.bias is not None else 0
     full_expert_parameters = row_experts * column_blocks * block_size * original.in_features
-    full_parameters = router_parameters + bias_parameters + full_expert_parameters
+    full_parameters = router_parameters + always_on_parameters + bias_parameters + full_expert_parameters
     effective_budget = math.floor(parameter_budget * (1.0 + config.baseline_budget_tolerance_frac))
     if full_parameters <= effective_budget:
         return None
 
     parameters_per_rank = row_experts * column_blocks * (original.in_features + block_size)
-    affordable_rank = (effective_budget - router_parameters - bias_parameters) // parameters_per_rank
+    affordable_rank = (
+        effective_budget - router_parameters - always_on_parameters - bias_parameters
+    ) // parameters_per_rank
     if affordable_rank < 1:
         raise RuntimeError(
             "checkerboard_moe cannot fit even rank-1 factorized experts within "
@@ -925,6 +969,10 @@ def _make_generated_sublinear_replacement(
             column_blocks=config.sparse_column_blocks,
             column_blocks_per_token=config.sparse_column_blocks_per_token,
             expert_rank=expert_rank,
+            router_type=config.checkerboard_router_type,  # type: ignore[arg-type]
+            router_hidden_features=config.checkerboard_router_hidden_features,
+            always_on_rows=config.checkerboard_always_on_rows,
+            activation=config.sparse_activation,  # type: ignore[arg-type]
             bias=original.bias is not None,
             device=original.weight.device,
             dtype=original.weight.dtype,
@@ -939,6 +987,9 @@ def _make_generated_sublinear_replacement(
         f"rows_per_token={config.sparse_rows_per_token}:"
         f"column_blocks={config.sparse_column_blocks}:"
         f"column_blocks_per_token={config.sparse_column_blocks_per_token}:"
+        f"checkerboard_router_type={config.checkerboard_router_type}:"
+        f"checkerboard_router_hidden_features={config.checkerboard_router_hidden_features or 0}:"
+        f"checkerboard_always_on_rows={config.checkerboard_always_on_rows}:"
         f"diagnostics={_jsonable(diagnostics)}"
     )
 

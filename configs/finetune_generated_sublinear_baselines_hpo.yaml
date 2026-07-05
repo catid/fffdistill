@@ -1,7 +1,7 @@
 study_name: generated_sublinear_baselines_validation
 objective: val_accuracy
 direction: maximize
-max_trials: 15
+max_trials: 18
 description: Validation-only official fastfeedforward and sparse row/column/checkerboard baselines.
 cases:
   - &official_31001
@@ -83,4 +83,16 @@ cases:
     seed: 31002
   - <<: *checkerboard_31001
     name: checkerboard_moe_seed31003
+    seed: 31003
+  - &checkerboard_mlp_shared_31001
+    <<: *checkerboard_31001
+    name: checkerboard_mlp_shared_seed31001
+    checkerboard_router_type: mlp
+    checkerboard_router_hidden_features: 32
+    checkerboard_always_on_rows: 4
+  - <<: *checkerboard_mlp_shared_31001
+    name: checkerboard_mlp_shared_seed31002
+    seed: 31002
+  - <<: *checkerboard_mlp_shared_31001
+    name: checkerboard_mlp_shared_seed31003
     seed: 31003

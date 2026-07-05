@@ -265,6 +265,21 @@ def test_generated_baseline_hpo_overrides_student_section(tmp_path: Path) -> Non
                 "sparse_row_banks": 16,
                 "sparse_rows_per_token": 2,
                 "sparse_activation": "gelu",
+            },
+            {
+                "name": "checkerboard_mlp_shared",
+                "student_source": "checkerboard_moe",
+                "allow_matched_linear_baseline": True,
+                "baseline_budget_source": "dense_fraction",
+                "baseline_parameter_budget_fraction": 1.0,
+                "baseline_budget_tolerance_frac": 4.0,
+                "sparse_row_banks": 3,
+                "sparse_rows_per_token": 2,
+                "sparse_column_blocks": 4,
+                "sparse_column_blocks_per_token": 2,
+                "checkerboard_router_type": "mlp",
+                "checkerboard_router_hidden_features": 5,
+                "checkerboard_always_on_rows": 2,
             }
         ]
     }
@@ -273,19 +288,32 @@ def test_generated_baseline_hpo_overrides_student_section(tmp_path: Path) -> Non
         base_config=base,
         hpo_config=hpo,
         output_dir=tmp_path / "plan",
-        max_trials=1,
+        max_trials=2,
     )
 
-    trial_config = yaml.safe_load(
-        Path(str(plan["trials"][0]["config_path"])).read_text(encoding="utf-8")
-    )
-    assert trial_config["student"]["source"] == "sparse_row"
-    assert trial_config["student"]["allow_matched_linear_baseline"] is True
-    assert trial_config["student"]["baseline_budget_source"] == "dense_fraction"
-    assert trial_config["student"]["baseline_budget_tolerance_frac"] == pytest.approx(0.25)
-    assert trial_config["student"]["sparse_row_banks"] == 16
-    assert trial_config["student"]["sparse_rows_per_token"] == 2
-    assert trial_config["student"]["sparse_activation"] == "gelu"
+    trial_configs = [
+        yaml.safe_load(Path(str(trial["config_path"])).read_text(encoding="utf-8"))
+        for trial in plan["trials"]
+    ]
+    sparse_config, checkerboard_config = trial_configs
+    assert sparse_config["student"]["source"] == "sparse_row"
+    assert sparse_config["student"]["allow_matched_linear_baseline"] is True
+    assert sparse_config["student"]["baseline_budget_source"] == "dense_fraction"
+    assert sparse_config["student"]["baseline_budget_tolerance_frac"] == pytest.approx(0.25)
+    assert sparse_config["student"]["sparse_row_banks"] == 16
+    assert sparse_config["student"]["sparse_rows_per_token"] == 2
+    assert sparse_config["student"]["sparse_activation"] == "gelu"
+    assert checkerboard_config["student"]["source"] == "checkerboard_moe"
+    assert checkerboard_config["student"]["allow_matched_linear_baseline"] is True
+    assert checkerboard_config["student"]["baseline_budget_source"] == "dense_fraction"
+    assert checkerboard_config["student"]["baseline_budget_tolerance_frac"] == pytest.approx(4.0)
+    assert checkerboard_config["student"]["sparse_row_banks"] == 3
+    assert checkerboard_config["student"]["sparse_rows_per_token"] == 2
+    assert checkerboard_config["student"]["sparse_column_blocks"] == 4
+    assert checkerboard_config["student"]["sparse_column_blocks_per_token"] == 2
+    assert checkerboard_config["student"]["checkerboard_router_type"] == "mlp"
+    assert checkerboard_config["student"]["checkerboard_router_hidden_features"] == 5
+    assert checkerboard_config["student"]["checkerboard_always_on_rows"] == 2
 
 
 @pytest.mark.parametrize(
@@ -400,6 +428,46 @@ def test_checkerboard_generated_baseline_launch_budget_matches_stage_f_shape() -
     assert "'factorized_experts': True" in result.manifest[0].replacement_path
     x = torch.randn(2, 512)
     assert result.model(x).shape == (2, 256)
+
+
+def test_checkerboard_mlp_shared_generated_baseline_build_path_records_options() -> None:
+    raw = _minimal_config(Path("/tmp"))
+    raw["student"] = {
+        "source": "checkerboard_moe",
+        "distill_config": "configs/fff_distill_stage_f.yaml",
+        "min_in_features": 1,
+        "min_out_features": 1,
+        "allow_matched_linear_baseline": True,
+        "baseline_budget_source": "dense_fraction",
+        "baseline_parameter_budget_fraction": 1.0,
+        "baseline_budget_tolerance_frac": 4.0,
+        "sparse_row_banks": 3,
+        "sparse_rows_per_token": 2,
+        "sparse_column_blocks": 4,
+        "sparse_column_blocks_per_token": 2,
+        "checkerboard_router_type": "mlp",
+        "checkerboard_router_hidden_features": 5,
+        "checkerboard_always_on_rows": 2,
+    }
+    config = parse_finetune_run_config(raw, quick_smoke=True)
+    teacher = TinyConfigModel({"width": 8})
+
+    result = build_student_model(
+        loaded_teacher_model=teacher,
+        config=config,
+        device=torch.device("cpu"),
+    )
+
+    assert isinstance(result.model.proj, CheckerboardSparseMoELinear)
+    assert result.model.proj.router_type == "mlp"
+    assert result.model.proj.router_hidden_features == 5
+    assert result.model.proj.always_on_rows == 2
+    assert "checkerboard_router_type=mlp" in result.manifest[0].replacement_path
+    assert "checkerboard_router_hidden_features=5" in result.manifest[0].replacement_path
+    assert "checkerboard_always_on_rows=2" in result.manifest[0].replacement_path
+    assert "'always_on_rows': 2" in result.manifest[0].replacement_path
+    x = torch.randn(2, 8)
+    assert result.model(x).shape == (2, 8)
 
 
 def test_generated_official_fastfeedforward_build_path_replaces_eligible_linears() -> None:

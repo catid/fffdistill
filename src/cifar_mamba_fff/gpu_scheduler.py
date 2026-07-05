@@ -12,6 +12,7 @@ from pathlib import Path
 from shlex import quote
 from shlex import split as shlex_split
 from typing import Any
+from uuid import uuid4
 
 from .cluster import MachineSpec, load_machines, read_remote_text, run_remote, write_remote_text
 from .utils import bool_arg, git_commit
@@ -969,11 +970,14 @@ def render_detached_launch_script(
     expected_commit: str | None = None,
 ) -> str:
     files = detached_job_files(job)
+    static_record = _job_static_metadata(job, files, expected_commit=expected_commit)
+    static_record["scheduler_run_uuid"] = str(uuid4())
     static_metadata = json.dumps(
-        _job_static_metadata(job, files, expected_commit=expected_commit),
+        static_record,
         sort_keys=True,
     )
     expected_commit_value = "" if expected_commit is None else expected_commit
+    gpu_id_value = "" if job.gpu_id is None else str(job.gpu_id)
     return "\n".join(
         [
             "#!/usr/bin/env bash",
@@ -983,8 +987,9 @@ def render_detached_launch_script(
             f"OUT_DIR={quote(str(files.output_dir))}",
             f"COMMAND={quote(job.command)}",
             f"EXPECTED_GIT_COMMIT={quote(expected_commit_value)}",
+            f"GPU_ID={quote(gpu_id_value)}",
             f"STATIC_METADATA={quote(static_metadata)}",
-            "export OUT_DIR COMMAND EXPECTED_GIT_COMMIT STATIC_METADATA",
+            "export OUT_DIR COMMAND EXPECTED_GIT_COMMIT GPU_ID STATIC_METADATA",
             'mkdir -p "$OUT_DIR"',
             'printf "%s\\n" "$$" > "$OUT_DIR/pid.txt"',
             "write_status() {",
@@ -1018,6 +1023,15 @@ def render_detached_launch_script(
             "(out_dir / 'heartbeat.txt').write_text(os.environ['UPDATED_AT'] + '\\n', encoding='utf-8')",
             "PY",
             "}",
+            'stale_entry="$(find "$OUT_DIR" -mindepth 1 -maxdepth 1 ! -name launch.sh ! -name pid.txt -print -quit 2>/dev/null)"',
+            'if [ -n "$stale_entry" ]; then',
+            '  PRELAUNCH_ERROR="refusing to launch into non-empty output dir: $stale_entry"',
+            "  export PRELAUNCH_ERROR",
+            '  printf "%s\\n" "$PRELAUNCH_ERROR" > "$OUT_DIR/stderr.log"',
+            '  printf "%s\\n" "125" > "$OUT_DIR/exit_code.txt"',
+            '  write_status "failed_infra" "125"',
+            "  exit 125",
+            "fi",
             "heartbeat_loop() {",
             "  while true; do",
             "    date -u +%Y-%m-%dT%H:%M:%SZ > \"$OUT_DIR/heartbeat.txt\"",
@@ -1052,6 +1066,36 @@ def render_detached_launch_script(
             '  write_status "failed_infra" "125"',
             "  exit 125",
             "fi",
+            'LOCK_ACQUIRED=""',
+            'LOCK_PATH=""',
+            'if [ -n "$GPU_ID" ]; then',
+            "  mkdir -p .scheduler_gpu_locks",
+            '  LOCK_PATH=".scheduler_gpu_locks/gpu_${GPU_ID}.lock"',
+            "  if command -v flock >/dev/null 2>&1; then",
+            '    exec 9>"$LOCK_PATH"',
+            "    if ! flock -n 9; then",
+            '      PRELAUNCH_ERROR="gpu slot ${GPU_ID} is already locked by another scheduler job"',
+            "      export PRELAUNCH_ERROR",
+            '      printf "%s\\n" "$PRELAUNCH_ERROR" > "$OUT_DIR/stderr.log"',
+            '      printf "%s\\n" "124" > "$OUT_DIR/exit_code.txt"',
+            '      write_status "failed_infra" "124"',
+            "      exit 124",
+            "    fi",
+            "    LOCK_ACQUIRED=flock",
+            "  else",
+            '    if ! mkdir "${LOCK_PATH}.d" 2>/dev/null; then',
+            '      PRELAUNCH_ERROR="gpu slot ${GPU_ID} is already locked by another scheduler job"',
+            "      export PRELAUNCH_ERROR",
+            '      printf "%s\\n" "$PRELAUNCH_ERROR" > "$OUT_DIR/stderr.log"',
+            '      printf "%s\\n" "124" > "$OUT_DIR/exit_code.txt"',
+            '      write_status "failed_infra" "124"',
+            "      exit 124",
+            "    fi",
+            "    LOCK_ACQUIRED=mkdir",
+            '    trap \'rmdir "${LOCK_PATH}.d" >/dev/null 2>&1 || true\' EXIT',
+            "  fi",
+            '  printf "pid=%s\\nstarted_at=%s\\noutput_dir=%s\\n" "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$OUT_DIR" > "${LOCK_PATH}.owner"',
+            "fi",
             'write_status "running" ""',
             "heartbeat_loop &",
             "heartbeat_pid=$!",
@@ -1059,6 +1103,7 @@ def render_detached_launch_script(
             "rc=$?",
             'kill "$heartbeat_pid" >/dev/null 2>&1 || true',
             'wait "$heartbeat_pid" 2>/dev/null || true',
+            'if [ -n "$LOCK_PATH" ]; then rm -f "${LOCK_PATH}.owner"; fi',
             'printf "%s\\n" "$rc" > "$OUT_DIR/exit_code.txt"',
             'if [ "$rc" -eq 0 ]; then',
             '  final_status="succeeded"',
@@ -1467,7 +1512,7 @@ def collect_detached_job_artifacts(
     listing = _list_remote_trial_dirs(spec, files.output_dir, timeout_s=timeout_s)
     remote_trial_dirs = sorted(set(str(name) for name in listing["trial_dirs"]))
     expected_trial_dirs = _expected_trial_dirs_from_collected_summaries(collected["files"])
-    trial_dirs = sorted(set(remote_trial_dirs) | set(expected_trial_dirs))
+    trial_dirs = expected_trial_dirs if expected_trial_dirs else remote_trial_dirs
     missing_trial_dirs = sorted(set(expected_trial_dirs) - set(remote_trial_dirs))
     collected["trial_dirs"] = {
         "remote": remote_trial_dirs,

@@ -16,6 +16,7 @@ import torch.nn.functional as F
 from torch import Tensor, nn
 
 ActivationName = Literal["silu", "gelu", "relu"]
+CheckerboardRouterType = Literal["linear", "mlp"]
 
 
 @dataclass(frozen=True)
@@ -129,6 +130,25 @@ def _route_usage(ids: Tensor, count: int) -> tuple[Tensor, int]:
     else:
         usage = torch.bincount(ids.reshape(-1), minlength=count)
     return usage, int((usage == 0).sum().item())
+
+
+def _selected_softmax_ste_scores(
+    logits: Tensor,
+    ids: Tensor,
+    values: Tensor,
+    *,
+    forward: Literal["ones", "topk_softmax"],
+) -> Tensor:
+    """Return selected router scores with a full-router surrogate gradient."""
+
+    selected_probs = F.softmax(logits, dim=-1).gather(-1, ids)
+    if forward == "ones":
+        forward_scores = torch.ones_like(selected_probs)
+    elif forward == "topk_softmax":
+        forward_scores = F.softmax(values, dim=-1)
+    else:  # pragma: no cover - Literal keeps this unreachable in typed callers.
+        raise ValueError("forward must be ones or topk_softmax")
+    return forward_scores + selected_probs - selected_probs.detach()
 
 
 class SparseRowLinear(nn.Module):
@@ -316,7 +336,12 @@ class SparseColumnLinear(nn.Module):
         flat_input, leading_shape = _validate_input(input, self.in_features)
         block_logits = F.linear(flat_input, self.column_router_weight, self.column_router_bias)
         block_values, block_ids = block_logits.topk(self.column_blocks_per_token, dim=-1)
-        block_scores = F.softmax(block_values, dim=-1)
+        block_scores = _selected_softmax_ste_scores(
+            block_logits,
+            block_ids,
+            block_values,
+            forward="ones",
+        )
         active_columns = self.column_blocks_per_token * self.block_size
         column_ids = _column_ids_from_block_ids(block_ids, self.block_size).reshape(
             flat_input.shape[0],
@@ -342,6 +367,10 @@ class SparseColumnLinear(nn.Module):
             flat_input.shape[0],
             self.column_blocks_per_token,
         )
+        block_scores = route_info.column_scores.reshape(
+            flat_input.shape[0],
+            self.column_blocks_per_token,
+        )
         output_dtype = _forward_output_dtype(input)
         flat_output = torch.zeros(
             flat_input.shape[0],
@@ -362,6 +391,8 @@ class SparseColumnLinear(nn.Module):
                     self.weight[start:end],
                     block_bias,
                 ).to(dtype=output_dtype)
+                block_values = block_values * block_scores[token_mask, block_position].unsqueeze(-1)
+                block_values = block_values.to(dtype=output_dtype)
                 flat_output[token_mask, start:end] = flat_output[token_mask, start:end] + block_values
         return _finalize_forward_output(flat_output, leading_shape, input)
 
@@ -484,7 +515,12 @@ class CoupledRowColumnLinear(nn.Module):
         row_scores = _activation(self.activation, row_values)
         block_logits = F.linear(flat_input, self.column_router_weight, self.column_router_bias)
         block_values, block_ids = block_logits.topk(self.column_blocks_per_token, dim=-1)
-        block_scores = F.softmax(block_values, dim=-1)
+        block_scores = _selected_softmax_ste_scores(
+            block_logits,
+            block_ids,
+            block_values,
+            forward="ones",
+        )
         active_columns = self.column_blocks_per_token * self.block_size
         column_ids = _column_ids_from_block_ids(block_ids, self.block_size).reshape(
             flat_input.shape[0],
@@ -510,6 +546,10 @@ class CoupledRowColumnLinear(nn.Module):
         row_scores = route_info.row_scores.reshape(flat_input.shape[0], self.rows_per_token)
         active_columns = self.column_blocks_per_token * self.block_size
         column_ids = route_info.column_ids.reshape(flat_input.shape[0], active_columns)
+        block_scores = route_info.column_scores.reshape(
+            flat_input.shape[0],
+            self.column_blocks_per_token,
+        )
         selected_output = self.row_output[row_ids]
         selected_columns = torch.gather(
             selected_output,
@@ -519,6 +559,7 @@ class CoupledRowColumnLinear(nn.Module):
         values = torch.einsum("nr,nrc->nc", row_scores, selected_columns)
         if self.bias is not None:
             values = values + self.bias[column_ids]
+        values = values * block_scores.repeat_interleave(self.block_size, dim=-1)
         values = values.to(dtype=_forward_output_dtype(input))
         flat_output = torch.zeros(
             flat_input.shape[0],
@@ -594,6 +635,9 @@ class CheckerboardSparseMoELinear(nn.Module):
     column_blocks_per_token: int
     block_size: int
     expert_rank: int | None
+    router_type: CheckerboardRouterType
+    router_hidden_features: int | None
+    always_on_rows: int
 
     def __init__(
         self,
@@ -605,6 +649,10 @@ class CheckerboardSparseMoELinear(nn.Module):
         column_blocks_per_token: int,
         *,
         expert_rank: int | None = None,
+        router_type: CheckerboardRouterType = "linear",
+        router_hidden_features: int | None = None,
+        always_on_rows: int = 0,
+        activation: ActivationName = "silu",
         bias: bool = True,
         device: torch.device | str | None = None,
         dtype: torch.dtype | None = None,
@@ -618,6 +666,17 @@ class CheckerboardSparseMoELinear(nn.Module):
             _require_positive_int("expert_rank", expert_rank)
             if expert_rank > min(in_features, out_features // column_blocks):
                 raise ValueError("expert_rank must be <= min(in_features, column block size)")
+        if router_type not in {"linear", "mlp"}:
+            raise ValueError("router_type must be one of: linear, mlp")
+        if router_type == "mlp":
+            if router_hidden_features is None:
+                raise ValueError("router_hidden_features is required when router_type='mlp'")
+            _require_positive_int("router_hidden_features", router_hidden_features)
+        elif router_hidden_features is not None:
+            raise ValueError("router_hidden_features requires router_type='mlp'")
+        if isinstance(always_on_rows, bool) or not isinstance(always_on_rows, int) or always_on_rows < 0:
+            raise ValueError("always_on_rows must be a non-negative integer")
+        _activation(activation, torch.empty(0))
         _require_bool("bias", bias)
         self.in_features = in_features
         self.out_features = out_features
@@ -627,16 +686,58 @@ class CheckerboardSparseMoELinear(nn.Module):
         self.column_blocks_per_token = column_blocks_per_token
         self.block_size = out_features // column_blocks
         self.expert_rank = expert_rank
+        self.router_type = router_type
+        self.router_hidden_features = router_hidden_features
+        self.always_on_rows = always_on_rows
+        self.activation = activation
 
         factory_kwargs = {"device": device, "dtype": dtype}
-        self.row_router_weight = nn.Parameter(
-            torch.empty(row_experts, in_features, **factory_kwargs)
-        )
-        self.row_router_bias = nn.Parameter(torch.empty(row_experts, **factory_kwargs))
-        self.column_router_weight = nn.Parameter(
-            torch.empty(column_blocks, in_features, **factory_kwargs)
-        )
-        self.column_router_bias = nn.Parameter(torch.empty(column_blocks, **factory_kwargs))
+        if router_type == "linear":
+            self.row_router_weight = nn.Parameter(
+                torch.empty(row_experts, in_features, **factory_kwargs)
+            )
+            self.row_router_bias = nn.Parameter(torch.empty(row_experts, **factory_kwargs))
+            self.column_router_weight = nn.Parameter(
+                torch.empty(column_blocks, in_features, **factory_kwargs)
+            )
+            self.column_router_bias = nn.Parameter(torch.empty(column_blocks, **factory_kwargs))
+            self.register_parameter("router_hidden_weight", None)
+            self.register_parameter("router_hidden_bias", None)
+            self.register_parameter("row_router_out_weight", None)
+            self.register_parameter("row_router_out_bias", None)
+            self.register_parameter("column_router_out_weight", None)
+            self.register_parameter("column_router_out_bias", None)
+        else:
+            if router_hidden_features is None:
+                raise RuntimeError("router_hidden_features validation failed")
+            self.register_parameter("row_router_weight", None)
+            self.register_parameter("row_router_bias", None)
+            self.register_parameter("column_router_weight", None)
+            self.register_parameter("column_router_bias", None)
+            self.router_hidden_weight = nn.Parameter(
+                torch.empty(router_hidden_features, in_features, **factory_kwargs)
+            )
+            self.router_hidden_bias = nn.Parameter(torch.empty(router_hidden_features, **factory_kwargs))
+            self.row_router_out_weight = nn.Parameter(
+                torch.empty(row_experts, router_hidden_features, **factory_kwargs)
+            )
+            self.row_router_out_bias = nn.Parameter(torch.empty(row_experts, **factory_kwargs))
+            self.column_router_out_weight = nn.Parameter(
+                torch.empty(column_blocks, router_hidden_features, **factory_kwargs)
+            )
+            self.column_router_out_bias = nn.Parameter(torch.empty(column_blocks, **factory_kwargs))
+        if always_on_rows:
+            self.always_on_weight = nn.Parameter(
+                torch.empty(always_on_rows, in_features, **factory_kwargs)
+            )
+            self.always_on_bias = nn.Parameter(torch.empty(always_on_rows, **factory_kwargs))
+            self.always_on_output = nn.Parameter(
+                torch.empty(always_on_rows, out_features, **factory_kwargs)
+            )
+        else:
+            self.register_parameter("always_on_weight", None)
+            self.register_parameter("always_on_bias", None)
+            self.register_parameter("always_on_output", None)
         if expert_rank is None:
             self.expert_weight = nn.Parameter(
                 torch.empty(
@@ -678,8 +779,29 @@ class CheckerboardSparseMoELinear(nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
-        nn.init.kaiming_uniform_(self.row_router_weight, a=math.sqrt(5))
-        nn.init.kaiming_uniform_(self.column_router_weight, a=math.sqrt(5))
+        if self.router_type == "linear":
+            if (
+                self.row_router_weight is None
+                or self.column_router_weight is None
+                or self.row_router_bias is None
+                or self.column_router_bias is None
+            ):
+                raise RuntimeError("linear checkerboard router parameters are not initialized")
+            nn.init.kaiming_uniform_(self.row_router_weight, a=math.sqrt(5))
+            nn.init.kaiming_uniform_(self.column_router_weight, a=math.sqrt(5))
+        else:
+            if (
+                self.router_hidden_weight is None
+                or self.router_hidden_bias is None
+                or self.row_router_out_weight is None
+                or self.row_router_out_bias is None
+                or self.column_router_out_weight is None
+                or self.column_router_out_bias is None
+            ):
+                raise RuntimeError("MLP checkerboard router parameters are not initialized")
+            nn.init.kaiming_uniform_(self.router_hidden_weight, a=math.sqrt(5))
+            nn.init.kaiming_uniform_(self.row_router_out_weight, a=math.sqrt(5))
+            nn.init.kaiming_uniform_(self.column_router_out_weight, a=math.sqrt(5))
         if self.expert_weight is not None:
             for row in range(self.row_experts):
                 for block in range(self.column_blocks):
@@ -692,19 +814,95 @@ class CheckerboardSparseMoELinear(nn.Module):
                     nn.init.kaiming_uniform_(self.expert_down[row, block], a=math.sqrt(5))
                     nn.init.kaiming_uniform_(self.expert_up[row, block], a=math.sqrt(5))
         bound = 1 / math.sqrt(self.in_features)
-        nn.init.uniform_(self.row_router_bias, -bound, bound)
-        nn.init.uniform_(self.column_router_bias, -bound, bound)
+        if self.router_type == "linear":
+            if self.row_router_bias is None or self.column_router_bias is None:
+                raise RuntimeError("linear checkerboard router biases are not initialized")
+            nn.init.uniform_(self.row_router_bias, -bound, bound)
+            nn.init.uniform_(self.column_router_bias, -bound, bound)
+        else:
+            if (
+                self.router_hidden_bias is None
+                or self.row_router_out_bias is None
+                or self.column_router_out_bias is None
+            ):
+                raise RuntimeError("MLP checkerboard router biases are not initialized")
+            nn.init.uniform_(self.router_hidden_bias, -bound, bound)
+            nn.init.uniform_(self.row_router_out_bias, -bound, bound)
+            nn.init.uniform_(self.column_router_out_bias, -bound, bound)
+        if self.always_on_weight is not None:
+            nn.init.kaiming_uniform_(self.always_on_weight, a=math.sqrt(5))
+        if self.always_on_output is not None:
+            nn.init.kaiming_uniform_(self.always_on_output, a=math.sqrt(5))
+        if self.always_on_bias is not None:
+            nn.init.uniform_(self.always_on_bias, -bound, bound)
         if self.expert_bias is not None:
             nn.init.uniform_(self.expert_bias, -bound, bound)
 
+    def _router_logits(self, flat_input: Tensor) -> tuple[Tensor, Tensor]:
+        if self.router_type == "linear":
+            if (
+                self.row_router_weight is None
+                or self.row_router_bias is None
+                or self.column_router_weight is None
+                or self.column_router_bias is None
+            ):
+                raise RuntimeError("linear checkerboard router parameters are not initialized")
+            return (
+                F.linear(flat_input, self.row_router_weight, self.row_router_bias),
+                F.linear(flat_input, self.column_router_weight, self.column_router_bias),
+            )
+        if (
+            self.router_hidden_weight is None
+            or self.router_hidden_bias is None
+            or self.row_router_out_weight is None
+            or self.row_router_out_bias is None
+            or self.column_router_out_weight is None
+            or self.column_router_out_bias is None
+        ):
+            raise RuntimeError("MLP checkerboard router parameters are not initialized")
+        hidden = _activation(
+            self.activation,
+            F.linear(flat_input, self.router_hidden_weight, self.router_hidden_bias),
+        )
+        return (
+            F.linear(hidden, self.row_router_out_weight, self.row_router_out_bias),
+            F.linear(hidden, self.column_router_out_weight, self.column_router_out_bias),
+        )
+
+    def _always_on_output(self, flat_input: Tensor) -> Tensor | None:
+        if self.always_on_rows == 0:
+            return None
+        if (
+            self.always_on_weight is None
+            or self.always_on_bias is None
+            or self.always_on_output is None
+        ):
+            raise RuntimeError("always-on checkerboard rows are not initialized")
+        activations = _activation(
+            self.activation,
+            F.linear(flat_input, self.always_on_weight, self.always_on_bias),
+        )
+        return torch.matmul(activations, self.always_on_output).to(
+            dtype=_forward_output_dtype(flat_input)
+        )
+
     def route(self, input: Tensor) -> SparseRowColumnRouteInfo:
         flat_input, leading_shape = _validate_input(input, self.in_features)
-        row_logits = F.linear(flat_input, self.row_router_weight, self.row_router_bias)
+        row_logits, block_logits = self._router_logits(flat_input)
         row_values, row_ids = row_logits.topk(self.rows_per_token, dim=-1)
-        row_scores = F.softmax(row_values, dim=-1)
-        block_logits = F.linear(flat_input, self.column_router_weight, self.column_router_bias)
+        row_scores = _selected_softmax_ste_scores(
+            row_logits,
+            row_ids,
+            row_values,
+            forward="topk_softmax",
+        )
         block_values, block_ids = block_logits.topk(self.column_blocks_per_token, dim=-1)
-        block_scores = F.softmax(block_values, dim=-1)
+        block_scores = _selected_softmax_ste_scores(
+            block_logits,
+            block_ids,
+            block_values,
+            forward="topk_softmax",
+        )
         active_columns = self.column_blocks_per_token * self.block_size
         column_ids = _column_ids_from_block_ids(block_ids, self.block_size).reshape(
             flat_input.shape[0],
@@ -754,12 +952,16 @@ class CheckerboardSparseMoELinear(nn.Module):
         values = values * row_scores[:, :, None, None] * block_scores[:, None, :, None]
         block_values = values.sum(dim=1)
         block_values = block_values.to(dtype=_forward_output_dtype(input))
-        flat_output = torch.zeros(
-            flat_input.shape[0],
-            self.out_features,
-            device=input.device,
-            dtype=block_values.dtype,
-        )
+        always_output = self._always_on_output(flat_input)
+        if always_output is None:
+            flat_output = torch.zeros(
+                flat_input.shape[0],
+                self.out_features,
+                device=input.device,
+                dtype=block_values.dtype,
+            )
+        else:
+            flat_output = always_output.to(dtype=block_values.dtype)
         flat_output = _scatter_columns(flat_output, column_ids, block_values)
         return _finalize_forward_output(flat_output, leading_shape, input)
 
@@ -808,25 +1010,41 @@ class CheckerboardSparseMoELinear(nn.Module):
     def _base_diagnostics(self) -> dict[str, object]:
         active_columns = self.column_blocks_per_token * self.block_size
         active_experts = self.rows_per_token * self.column_blocks_per_token
+        if self.expert_rank is None:
+            expert_flops = 2 * self.block_size * self.in_features
+        else:
+            expert_flops = 2 * self.expert_rank * (self.in_features + self.block_size)
+        if self.router_type == "linear":
+            router_flops = 2 * (self.row_experts + self.column_blocks) * self.in_features
+        else:
+            router_hidden = self.router_hidden_features or 0
+            router_flops = 2 * router_hidden * self.in_features + 2 * (
+                self.row_experts + self.column_blocks
+            ) * router_hidden
+        always_on_flops = 2 * self.always_on_rows * (self.in_features + self.out_features)
         return {
             "mode": "checkerboard_moe",
-            "stored_rows": self.row_experts,
+            "stored_rows": self.row_experts + self.always_on_rows,
             "stored_columns": self.out_features,
             "column_blocks": self.column_blocks,
             "column_block_size": self.block_size,
             "factorized_experts": self.expert_rank is not None,
             "expert_rank": self.expert_rank or min(self.in_features, self.block_size),
-            "active_rows_per_token": self.rows_per_token,
+            "router_type": self.router_type,
+            "router_hidden_features": self.router_hidden_features or 0,
+            "always_on_rows": self.always_on_rows,
+            "active_rows_per_token": self.rows_per_token + self.always_on_rows,
+            "active_sparse_rows_per_token": self.rows_per_token,
+            "active_always_on_rows_per_token": self.always_on_rows,
             "active_column_blocks_per_token": self.column_blocks_per_token,
             "active_columns_per_token": active_columns,
             "active_intersections_per_token": active_experts,
-            "estimated_active_flops_per_token": 2
-            * active_experts
-            * self.block_size
-            * self.in_features,
-            "estimated_routing_flops_per_token": 2
-            * (self.row_experts + self.column_blocks)
-            * self.in_features,
+            "active_sparse_tiles_per_token": active_experts,
+            "estimated_active_flops_per_token": active_experts * expert_flops + always_on_flops,
+            "estimated_routing_flops_per_token": router_flops,
+            "estimated_total_flops_per_token": active_experts * expert_flops
+            + always_on_flops
+            + router_flops,
             "estimated_dense_flops_per_token": _dense_linear_flops(
                 self.in_features,
                 self.out_features,

@@ -162,5 +162,18 @@ def test_summarize_distill_hpo_rejects_test_accessed_child_summary(tmp_path) -> 
         encoding="utf-8",
     )
 
+    with pytest.raises(ValueError, match="not a completed successful distill trial"):
+        collect_distill_hpo_rows(tmp_path / "run_x")
+
+    _write_json(
+        trial / "trial_result.json",
+        {
+            "status": "succeeded",
+            "test_accessed": False,
+            "result": {"test_accessed": False, "summary": {"test_accessed": True}},
+            "overrides": {"case_name": "case_a"},
+        },
+    )
+
     with pytest.raises(ValueError, match="test_accessed=true"):
         collect_distill_hpo_rows(tmp_path / "run_x")
