@@ -51,6 +51,7 @@ LOSS_OVERRIDE_KEYS = {
 }
 STUDENT_OVERRIDE_KEYS = {
     "student_source": "source",
+    "distill_artifact_root": "distill_artifact_root",
     "baseline_parameter_budget_fraction": "baseline_parameter_budget_fraction",
     "baseline_budget_source": "baseline_budget_source",
     "baseline_budget_tolerance_frac": "baseline_budget_tolerance_frac",
