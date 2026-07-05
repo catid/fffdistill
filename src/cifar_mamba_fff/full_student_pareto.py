@@ -62,23 +62,39 @@ _COST_ALIASES: dict[str, tuple[str, ...]] = {
     ),
     "estimated_active_flops_per_token": (
         "estimated_active_flops_per_token",
+        "mean_estimated_active_flops_per_token",
         "active_flops_per_token",
+        "mean_total_active_flops_per_token",
+        "total_active_flops_per_token",
     ),
     "estimated_routing_flops_per_token": (
         "estimated_routing_flops_per_token",
+        "mean_estimated_routing_flops_per_token",
         "routing_flops_per_token",
+        "mean_total_routing_flops_per_token",
+        "total_routing_flops_per_token",
     ),
     "estimated_dense_flops_per_token": (
         "estimated_dense_flops_per_token",
+        "mean_estimated_dense_flops_per_token",
         "dense_flops_per_token",
+        "mean_total_dense_flops_per_token",
+        "total_dense_flops_per_token",
     ),
-    "stored_rows": ("stored_rows", "total_stored_rows"),
-    "effective_stored_rows": ("effective_stored_rows", "effective_trainable_rows"),
+    "stored_rows": ("stored_rows", "mean_stored_rows", "total_stored_rows"),
+    "effective_stored_rows": (
+        "effective_stored_rows",
+        "mean_effective_stored_rows",
+        "effective_trainable_rows",
+        "mean_effective_trainable_rows",
+    ),
     "tokens_per_second": (
         "tokens_per_second",
         "mean_tokens_per_second",
         "throughput_tokens_per_second",
         "throughput",
+        "mean_train_images_per_second",
+        "train_images_per_second",
     ),
 }
 

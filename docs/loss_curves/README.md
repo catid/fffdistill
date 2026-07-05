@@ -13,7 +13,7 @@ No synthetic or fallback data is added; rows without a usable metrics file are m
 - Compared rows: 75
 - Rows with epoch curves: 75
 - Rows without epoch curves: 0
-- Discovered `metrics.jsonl` files under `outputs`: 154
+- Discovered `metrics.jsonl` files under `outputs`: 180
 - Discovered `layer_metrics.jsonl` files under `outputs`: 191
 
 ## Compared Options

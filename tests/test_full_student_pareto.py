@@ -166,6 +166,44 @@ def test_write_csv_preserves_validation_only_blanks(tmp_path: Path) -> None:
     assert written[0]["test_accessed"] == "false"
 
 
+def test_generated_sublinear_summary_aliases_feed_cost_columns(tmp_path: Path) -> None:
+    generated_csv = tmp_path / "generated_sublinear_families.csv"
+    _write_csv(
+        generated_csv,
+        [
+            {
+                "family": "checkerboard_mlp_shared",
+                "seed_count": 3,
+                "seeds": "31001,31002,31003",
+                "mean_best_val_accuracy": 0.612,
+                "test_accessed": "false",
+                "mean_active_rows_per_token": 5,
+                "mean_total_active_flops_per_token": 1000,
+                "mean_total_routing_flops_per_token": 200,
+                "mean_total_dense_flops_per_token": 4000,
+                "mean_stored_rows": 64,
+                "mean_effective_stored_rows": 48,
+                "mean_train_images_per_second": 123.5,
+            }
+        ],
+    )
+
+    rows = build_full_student_pareto_rows([generated_csv])
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["method"] == "checkerboard_mlp_shared"
+    assert row["validation_accuracy"] == pytest.approx(0.612)
+    assert row["active_rows_per_token"] == pytest.approx(5)
+    assert row["estimated_active_flops_per_token"] == pytest.approx(1000)
+    assert row["estimated_routing_flops_per_token"] == pytest.approx(200)
+    assert row["estimated_dense_flops_per_token"] == pytest.approx(4000)
+    assert row["stored_rows"] == pytest.approx(64)
+    assert row["effective_stored_rows"] == pytest.approx(48)
+    assert row["tokens_per_second"] == pytest.approx(123.5)
+    assert row["test_accessed"] is False
+
+
 def test_cli_writes_pareto_csv_and_checks_expected_rows(tmp_path: Path) -> None:
     final_csv = tmp_path / "final_families.csv"
     out_csv = tmp_path / "pareto.csv"

@@ -5,6 +5,7 @@ import argparse
 import csv
 import json
 import math
+import tempfile
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -16,6 +17,9 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib import rcParams
+
+rcParams["svg.hashsalt"] = "cifar-mamba-fff-loss-curves"
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
@@ -492,6 +496,11 @@ def _render_svg(trials: list[TrialCurve], output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, format="svg", metadata={"Date": None})
     plt.close(fig)
+    text = output_path.read_text(encoding="utf-8")
+    output_path.write_text(
+        "\n".join(line.rstrip() for line in text.splitlines()) + "\n",
+        encoding="utf-8",
+    )
 
 
 def _write_manifest(trials: list[TrialCurve], output_path: Path) -> None:
@@ -628,7 +637,56 @@ def parse_args() -> argparse.Namespace:
         default=True,
         help="When discovering sources, include docs/*_validation_trials.csv pairs.",
     )
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="fail if committed loss-curve artifacts are stale",
+    )
     return parser.parse_args()
+
+
+def _write_outputs(
+    *,
+    trials: list[TrialCurve],
+    out_dir: Path,
+    outputs_root: Path,
+    sources: Sequence[LossCurveSource],
+) -> None:
+    _render_svg(trials, out_dir / "loss_curves.svg")
+    _write_manifest(trials, out_dir / "manifest.csv")
+    _write_readme(trials, out_dir / "README.md", outputs_root, sources)
+
+
+def _check_outputs(
+    *,
+    trials: list[TrialCurve],
+    out_dir: Path,
+    outputs_root: Path,
+    sources: Sequence[LossCurveSource],
+) -> int:
+    with tempfile.TemporaryDirectory(prefix="loss-curves-check-") as tmp:
+        tmp_dir = Path(tmp)
+        _write_outputs(
+            trials=trials,
+            out_dir=tmp_dir,
+            outputs_root=outputs_root,
+            sources=sources,
+        )
+        stale: list[str] = []
+        for name in ("loss_curves.svg", "manifest.csv", "README.md"):
+            path = out_dir / name
+            expected_path = tmp_dir / name
+            if not path.exists():
+                stale.append(f"missing: {_rel(path)}")
+                continue
+            if path.read_text(encoding="utf-8") != expected_path.read_text(encoding="utf-8"):
+                stale.append(f"stale: {_rel(path)}")
+        if stale:
+            for item in stale:
+                print(item)
+            return 1
+    print(f"loss-curve artifacts are current: {_rel(out_dir)}")
+    return 0
 
 
 def main() -> int:
@@ -641,9 +699,19 @@ def main() -> int:
     )
     trials = _load_trials(args.outputs_root, sources)
     out_dir = args.out_dir
-    _render_svg(trials, out_dir / "loss_curves.svg")
-    _write_manifest(trials, out_dir / "manifest.csv")
-    _write_readme(trials, out_dir / "README.md", args.outputs_root, sources)
+    if args.check:
+        return _check_outputs(
+            trials=trials,
+            out_dir=out_dir,
+            outputs_root=args.outputs_root,
+            sources=sources,
+        )
+    _write_outputs(
+        trials=trials,
+        out_dir=out_dir,
+        outputs_root=args.outputs_root,
+        sources=sources,
+    )
     available = sum(trial.has_curve for trial in trials)
     print(f"Rendered {available}/{len(trials)} available comparison trial curves to {_rel(out_dir)}")
     return 0
