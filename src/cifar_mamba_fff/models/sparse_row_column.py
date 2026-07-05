@@ -582,6 +582,7 @@ class CheckerboardSparseMoELinear(nn.Module):
     column_blocks: int
     column_blocks_per_token: int
     block_size: int
+    expert_rank: int | None
 
     def __init__(
         self,
@@ -592,6 +593,7 @@ class CheckerboardSparseMoELinear(nn.Module):
         column_blocks: int,
         column_blocks_per_token: int,
         *,
+        expert_rank: int | None = None,
         bias: bool = True,
         device: torch.device | str | None = None,
         dtype: torch.dtype | None = None,
@@ -601,6 +603,10 @@ class CheckerboardSparseMoELinear(nn.Module):
         _require_positive_int("row_experts", row_experts)
         _validate_topk("rows_per_token", rows_per_token, row_experts)
         _validate_column_blocks(out_features, column_blocks, column_blocks_per_token)
+        if expert_rank is not None:
+            _require_positive_int("expert_rank", expert_rank)
+            if expert_rank > min(in_features, out_features // column_blocks):
+                raise ValueError("expert_rank must be <= min(in_features, column block size)")
         _require_bool("bias", bias)
         self.in_features = in_features
         self.out_features = out_features
@@ -609,6 +615,7 @@ class CheckerboardSparseMoELinear(nn.Module):
         self.column_blocks = column_blocks
         self.column_blocks_per_token = column_blocks_per_token
         self.block_size = out_features // column_blocks
+        self.expert_rank = expert_rank
 
         factory_kwargs = {"device": device, "dtype": dtype}
         self.row_router_weight = nn.Parameter(
@@ -619,15 +626,38 @@ class CheckerboardSparseMoELinear(nn.Module):
             torch.empty(column_blocks, in_features, **factory_kwargs)
         )
         self.column_router_bias = nn.Parameter(torch.empty(column_blocks, **factory_kwargs))
-        self.expert_weight = nn.Parameter(
-            torch.empty(
-                row_experts,
-                column_blocks,
-                self.block_size,
-                in_features,
-                **factory_kwargs,
+        if expert_rank is None:
+            self.expert_weight = nn.Parameter(
+                torch.empty(
+                    row_experts,
+                    column_blocks,
+                    self.block_size,
+                    in_features,
+                    **factory_kwargs,
+                )
             )
-        )
+            self.register_parameter("expert_down", None)
+            self.register_parameter("expert_up", None)
+        else:
+            self.register_parameter("expert_weight", None)
+            self.expert_down = nn.Parameter(
+                torch.empty(
+                    row_experts,
+                    column_blocks,
+                    expert_rank,
+                    in_features,
+                    **factory_kwargs,
+                )
+            )
+            self.expert_up = nn.Parameter(
+                torch.empty(
+                    row_experts,
+                    column_blocks,
+                    self.block_size,
+                    expert_rank,
+                    **factory_kwargs,
+                )
+            )
         if bias:
             self.expert_bias = nn.Parameter(
                 torch.empty(row_experts, column_blocks, self.block_size, **factory_kwargs)
@@ -639,9 +669,17 @@ class CheckerboardSparseMoELinear(nn.Module):
     def reset_parameters(self) -> None:
         nn.init.kaiming_uniform_(self.row_router_weight, a=math.sqrt(5))
         nn.init.kaiming_uniform_(self.column_router_weight, a=math.sqrt(5))
-        for row in range(self.row_experts):
-            for block in range(self.column_blocks):
-                nn.init.kaiming_uniform_(self.expert_weight[row, block], a=math.sqrt(5))
+        if self.expert_weight is not None:
+            for row in range(self.row_experts):
+                for block in range(self.column_blocks):
+                    nn.init.kaiming_uniform_(self.expert_weight[row, block], a=math.sqrt(5))
+        else:
+            if self.expert_down is None or self.expert_up is None:
+                raise RuntimeError("factorized checkerboard experts are not initialized")
+            for row in range(self.row_experts):
+                for block in range(self.column_blocks):
+                    nn.init.kaiming_uniform_(self.expert_down[row, block], a=math.sqrt(5))
+                    nn.init.kaiming_uniform_(self.expert_up[row, block], a=math.sqrt(5))
         bound = 1 / math.sqrt(self.in_features)
         nn.init.uniform_(self.row_router_bias, -bound, bound)
         nn.init.uniform_(self.column_router_bias, -bound, bound)
@@ -689,8 +727,16 @@ class CheckerboardSparseMoELinear(nn.Module):
         )
         column_ids = _column_ids_from_block_ids(block_ids, self.block_size)
 
-        selected_weight = self.expert_weight[row_ids.unsqueeze(-1), block_ids.unsqueeze(1)]
-        values = torch.einsum("ni,nrcbi->nrcb", flat_input, selected_weight)
+        if self.expert_weight is not None:
+            selected_weight = self.expert_weight[row_ids.unsqueeze(-1), block_ids.unsqueeze(1)]
+            values = torch.einsum("ni,nrcbi->nrcb", flat_input, selected_weight)
+        else:
+            if self.expert_down is None or self.expert_up is None:
+                raise RuntimeError("factorized checkerboard experts are not initialized")
+            selected_down = self.expert_down[row_ids.unsqueeze(-1), block_ids.unsqueeze(1)]
+            selected_up = self.expert_up[row_ids.unsqueeze(-1), block_ids.unsqueeze(1)]
+            hidden = torch.einsum("ni,nrcki->nrck", flat_input, selected_down)
+            values = torch.einsum("nrck,nrcbk->nrcb", hidden, selected_up)
         if self.expert_bias is not None:
             selected_bias = self.expert_bias[row_ids.unsqueeze(-1), block_ids.unsqueeze(1)]
             values = values + selected_bias
@@ -757,6 +803,8 @@ class CheckerboardSparseMoELinear(nn.Module):
             "stored_columns": self.out_features,
             "column_blocks": self.column_blocks,
             "column_block_size": self.block_size,
+            "factorized_experts": self.expert_rank is not None,
+            "expert_rank": self.expert_rank or min(self.in_features, self.block_size),
             "active_rows_per_token": self.rows_per_token,
             "active_column_blocks_per_token": self.column_blocks_per_token,
             "active_columns_per_token": active_columns,

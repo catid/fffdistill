@@ -333,7 +333,10 @@ def utility_targeted_ce(
     logits_flat = (router_logits / temperature).reshape(-1, num_experts)
     if hard:
         targets_flat = utility.argmax(dim=-1).reshape(-1).detach()
-        return F.cross_entropy(logits_flat, targets_flat, reduction=reduction)
+        hard_loss = F.cross_entropy(logits_flat, targets_flat, reduction=reduction)
+        if reduction == "none":
+            return hard_loss.reshape(router_logits.shape[:-1])
+        return hard_loss
 
     targets_flat = torch.softmax(utility / utility_temperature, dim=-1).reshape(
         -1,
@@ -427,6 +430,8 @@ def utility_targeted_ce_loss(
     utility: Tensor,
     *,
     temperature: float = 1.0,
+    utility_temperature: float = 1.0,
+    hard: bool = True,
     reduction: Reduction = "mean",
 ) -> Tensor:
     """Alias for :func:`utility_targeted_ce`."""
@@ -435,6 +440,8 @@ def utility_targeted_ce_loss(
         router_logits,
         utility,
         temperature=temperature,
+        utility_temperature=utility_temperature,
+        hard=hard,
         reduction=reduction,
     )
 

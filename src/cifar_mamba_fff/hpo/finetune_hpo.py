@@ -60,6 +60,7 @@ STUDENT_OVERRIDE_KEYS = {
     "sparse_column_blocks": "sparse_column_blocks",
     "sparse_column_blocks_per_token": "sparse_column_blocks_per_token",
     "sparse_activation": "sparse_activation",
+    "checkerboard_expert_rank": "checkerboard_expert_rank",
 }
 IGNORED_RECORDED_KEYS = {"keep_locoprop_refits"}
 KNOWN_OVERRIDE_KEYS = (

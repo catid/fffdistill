@@ -369,14 +369,20 @@ def test_checkerboard_generated_baseline_launch_budget_matches_stage_f_shape() -
         "allow_matched_linear_baseline": True,
         "baseline_budget_source": "fff_config",
         "baseline_parameter_budget_fraction": 1.0,
-        "baseline_budget_tolerance_frac": 0.05,
         "sparse_row_banks": 2,
         "sparse_rows_per_token": 1,
         "sparse_column_blocks": 2,
         "sparse_column_blocks_per_token": 1,
     }
     config = parse_finetune_run_config(raw, quick_smoke=True)
-    teacher = RectangularConfigModel()
+    teacher = RectangularConfigModel({"in_features": 512, "out_features": 256})
+    reference_budget = sum(
+        parameter.numel()
+        for parameter in make_fff_replacement(
+            teacher.proj,
+            config=yaml.safe_load(Path("configs/fff_distill_stage_f.yaml").read_text(encoding="utf-8"))["fff"],
+        ).parameters()
+    )
 
     result = build_student_model(
         loaded_teacher_model=teacher,
@@ -386,12 +392,14 @@ def test_checkerboard_generated_baseline_launch_budget_matches_stage_f_shape() -
 
     assert result.source == "checkerboard_moe"
     assert result.replacement_count == 1
-    assert result.manifest[0].parameters == sum(
-        parameter.numel() for parameter in result.model.proj.parameters()
-    )
-    assert "budget_tolerance_frac=0.05" in result.manifest[0].replacement_path
-    x = torch.randn(2, 384)
-    assert result.model(x).shape == (2, 192)
+    assert isinstance(result.model.proj, CheckerboardSparseMoELinear)
+    assert result.model.proj.expert_rank is not None
+    assert result.manifest[0].parameters <= reference_budget
+    assert result.manifest[0].parameters == sum(parameter.numel() for parameter in result.model.proj.parameters())
+    assert "budget_tolerance_frac=0" in result.manifest[0].replacement_path
+    assert "'factorized_experts': True" in result.manifest[0].replacement_path
+    x = torch.randn(2, 512)
+    assert result.model(x).shape == (2, 256)
 
 
 def test_generated_official_fastfeedforward_build_path_replaces_eligible_linears() -> None:

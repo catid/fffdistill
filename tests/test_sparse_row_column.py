@@ -242,36 +242,40 @@ def test_sparse_row_column_optional_cuda_smoke() -> None:
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is not available")
 @pytest.mark.parametrize(
-    "module",
+    ("module_cls", "kwargs"),
     [
-        SparseColumnLinear(
-            8,
-            8,
-            column_blocks=2,
-            column_blocks_per_token=1,
-            device="cuda",
+        (
+            SparseColumnLinear,
+            {
+                "column_blocks": 2,
+                "column_blocks_per_token": 1,
+            },
         ),
-        CoupledRowColumnLinear(
-            8,
-            8,
-            row_banks=4,
-            rows_per_token=2,
-            column_blocks=2,
-            column_blocks_per_token=1,
-            device="cuda",
+        (
+            CoupledRowColumnLinear,
+            {
+                "row_banks": 4,
+                "rows_per_token": 2,
+                "column_blocks": 2,
+                "column_blocks_per_token": 1,
+            },
         ),
-        CheckerboardSparseMoELinear(
-            8,
-            8,
-            row_experts=2,
-            rows_per_token=1,
-            column_blocks=2,
-            column_blocks_per_token=1,
-            device="cuda",
+        (
+            CheckerboardSparseMoELinear,
+            {
+                "row_experts": 2,
+                "rows_per_token": 1,
+                "column_blocks": 2,
+                "column_blocks_per_token": 1,
+            },
         ),
     ],
 )
-def test_sparse_column_paths_support_cuda_bf16_autocast_backward(module: torch.nn.Module) -> None:
+def test_sparse_column_paths_support_cuda_bf16_autocast_backward(
+    module_cls: type[torch.nn.Module],
+    kwargs: dict[str, object],
+) -> None:
+    module = module_cls(8, 8, device="cuda", **kwargs)
     x = torch.randn(4, 8, device="cuda", requires_grad=True)
 
     with torch.autocast(device_type="cuda", dtype=torch.bfloat16):

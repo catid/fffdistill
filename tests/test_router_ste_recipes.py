@@ -24,6 +24,7 @@ from cifar_mamba_fff.losses.router_ste import (
     sigmoid_surrogate_ste,
     st_gumbel,
     utility_targeted_ce,
+    utility_targeted_ce_loss,
     utility_targeted_ste,
     validate_finite_tensor,
     vanilla_ste,
@@ -161,6 +162,32 @@ def test_utility_targeted_ce_can_use_soft_utility_targets() -> None:
     loss.backward()
     assert router_logits.grad is not None
     assert torch.isfinite(router_logits.grad).all()
+
+
+def test_utility_targeted_ce_none_shape_matches_for_hard_soft_and_alias() -> None:
+    torch.manual_seed(23)
+    router_logits = torch.randn(3, 5, 2)
+    utility = torch.randn(3, 5, 2)
+
+    hard_loss = utility_targeted_ce(router_logits, utility, hard=True, reduction="none")
+    soft_loss = utility_targeted_ce(
+        router_logits,
+        utility,
+        hard=False,
+        utility_temperature=0.5,
+        reduction="none",
+    )
+    alias_soft_loss = utility_targeted_ce_loss(
+        router_logits,
+        utility,
+        hard=False,
+        utility_temperature=0.5,
+        reduction="none",
+    )
+
+    assert hard_loss.shape == router_logits.shape[:-1]
+    assert soft_loss.shape == router_logits.shape[:-1]
+    torch.testing.assert_close(alias_soft_loss, soft_loss)
 
 
 def test_utility_targeted_ste_routes_to_utility_and_keeps_router_gradients() -> None:

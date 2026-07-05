@@ -148,6 +148,7 @@ class StudentAssemblyConfig:
     sparse_column_blocks: int = 4
     sparse_column_blocks_per_token: int = 1
     sparse_activation: str = "silu"
+    checkerboard_expert_rank: int | None = None
 
     def validate(self, *, quick_smoke: bool) -> None:
         valid_sources = {
@@ -215,6 +216,8 @@ class StudentAssemblyConfig:
             )
         if self.sparse_activation not in {"silu", "gelu", "relu"}:
             raise ValueError("student.sparse_activation must be one of: silu, gelu, relu")
+        if self.checkerboard_expert_rank is not None:
+            _positive_int("student.checkerboard_expert_rank", self.checkerboard_expert_rank)
 
 
 @dataclass(frozen=True)
@@ -811,6 +814,48 @@ def _official_fff_depth(fff_config: Mapping[str, object] | None) -> int:
     return int(fff_config.get("depth", 1))
 
 
+def _checkerboard_expert_rank_for_budget(
+    original: nn.Linear,
+    *,
+    config: StudentAssemblyConfig,
+    parameter_budget: int,
+) -> int | None:
+    if original.out_features % config.sparse_column_blocks != 0:
+        raise ValueError("checkerboard_moe requires out_features divisible by sparse_column_blocks")
+    block_size = original.out_features // config.sparse_column_blocks
+    max_rank = min(original.in_features, block_size)
+    if config.checkerboard_expert_rank is not None:
+        if config.checkerboard_expert_rank > max_rank:
+            raise ValueError(
+                "student.checkerboard_expert_rank must be <= min(in_features, column block size)"
+            )
+        return config.checkerboard_expert_rank
+
+    row_experts = config.sparse_row_banks
+    column_blocks = config.sparse_column_blocks
+    router_parameters = (
+        row_experts * original.in_features
+        + row_experts
+        + column_blocks * original.in_features
+        + column_blocks
+    )
+    bias_parameters = row_experts * column_blocks * block_size if original.bias is not None else 0
+    full_expert_parameters = row_experts * column_blocks * block_size * original.in_features
+    full_parameters = router_parameters + bias_parameters + full_expert_parameters
+    effective_budget = math.floor(parameter_budget * (1.0 + config.baseline_budget_tolerance_frac))
+    if full_parameters <= effective_budget:
+        return None
+
+    parameters_per_rank = row_experts * column_blocks * (original.in_features + block_size)
+    affordable_rank = (effective_budget - router_parameters - bias_parameters) // parameters_per_rank
+    if affordable_rank < 1:
+        raise RuntimeError(
+            "checkerboard_moe cannot fit even rank-1 factorized experts within "
+            f"budget {parameter_budget} and tolerance {config.baseline_budget_tolerance_frac:.6g}"
+        )
+    return min(max_rank, int(affordable_rank))
+
+
 def _make_generated_sublinear_replacement(
     original: nn.Linear,
     *,
@@ -867,6 +912,11 @@ def _make_generated_sublinear_replacement(
             dtype=original.weight.dtype,
         )
     elif source == "checkerboard_moe":
+        expert_rank = _checkerboard_expert_rank_for_budget(
+            original,
+            config=config,
+            parameter_budget=parameter_budget,
+        )
         replacement = CheckerboardSparseMoELinear(
             original.in_features,
             original.out_features,
@@ -874,6 +924,7 @@ def _make_generated_sublinear_replacement(
             rows_per_token=config.sparse_rows_per_token,
             column_blocks=config.sparse_column_blocks,
             column_blocks_per_token=config.sparse_column_blocks_per_token,
+            expert_rank=expert_rank,
             bias=original.bias is not None,
             device=original.weight.device,
             dtype=original.weight.dtype,
