@@ -14,6 +14,7 @@ checkpoints/
 wandb/
 remote_scratch/
 scratch/
+.scheduler_gpu_locks/
 
 outputs/*
 !outputs/.gitkeep
