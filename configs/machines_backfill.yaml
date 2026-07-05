@@ -1,0 +1,16 @@
+machines:
+  ripper_backfill:
+    host: ripper
+    workdir: /home/catid/fffdistill_backfill
+    gpus: 4
+    role: remote
+  foureyes_backfill2:
+    host: foureyes
+    workdir: /home/catid/fffdistill_backfill2
+    gpus: 4
+    role: remote
+  ai_backfill:
+    host: ai
+    workdir: /home/catid/fffdistill_backfill
+    gpus: 2
+    role: remote
