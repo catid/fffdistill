@@ -6,6 +6,7 @@ import csv
 import json
 import math
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean, stdev
@@ -21,7 +22,7 @@ DOCS = ROOT / "docs"
 OUTPUTS = ROOT / "outputs"
 OUT_DIR = DOCS / "loss_curves"
 
-SOURCES = (
+BUILTIN_SOURCES = (
     (
         "Stage H selected FFF students",
         DOCS / "stage_h_all_families_final_test_trials.csv",
@@ -47,6 +48,13 @@ PALETTE = (
     "#bcbd22",
     "#17becf",
 )
+
+
+@dataclass(frozen=True)
+class LossCurveSource:
+    suite: str
+    trials_csv: Path
+    families_csv: Path
 
 
 @dataclass(frozen=True)
@@ -113,6 +121,14 @@ def _as_float(value: Any) -> float | None:
     return parsed
 
 
+def _first_float(row: dict[str, str], keys: Sequence[str]) -> float | None:
+    for key in keys:
+        parsed = _as_float(row.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
 def _curve_records(path: Path) -> tuple[dict[str, Any], ...]:
     records = []
     for record in _read_jsonl(path):
@@ -162,6 +178,25 @@ def _score_metric_candidate(path: Path, checkpoint_path: str, suite: str) -> tup
     return score, text
 
 
+def _suite_short_name(suite: str) -> str:
+    lowered = suite.lower()
+    if "stage h" in lowered:
+        return "H"
+    if "t15" in lowered:
+        return "T15"
+    if "optimizer" in lowered or "wsd" in lowered:
+        return "opt"
+    if "bank" in lowered and "muon" in lowered:
+        return "bank"
+    if "generated" in lowered or "sublinear" in lowered:
+        return "sublinear"
+    words = [word for word in suite.replace("_", " ").replace("-", " ").split() if word]
+    if not words:
+        return "suite"
+    initials = "".join(word[0] for word in words[:3]).upper()
+    return initials[:8]
+
+
 def _find_metrics_path(
     row: dict[str, str],
     suite: str,
@@ -198,18 +233,110 @@ def _find_metrics_path(
     return None, "no metrics.jsonl found for case"
 
 
-def _load_trials(outputs_root: Path) -> list[TrialCurve]:
+def _source_label_from_trials_path(path: Path) -> str:
+    stem = path.stem
+    for suffix in ("_final_test_trials", "_validation_trials", "_trials"):
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
+    return stem.replace("_", " ").replace("-", " ").strip().title()
+
+
+def _parse_source_spec(spec: str) -> LossCurveSource:
+    parts = spec.split(":", 2)
+    if len(parts) != 3:
+        raise ValueError(
+            "--source must use the format 'Label:docs/trials.csv:docs/families.csv'"
+        )
+    label, trials_csv, families_csv = parts
+    if not label.strip():
+        raise ValueError("--source label must not be empty")
+    trials_path = Path(trials_csv)
+    families_path = Path(families_csv)
+    if not trials_path.is_absolute():
+        trials_path = ROOT / trials_path
+    if not families_path.is_absolute():
+        families_path = ROOT / families_path
+    return LossCurveSource(label.strip(), trials_path, families_path)
+
+
+def _discover_source_pairs(
+    docs_dir: Path,
+    *,
+    include_validation: bool,
+) -> list[LossCurveSource]:
+    patterns = ["*_final_test_trials.csv"]
+    if include_validation:
+        patterns.append("*_validation_trials.csv")
+    discovered: list[LossCurveSource] = []
+    for pattern in patterns:
+        for trials_csv in sorted(docs_dir.glob(pattern)):
+            families_csv = trials_csv.with_name(
+                trials_csv.name.replace("_trials.csv", "_families.csv")
+            )
+            if not families_csv.exists():
+                continue
+            discovered.append(
+                LossCurveSource(
+                    _source_label_from_trials_path(trials_csv),
+                    trials_csv,
+                    families_csv,
+                )
+            )
+    return discovered
+
+
+def _resolve_sources(
+    *,
+    docs_dir: Path,
+    source_specs: Sequence[str],
+    discover_extra_sources: bool,
+    include_validation: bool,
+) -> tuple[LossCurveSource, ...]:
+    sources: list[LossCurveSource] = [
+        LossCurveSource(label, trials_csv, families_csv)
+        for label, trials_csv, families_csv in BUILTIN_SOURCES
+    ]
+    sources.extend(_parse_source_spec(spec) for spec in source_specs)
+    if discover_extra_sources:
+        sources.extend(
+            _discover_source_pairs(
+                docs_dir,
+                include_validation=include_validation,
+            )
+        )
+    deduped: list[LossCurveSource] = []
+    seen: set[tuple[Path, Path]] = set()
+    for source in sources:
+        key = (source.trials_csv.resolve(), source.families_csv.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(source)
+    return tuple(deduped)
+
+
+def _load_trials(outputs_root: Path, sources: Sequence[LossCurveSource]) -> list[TrialCurve]:
     metric_index = _indexed_metric_paths(outputs_root)
     trials: list[TrialCurve] = []
-    for suite, trials_csv, families_csv in SOURCES:
-        rows = _read_csv(trials_csv)
-        family_rows = _read_csv(families_csv)
+    for source in sources:
+        rows = _read_csv(source.trials_csv)
+        family_rows = _read_csv(source.families_csv)
         if not rows:
-            raise ValueError(f"required loss-curve source CSV has no rows: {_rel(trials_csv)}")
+            raise ValueError(
+                f"required loss-curve source CSV has no rows: {_rel(source.trials_csv)}"
+            )
         if not family_rows:
-            raise ValueError(f"required loss-curve family CSV has no rows: {_rel(families_csv)}")
+            raise ValueError(
+                f"required loss-curve family CSV has no rows: {_rel(source.families_csv)}"
+            )
         for row in rows:
-            metrics_path, source_note = _find_metrics_path(row, suite, outputs_root, metric_index)
+            metrics_path, source_note = _find_metrics_path(
+                row,
+                source.suite,
+                outputs_root,
+                metric_index,
+            )
             records: tuple[dict[str, Any], ...] = ()
             notes = source_note
             if metrics_path is not None:
@@ -223,16 +350,22 @@ def _load_trials(outputs_root: Path) -> list[TrialCurve]:
                 metrics_path = None
             trials.append(
                 TrialCurve(
-                    suite=suite,
-                    source_csv=trials_csv,
+                    suite=source.suite,
+                    source_csv=source.trials_csv,
                     family=row.get("family", ""),
                     case=row.get("case", ""),
                     seed=row.get("seed", ""),
                     checkpoint_path=row.get("checkpoint_path", ""),
                     metrics_path=metrics_path,
                     records=records,
-                    selected_val_accuracy=_as_float(row.get("selected_val_accuracy")),
-                    test_accuracy=_as_float(row.get("test_accuracy")),
+                    selected_val_accuracy=_first_float(
+                        row,
+                        ("selected_val_accuracy", "best_val_accuracy", "val_accuracy"),
+                    ),
+                    test_accuracy=_first_float(
+                        row,
+                        ("test_accuracy", "final_test_accuracy"),
+                    ),
                     test_loss=_as_float(row.get("test_loss")),
                     notes=notes,
                 )
@@ -263,8 +396,8 @@ def _plot_mean_curve(ax: Any, trials: list[TrialCurve], field: str, ylabel: str)
         epochs = sorted(values[key])
         means = [mean(values[key][epoch]) for epoch in epochs]
         stds = [stdev(values[key][epoch]) if len(values[key][epoch]) > 1 else 0.0 for epoch in epochs]
-        label = f"{family} ({'H' if suite.startswith('Stage') else 'T15'})"
-        linestyle = "-" if suite.startswith("T15") else "--"
+        label = f"{family} ({_suite_short_name(suite)})"
+        linestyle = "-" if "baseline" in suite.lower() or suite.startswith("T15") else "--"
         color = colors[key]
         ax.plot(epochs, means, marker="o", linewidth=2.4, linestyle=linestyle, color=color, label=label)
         if any(stds):
@@ -281,29 +414,46 @@ def _plot_final_accuracy(ax: Any, trials: list[TrialCurve]) -> None:
     for trial in trials:
         by_family[(trial.suite, trial.family)].append(trial)
     keys = sorted(by_family)
-    labels = [f"{family}\n{'H' if suite.startswith('Stage') else 'T15'}" for suite, family in keys]
-    val_means = [
-        mean([v for v in (trial.selected_val_accuracy for trial in by_family[key]) if v is not None])
-        for key in keys
-    ]
-    test_means = [
-        mean([v for v in (trial.test_accuracy for trial in by_family[key]) if v is not None])
-        for key in keys
-    ]
+    labels = [f"{family}\n{_suite_short_name(suite)}" for suite, family in keys]
+    val_means: list[float | None] = []
+    test_means: list[float | None] = []
+    for key in keys:
+        val_values = [v for v in (trial.selected_val_accuracy for trial in by_family[key]) if v is not None]
+        test_values = [v for v in (trial.test_accuracy for trial in by_family[key]) if v is not None]
+        val_means.append(mean(val_values) if val_values else None)
+        test_means.append(mean(test_values) if test_values else None)
     x = list(range(len(keys)))
     width = 0.36
-    ax.bar([pos - width / 2 for pos in x], val_means, width=width, label="selected val", color="#6b7280")
-    ax.bar([pos + width / 2 for pos in x], test_means, width=width, label="final test", color="#2563eb")
+    ax.bar(
+        [pos - width / 2 for pos in x],
+        [value if value is not None else math.nan for value in val_means],
+        width=width,
+        label="selected/best val",
+        color="#6b7280",
+    )
+    ax.bar(
+        [pos + width / 2 for pos in x],
+        [value if value is not None else math.nan for value in test_means],
+        width=width,
+        label="final test",
+        color="#2563eb",
+    )
     ax.set_xticks(x, labels, rotation=30, ha="right")
     ax.set_ylabel("Accuracy")
-    ax.set_ylim(max(0.0, min(test_means + val_means) - 0.04), min(1.0, max(test_means + val_means) + 0.02))
+    finite_values = [value for value in [*val_means, *test_means] if value is not None]
+    if finite_values:
+        ax.set_ylim(max(0.0, min(finite_values) - 0.04), min(1.0, max(finite_values) + 0.02))
     ax.grid(True, axis="y", alpha=0.25)
     ax.legend(loc="lower right")
 
 
 def _render_svg(trials: list[TrialCurve], output_path: Path) -> None:
     available = [trial for trial in trials if trial.has_curve]
-    fig, axes = plt.subplots(2, 2, figsize=(18, 12), constrained_layout=True)
+    suite_count = len({trial.suite for trial in trials})
+    family_count = len({(trial.suite, trial.family) for trial in trials})
+    width = max(20, min(34, 14 + family_count * 0.45))
+    height = max(13, min(24, 10 + suite_count * 0.9))
+    fig, axes = plt.subplots(2, 2, figsize=(width, height), constrained_layout=True)
     fig.suptitle(
         "Final-selected CIFAR-10 Mamba/FFF loss curves from real experiment logs",
         fontsize=18,
@@ -314,7 +464,7 @@ def _render_svg(trials: list[TrialCurve], output_path: Path) -> None:
         0.965,
         (
             "Curves are per-family means across available seeds; shaded bands are one sample std. "
-            "Stage H lines are dashed, T15 baseline lines are solid."
+            "Validation-only suites contribute validation bars but no final-test bars."
         ),
         ha="center",
         va="top",
@@ -398,24 +548,29 @@ def _family_summary(trials: list[TrialCurve]) -> list[tuple[str, str, int, int, 
     return rows
 
 
-def _write_readme(trials: list[TrialCurve], output_path: Path, outputs_root: Path) -> None:
+def _write_readme(
+    trials: list[TrialCurve],
+    output_path: Path,
+    outputs_root: Path,
+    sources: Sequence[LossCurveSource],
+) -> None:
     available = sum(trial.has_curve for trial in trials)
     metric_count = len(list(outputs_root.glob("**/metrics.jsonl"))) if outputs_root.exists() else 0
     layer_metric_count = len(list(outputs_root.glob("**/layer_metrics.jsonl"))) if outputs_root.exists() else 0
     lines = [
         "# Loss Curves",
         "",
-        "Generated by `python docs/render_loss_curves.py` from committed final-summary CSVs and ignored real experiment logs under `outputs/`.",
+        "Generated by `python docs/render_loss_curves.py` from committed final/validation summary CSVs and ignored real experiment logs under `outputs/`.",
         "No synthetic or fallback data is added; rows without a usable metrics file are marked unavailable in `manifest.csv`.",
         "",
         "## Files",
         "",
-        "- `loss_curves.svg`: large matplotlib SVG with validation loss, training loss, validation accuracy, and final-test accuracy panels.",
-        "- `manifest.csv`: per compared final-eval row, including metrics source path and availability.",
+        "- `loss_curves.svg`: large matplotlib SVG with validation loss, training loss, validation accuracy, and validation/final-test accuracy panels.",
+        "- `manifest.csv`: per compared row, including metrics source path and availability.",
         "",
         "## Scan Summary",
         "",
-        f"- Compared final-eval rows: {len(trials)}",
+        f"- Compared rows: {len(trials)}",
         f"- Rows with epoch curves: {available}",
         f"- Rows without epoch curves: {len(trials) - available}",
         f"- Discovered `metrics.jsonl` files under `{_rel(outputs_root)}`: {metric_count}",
@@ -435,8 +590,10 @@ def _write_readme(trials: list[TrialCurve], output_path: Path, outputs_root: Pat
             "",
         ]
     )
-    for suite, trials_csv, families_csv in SOURCES:
-        lines.append(f"- {suite}: `{_rel(trials_csv)}` and `{_rel(families_csv)}`")
+    for source in sources:
+        lines.append(
+            f"- {source.suite}: `{_rel(source.trials_csv)}` and `{_rel(source.families_csv)}`"
+        )
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -445,18 +602,43 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--outputs-root", type=Path, default=OUTPUTS)
     parser.add_argument("--out-dir", type=Path, default=OUT_DIR)
+    parser.add_argument(
+        "--source",
+        action="append",
+        default=[],
+        metavar="LABEL:TRIALS_CSV:FAMILIES_CSV",
+        help="Additional explicit source pair. May be repeated.",
+    )
+    parser.add_argument(
+        "--discover-extra-sources",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Auto-include docs/*_final_test_trials.csv and validation trial/family pairs.",
+    )
+    parser.add_argument(
+        "--include-validation",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="When discovering sources, include docs/*_validation_trials.csv pairs.",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
-    trials = _load_trials(args.outputs_root)
+    sources = _resolve_sources(
+        docs_dir=DOCS,
+        source_specs=args.source,
+        discover_extra_sources=args.discover_extra_sources,
+        include_validation=args.include_validation,
+    )
+    trials = _load_trials(args.outputs_root, sources)
     out_dir = args.out_dir
     _render_svg(trials, out_dir / "loss_curves.svg")
     _write_manifest(trials, out_dir / "manifest.csv")
-    _write_readme(trials, out_dir / "README.md", args.outputs_root)
+    _write_readme(trials, out_dir / "README.md", args.outputs_root, sources)
     available = sum(trial.has_curve for trial in trials)
-    print(f"Rendered {available}/{len(trials)} available final-selected trial curves to {_rel(out_dir)}")
+    print(f"Rendered {available}/{len(trials)} available comparison trial curves to {_rel(out_dir)}")
     return 0
 
 
