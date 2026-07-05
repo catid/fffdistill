@@ -46,6 +46,8 @@ TRIAL_COLLECTED_ARTIFACT_NAMES = (
     "run_context.json",
     "metrics_summary.json",
     "metrics.jsonl",
+    "student_assembly_manifest.json",
+    "student_assembly_manifest.csv",
     "distill_config.yaml",
     "trial_result.json",
     "distill_summary.json",
