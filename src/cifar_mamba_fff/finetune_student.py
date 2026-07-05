@@ -141,6 +141,7 @@ class StudentAssemblyConfig:
     allow_dense_copy: bool = False
     baseline_parameter_budget_fraction: float = 0.25
     baseline_budget_source: str = "dense_fraction"
+    baseline_budget_tolerance_frac: float = 0.0
     allow_matched_linear_baseline: bool = False
     sparse_row_banks: int = 32
     sparse_rows_per_token: int = 4
@@ -174,6 +175,11 @@ class StudentAssemblyConfig:
             raise ValueError("student.baseline_parameter_budget_fraction must be in (0, 1]")
         if self.baseline_budget_source not in {"dense_fraction", "fff_config"}:
             raise ValueError("student.baseline_budget_source must be one of: dense_fraction, fff_config")
+        if (
+            not math.isfinite(float(self.baseline_budget_tolerance_frac))
+            or self.baseline_budget_tolerance_frac < 0.0
+        ):
+            raise ValueError("student.baseline_budget_tolerance_frac must be finite and non-negative")
         if self.source == "distill_artifacts" and not quick_smoke and self.distill_artifact_root is None:
             raise ValueError("student.distill_artifact_root is required for distill_artifacts")
         if self.source == "student_checkpoint" and not quick_smoke and self.student_checkpoint is None:
@@ -878,6 +884,7 @@ def _make_generated_sublinear_replacement(
     diagnostics = replacement.diagnostics() if hasattr(replacement, "diagnostics") else {}
     return replacement, (
         f"{source}:budget={parameter_budget}:row_banks={config.sparse_row_banks}:"
+        f"budget_tolerance_frac={config.baseline_budget_tolerance_frac:.6g}:"
         f"rows_per_token={config.sparse_rows_per_token}:"
         f"column_blocks={config.sparse_column_blocks}:"
         f"column_blocks_per_token={config.sparse_column_blocks_per_token}:"
@@ -928,6 +935,16 @@ def assemble_generated_sublinear_baseline_student(
             fff_config=fff_config,
             config=config,
         )
+        replacement_parameters = sum(parameter.numel() for parameter in replacement.parameters())
+        max_parameters = math.floor(
+            parameter_budget * (1.0 + config.baseline_budget_tolerance_frac)
+        )
+        if replacement_parameters > max_parameters:
+            raise RuntimeError(
+                f"{config.source} replacement for {report.name!r} has {replacement_parameters} "
+                f"parameters, exceeding budget {parameter_budget} with tolerance "
+                f"{config.baseline_budget_tolerance_frac:.6g} (max {max_parameters})"
+            )
         replace_module(model, report.name, replacement)
         manifest.append(
             AssemblyRecord(
@@ -935,7 +952,7 @@ def assemble_generated_sublinear_baseline_student(
                 replacement_path=f"generated:{descriptor}",
                 in_features=report.in_features,
                 out_features=report.out_features,
-                parameters=sum(parameter.numel() for parameter in replacement.parameters()),
+                parameters=replacement_parameters,
                 final_normalized_mse=None,
                 final_cosine_similarity=None,
             )

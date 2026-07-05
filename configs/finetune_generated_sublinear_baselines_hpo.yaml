@@ -74,6 +74,11 @@ cases:
     <<: *official_31001
     name: checkerboard_moe_seed31001
     student_source: checkerboard_moe
+    # Checkerboard routers/output blocks have fixed overhead that is about 4%
+    # above the Stage-F FFF reference budget for the 384->192 Mamba linears.
+    # Keep this explicit in manifests/fairness tables instead of silently relaxing
+    # all generated baselines.
+    baseline_budget_tolerance_frac: 0.05
     sparse_row_banks: 2
     sparse_rows_per_token: 1
     sparse_column_blocks: 2

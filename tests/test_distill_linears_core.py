@@ -1089,6 +1089,75 @@ def test_router_auxiliary_recipes_send_gradients_to_route_weights(recipe: str) -
     assert layer.route_weight.grad.abs().sum() > 0.0
 
 
+def test_router_auxiliary_utility_targeted_forwards_soft_target_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    torch.manual_seed(17)
+    layer = FFFLinear(
+        6,
+        4,
+        depth=2,
+        shared_rows=2,
+        route_rows=2,
+        leaf_rows=2,
+        hard_routing=True,
+        route_row_role="routing_only",
+        route_rows_output_count=0,
+        bias=False,
+    )
+    x = torch.randn(24, 6)
+    y = torch.randn(24, 4)
+    calls: list[dict[str, object]] = []
+
+    def fake_utility_targeted_ce(
+        logits: torch.Tensor,
+        utility: torch.Tensor,
+        *,
+        temperature: float = 1.0,
+        utility_temperature: float = 1.0,
+        hard: bool = True,
+    ) -> torch.Tensor:
+        calls.append(
+            {
+                "temperature": temperature,
+                "utility_temperature": utility_temperature,
+                "hard": hard,
+                "logits_shape": tuple(logits.shape),
+                "utility_shape": tuple(utility.shape),
+            }
+        )
+        return logits.square().mean() + utility.detach().square().mean() * 0.0
+
+    monkeypatch.setattr(distill_linears, "utility_targeted_ce", fake_utility_targeted_ce)
+
+    loss, diagnostics = _router_auxiliary_loss(
+        layer,
+        x,
+        y,
+        RouterDistillConfig(
+            recipe="utility_targeted_ste",
+            loss_coeff=0.7,
+            temperature=0.9,
+            utility_temperature=2.5,
+            utility_hard=False,
+        ),
+    )
+    loss.backward()
+
+    assert calls == [
+        {
+            "temperature": pytest.approx(0.9),
+            "utility_temperature": pytest.approx(2.5),
+            "hard": False,
+            "logits_shape": (72, 2),
+            "utility_shape": (72, 2),
+        }
+    ]
+    assert diagnostics["recipe"] == "utility_targeted_ste"
+    assert diagnostics["loss_name"] == "utility_targeted_ce"
+    assert layer.route_weight.grad is not None
+    assert torch.isfinite(layer.route_weight.grad).all()
+    assert layer.route_weight.grad.abs().sum() > 0.0
+
+
 def test_balance_auxiliary_loss_sends_gradients_to_route_weights() -> None:
     torch.manual_seed(16)
     layer = FFFLinear(

@@ -238,3 +238,48 @@ def test_sparse_row_column_optional_cuda_smoke() -> None:
     assert y.shape == (3, 8)
     assert torch.isfinite(y).all()
     assert diagnostics["expert_usage"].device.type == "cuda"
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA is not available")
+@pytest.mark.parametrize(
+    "module",
+    [
+        SparseColumnLinear(
+            8,
+            8,
+            column_blocks=2,
+            column_blocks_per_token=1,
+            device="cuda",
+        ),
+        CoupledRowColumnLinear(
+            8,
+            8,
+            row_banks=4,
+            rows_per_token=2,
+            column_blocks=2,
+            column_blocks_per_token=1,
+            device="cuda",
+        ),
+        CheckerboardSparseMoELinear(
+            8,
+            8,
+            row_experts=2,
+            rows_per_token=1,
+            column_blocks=2,
+            column_blocks_per_token=1,
+            device="cuda",
+        ),
+    ],
+)
+def test_sparse_column_paths_support_cuda_bf16_autocast_backward(module: torch.nn.Module) -> None:
+    x = torch.randn(4, 8, device="cuda", requires_grad=True)
+
+    with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+        y = module(x)
+        loss = y.float().square().mean()
+    loss.backward()
+
+    assert y.dtype == torch.bfloat16
+    assert torch.isfinite(y).all()
+    assert x.grad is not None
+    assert torch.isfinite(x.grad).all()

@@ -56,6 +56,18 @@ class TinyConfigModel(nn.Module):
         return self.proj(x)
 
 
+class RectangularConfigModel(nn.Module):
+    def __init__(self, config: dict[str, int] | None = None) -> None:
+        super().__init__()
+        self.config = config or {"in_features": 384, "out_features": 192}
+        in_features = int(self.config["in_features"])
+        out_features = int(self.config["out_features"])
+        self.proj = nn.Linear(in_features, out_features)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.proj(x)
+
+
 def _minimal_config(tmp_path: Path) -> dict[str, object]:
     return {
         "seed": 7,
@@ -249,6 +261,7 @@ def test_generated_baseline_hpo_overrides_student_section(tmp_path: Path) -> Non
                 "allow_matched_linear_baseline": True,
                 "baseline_budget_source": "dense_fraction",
                 "baseline_parameter_budget_fraction": 0.5,
+                "baseline_budget_tolerance_frac": 0.25,
                 "sparse_row_banks": 16,
                 "sparse_rows_per_token": 2,
                 "sparse_activation": "gelu",
@@ -269,6 +282,7 @@ def test_generated_baseline_hpo_overrides_student_section(tmp_path: Path) -> Non
     assert trial_config["student"]["source"] == "sparse_row"
     assert trial_config["student"]["allow_matched_linear_baseline"] is True
     assert trial_config["student"]["baseline_budget_source"] == "dense_fraction"
+    assert trial_config["student"]["baseline_budget_tolerance_frac"] == pytest.approx(0.25)
     assert trial_config["student"]["sparse_row_banks"] == 16
     assert trial_config["student"]["sparse_rows_per_token"] == 2
     assert trial_config["student"]["sparse_activation"] == "gelu"
@@ -295,6 +309,9 @@ def test_generated_sparse_baseline_build_paths_replace_eligible_linears(
         "allow_matched_linear_baseline": True,
         "baseline_budget_source": "dense_fraction",
         "baseline_parameter_budget_fraction": 1.0,
+        # Tiny synthetic 8x8 layers are dominated by router/output-bank overhead.
+        # The strict budget guard is tested separately below.
+        "baseline_budget_tolerance_frac": 5.0,
         "sparse_row_banks": 4,
         "sparse_rows_per_token": 2,
         "sparse_column_blocks": 4,
@@ -316,6 +333,65 @@ def test_generated_sparse_baseline_build_paths_replace_eligible_linears(
     assert result.manifest[0].replacement_path.startswith(f"generated:{source}")
     x = torch.randn(3, 8)
     assert torch.isfinite(result.model(x)).all()
+
+
+def test_generated_sparse_baseline_rejects_over_budget_replacement() -> None:
+    raw = _minimal_config(Path("/tmp"))
+    raw["student"] = {
+        "source": "sparse_row",
+        "min_in_features": 1,
+        "min_out_features": 1,
+        "allow_matched_linear_baseline": True,
+        "baseline_budget_source": "dense_fraction",
+        "baseline_parameter_budget_fraction": 1.0,
+        "baseline_budget_tolerance_frac": 0.0,
+        "sparse_row_banks": 4,
+        "sparse_rows_per_token": 2,
+    }
+    config = parse_finetune_run_config(raw, quick_smoke=True)
+    teacher = TinyConfigModel({"width": 8})
+
+    with pytest.raises(RuntimeError, match="exceeding budget"):
+        build_student_model(
+            loaded_teacher_model=teacher,
+            config=config,
+            device=torch.device("cpu"),
+        )
+
+
+def test_checkerboard_generated_baseline_launch_budget_matches_stage_f_shape() -> None:
+    raw = _minimal_config(Path("/tmp"))
+    raw["student"] = {
+        "source": "checkerboard_moe",
+        "distill_config": "configs/fff_distill_stage_f.yaml",
+        "min_in_features": 1,
+        "min_out_features": 1,
+        "allow_matched_linear_baseline": True,
+        "baseline_budget_source": "fff_config",
+        "baseline_parameter_budget_fraction": 1.0,
+        "baseline_budget_tolerance_frac": 0.05,
+        "sparse_row_banks": 2,
+        "sparse_rows_per_token": 1,
+        "sparse_column_blocks": 2,
+        "sparse_column_blocks_per_token": 1,
+    }
+    config = parse_finetune_run_config(raw, quick_smoke=True)
+    teacher = RectangularConfigModel()
+
+    result = build_student_model(
+        loaded_teacher_model=teacher,
+        config=config,
+        device=torch.device("cpu"),
+    )
+
+    assert result.source == "checkerboard_moe"
+    assert result.replacement_count == 1
+    assert result.manifest[0].parameters == sum(
+        parameter.numel() for parameter in result.model.proj.parameters()
+    )
+    assert "budget_tolerance_frac=0.05" in result.manifest[0].replacement_path
+    x = torch.randn(2, 384)
+    assert result.model(x).shape == (2, 192)
 
 
 def test_generated_official_fastfeedforward_build_path_replaces_eligible_linears() -> None:

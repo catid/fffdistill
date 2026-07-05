@@ -91,6 +91,34 @@ def _scatter_columns(flat_output: Tensor, column_ids: Tensor, values: Tensor) ->
     )
 
 
+def _active_autocast_dtype(device_type: str) -> torch.dtype | None:
+    try:
+        enabled = torch.is_autocast_enabled(device_type)
+    except TypeError:  # pragma: no cover - compatibility with older torch APIs
+        enabled = device_type == "cuda" and torch.is_autocast_enabled()
+    if not enabled:
+        return None
+    try:
+        return torch.get_autocast_dtype(device_type)
+    except (AttributeError, TypeError):  # pragma: no cover - compatibility fallback
+        if device_type == "cuda":
+            return torch.get_autocast_gpu_dtype()
+        if device_type == "cpu":
+            return torch.get_autocast_cpu_dtype()
+        return None
+
+
+def _forward_output_dtype(input: Tensor) -> torch.dtype:
+    return _active_autocast_dtype(input.device.type) or input.dtype
+
+
+def _finalize_forward_output(flat_output: Tensor, leading_shape: torch.Size, input: Tensor) -> Tensor:
+    target_dtype = _forward_output_dtype(input)
+    if flat_output.dtype != target_dtype:
+        flat_output = flat_output.to(dtype=target_dtype)
+    return flat_output.reshape(*leading_shape, flat_output.shape[-1]).contiguous()
+
+
 def _dense_linear_flops(in_features: int, out_features: int) -> int:
     return 2 * in_features * out_features
 
@@ -183,7 +211,7 @@ class SparseRowLinear(nn.Module):
         flat_output = torch.einsum("nr,nro->no", row_scores, selected_output)
         if self.bias is not None:
             flat_output = flat_output + self.bias
-        return flat_output.reshape(*leading_shape, self.out_features)
+        return _finalize_forward_output(flat_output, leading_shape, input)
 
     def diagnostics(self, input: Tensor | None = None) -> dict[str, object]:
         if input is None:
@@ -316,14 +344,15 @@ class SparseColumnLinear(nn.Module):
         values = torch.einsum("ni,nci->nc", flat_input, selected_weight)
         if self.bias is not None:
             values = values + self.bias[column_ids]
+        values = values.to(dtype=_forward_output_dtype(input))
         flat_output = torch.zeros(
             flat_input.shape[0],
             self.out_features,
             device=input.device,
-            dtype=input.dtype,
+            dtype=values.dtype,
         )
         flat_output = _scatter_columns(flat_output, column_ids, values)
-        return flat_output.reshape(*leading_shape, self.out_features)
+        return _finalize_forward_output(flat_output, leading_shape, input)
 
     def diagnostics(self, input: Tensor | None = None) -> dict[str, object]:
         if input is None:
@@ -479,14 +508,15 @@ class CoupledRowColumnLinear(nn.Module):
         values = torch.einsum("nr,nrc->nc", row_scores, selected_columns)
         if self.bias is not None:
             values = values + self.bias[column_ids]
+        values = values.to(dtype=_forward_output_dtype(input))
         flat_output = torch.zeros(
             flat_input.shape[0],
             self.out_features,
             device=input.device,
-            dtype=input.dtype,
+            dtype=values.dtype,
         )
         flat_output = _scatter_columns(flat_output, column_ids, values)
-        return flat_output.reshape(*leading_shape, self.out_features)
+        return _finalize_forward_output(flat_output, leading_shape, input)
 
     def diagnostics(self, input: Tensor | None = None) -> dict[str, object]:
         if input is None:
@@ -666,14 +696,15 @@ class CheckerboardSparseMoELinear(nn.Module):
             values = values + selected_bias
         values = values * row_scores[:, :, None, None] * block_scores[:, None, :, None]
         block_values = values.sum(dim=1)
+        block_values = block_values.to(dtype=_forward_output_dtype(input))
         flat_output = torch.zeros(
             flat_input.shape[0],
             self.out_features,
             device=input.device,
-            dtype=input.dtype,
+            dtype=block_values.dtype,
         )
         flat_output = _scatter_columns(flat_output, column_ids, block_values)
-        return flat_output.reshape(*leading_shape, self.out_features)
+        return _finalize_forward_output(flat_output, leading_shape, input)
 
     def diagnostics(self, input: Tensor | None = None) -> dict[str, object]:
         if input is None:

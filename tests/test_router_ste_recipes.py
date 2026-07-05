@@ -144,6 +144,25 @@ def test_utility_targeted_ce_and_hard_em_targets() -> None:
     assert torch.isfinite(router_logits.grad).all()
 
 
+def test_utility_targeted_ce_can_use_soft_utility_targets() -> None:
+    router_logits = torch.tensor([[0.0, 1.0, -0.5]], requires_grad=True)
+    utility = torch.tensor([[0.1, 0.8, 0.2]])
+
+    loss = utility_targeted_ce(
+        router_logits,
+        utility,
+        utility_temperature=0.7,
+        hard=False,
+    )
+    expected_targets = torch.softmax(utility / 0.7, dim=-1)
+    expected = -(expected_targets * F.log_softmax(router_logits, dim=-1)).sum(dim=-1).mean()
+
+    torch.testing.assert_close(loss, expected)
+    loss.backward()
+    assert router_logits.grad is not None
+    assert torch.isfinite(router_logits.grad).all()
+
+
 def test_utility_targeted_ste_routes_to_utility_and_keeps_router_gradients() -> None:
     router_logits = torch.tensor(
         [[0.0, 1.0, -0.5], [2.0, -1.0, 0.0], [-0.2, 0.1, 0.3]],

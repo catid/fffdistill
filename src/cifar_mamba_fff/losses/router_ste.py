@@ -314,13 +314,16 @@ def utility_targeted_ce(
     utility: Tensor,
     *,
     temperature: float = 1.0,
+    utility_temperature: float = 1.0,
+    hard: bool = True,
     reduction: Reduction = "mean",
 ) -> Tensor:
-    """Cross-entropy from router logits to detached utility argmax targets."""
+    """Cross-entropy from router logits to detached utility-induced targets."""
 
     _require_tensor("router_logits", router_logits)
     _require_tensor("utility", utility)
     _require_temperature("temperature", temperature)
+    _require_temperature("utility_temperature", utility_temperature)
     if router_logits.shape != utility.shape:
         raise ValueError("router_logits and utility must have the same shape")
     if router_logits.ndim < 2 or router_logits.shape[-1] < 2:
@@ -328,8 +331,22 @@ def utility_targeted_ce(
 
     num_experts = router_logits.shape[-1]
     logits_flat = (router_logits / temperature).reshape(-1, num_experts)
-    targets_flat = utility.argmax(dim=-1).reshape(-1).detach()
-    return F.cross_entropy(logits_flat, targets_flat, reduction=reduction)
+    if hard:
+        targets_flat = utility.argmax(dim=-1).reshape(-1).detach()
+        return F.cross_entropy(logits_flat, targets_flat, reduction=reduction)
+
+    targets_flat = torch.softmax(utility / utility_temperature, dim=-1).reshape(
+        -1,
+        num_experts,
+    ).detach()
+    per_item = -(targets_flat * F.log_softmax(logits_flat, dim=-1)).sum(dim=-1)
+    if reduction == "none":
+        return per_item.reshape(router_logits.shape[:-1])
+    if reduction == "sum":
+        return per_item.sum()
+    if reduction == "mean":
+        return per_item.mean()
+    raise ValueError("reduction must be one of: mean, sum, none")
 
 
 def utility_targeted_ste(

@@ -868,6 +868,8 @@ def _router_auxiliary_loss(
                 flat_logits,
                 flat_utility,
                 temperature=config.temperature,
+                utility_temperature=config.utility_temperature,
+                hard=config.utility_hard,
             )
             loss_name = "utility_targeted_ce"
         elif config.recipe == "hard_em_utility_ste":

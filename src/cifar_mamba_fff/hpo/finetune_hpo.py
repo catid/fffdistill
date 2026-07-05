@@ -53,6 +53,7 @@ STUDENT_OVERRIDE_KEYS = {
     "student_source": "source",
     "baseline_parameter_budget_fraction": "baseline_parameter_budget_fraction",
     "baseline_budget_source": "baseline_budget_source",
+    "baseline_budget_tolerance_frac": "baseline_budget_tolerance_frac",
     "allow_matched_linear_baseline": "allow_matched_linear_baseline",
     "sparse_row_banks": "sparse_row_banks",
     "sparse_rows_per_token": "sparse_rows_per_token",
