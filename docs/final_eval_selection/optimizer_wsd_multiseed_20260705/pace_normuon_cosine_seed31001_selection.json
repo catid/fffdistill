@@ -1,0 +1,27 @@
+{
+  "best_val_accuracy": 0.9148,
+  "case": "pace_normuon_cosine_seed31001",
+  "checkpoint_path": "outputs/scheduler_finetune_hpo/optimizer_wsd_multiseed_validation_1411104_wave1_offsets12_14/work/0/trials/trial_000012_pace_normuon_cosine_seed31001/student_best.pt",
+  "checkpoint_sha256": "c7083a30f0b76e072f3036d1bacebd2a0372836a60245989ab94afe3758c2216",
+  "family": "pace_normuon_cosine",
+  "gpu": 0,
+  "machine": "work",
+  "run": "optimizer_wsd_multiseed_validation_1411104_wave1_offsets12_14",
+  "seed": 31001,
+  "selected_for_final_eval": true,
+  "selection_record": "docs/final_eval_selection/optimizer_wsd_multiseed_20260705/pace_normuon_cosine_seed31001_selection.json",
+  "selection_rule": "Selected top 1 validation fine-tune family/families by mean best_val_accuracy before final CIFAR-10 test access.",
+  "selection_stage": "optimizer_wsd_multiseed_20260705",
+  "source_trials_csv": "docs/optimizer_wsd_multiseed_validation_trials.csv",
+  "source_validation_summary": "docs/optimizer_wsd_multiseed_validation_summary.md",
+  "status": "succeeded",
+  "summary": {
+    "best_val_accuracy": 0.9148,
+    "checkpoint_path": "outputs/scheduler_finetune_hpo/optimizer_wsd_multiseed_validation_1411104_wave1_offsets12_14/work/0/trials/trial_000012_pace_normuon_cosine_seed31001/student_best.pt",
+    "checkpoint_sha256": "c7083a30f0b76e072f3036d1bacebd2a0372836a60245989ab94afe3758c2216",
+    "selected_for_final_eval": true,
+    "status": "succeeded",
+    "test_accessed": false
+  },
+  "test_accessed": false
+}
